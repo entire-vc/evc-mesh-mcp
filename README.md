@@ -88,7 +88,7 @@ SSE mode supports per-connection authentication via:
 - `X-Agent-Key: agk_...` header
 - `?agent_key=agk_...` query parameter
 
-## MCP Tools (27)
+## MCP Tools (33)
 
 ### Project & Task Management
 
@@ -146,6 +146,17 @@ SSE mode supports per-connection authentication via:
 |------|-------------|
 | `get_my_rules` | Get governance rules applicable to calling agent |
 | `get_project_rules` | Get governance rules for a project |
+
+### Team & Rules
+
+| Tool | Description |
+|------|-------------|
+| `get_team_directory` | Get workspace team directory (agents + humans with profiles) |
+| `get_assignment_rules` | Get effective assignment rules for a project (workspace + project merged) |
+| `get_workflow_rules` | Get workflow rules for a project including caller permissions |
+| `update_agent_profile` | Update calling agent's role, capabilities, and profile fields |
+| `import_workspace_config` | Import workspace configuration from YAML |
+| `export_workspace_config` | Export workspace configuration as YAML |
 
 ## Architecture
 
