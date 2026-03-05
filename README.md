@@ -1,5 +1,7 @@
 # EVC Mesh MCP Server
 
+[![Install via Spark](https://spark.entire.vc/badges/evc-mesh-mcp/install.svg)](https://spark.entire.vc/get/evc-mesh-mcp?utm_source=github&utm_medium=readme)
+
 [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server for [EVC Mesh](https://github.com/entire-vc/evc-mesh) — a task management platform for coordinating humans and AI agents.
 
 Connects AI agents (Claude Code, Cline, etc.) to EVC Mesh via MCP tools for task management, event publishing, artifact uploads, and multi-agent coordination.
