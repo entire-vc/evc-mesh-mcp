@@ -131,7 +131,7 @@ func (s *Server) MCPServer() *mcpserver.MCPServer {
 	return s.mcpServer
 }
 
-// registerTools registers all 33 MCP tools.
+// registerTools registers all 38 MCP tools.
 func (s *Server) registerTools() {
 	// --- Projects & Tasks ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_projects",
@@ -300,9 +300,10 @@ func (s *Server) registerTools() {
 	), s.handleGetTaskContext)
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("subscribe_events",
-		mcpsdk.WithDescription("Subscribe to events (placeholder - returns subscription info)."),
+		mcpsdk.WithDescription("Configure push notification delivery for task events. Optionally sets a callback URL that Mesh will POST events to. Returns SSE and long-poll endpoint URLs for alternative delivery mechanisms."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
 		mcpsdk.WithArray("event_types", mcpsdk.Description("Event types to subscribe to."), mcpsdk.WithStringItems()),
+		mcpsdk.WithString("callback_url", mcpsdk.Description("Optional URL where Mesh will POST task events (task.assigned, task.created, task.status_changed). Leave empty to only use SSE or long-polling.")),
 	), s.handleSubscribeEvents)
 
 	// --- Utility ---
@@ -378,6 +379,7 @@ func (s *Server) registerTools() {
 		mcpsdk.WithNumber("max_concurrent_tasks", mcpsdk.Description("Maximum number of concurrent tasks this agent can handle.")),
 		mcpsdk.WithString("working_hours", mcpsdk.Description("Working hours description (e.g. 24/7, 9-17 UTC).")),
 		mcpsdk.WithString("description", mcpsdk.Description("Human-readable description of the agent's purpose.")),
+		mcpsdk.WithString("callback_url", mcpsdk.Description("URL where Mesh will POST task events (task.assigned, task.status_changed, task.commented). Set to empty string to disable.")),
 	), s.handleUpdateAgentProfile)
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("import_workspace_config",
@@ -388,6 +390,47 @@ func (s *Server) registerTools() {
 	s.mcpServer.AddTool(mcpsdk.NewTool("export_workspace_config",
 		mcpsdk.WithDescription("Export the current workspace configuration as YAML, including rules, project templates, and settings."),
 	), s.handleExportWorkspaceConfig)
+
+	// --- Push Notifications ---
+	s.mcpServer.AddTool(mcpsdk.NewTool("poll_tasks",
+		mcpsdk.WithDescription("Long-poll for new task assignments. Blocks until a task is assigned to this agent or the timeout expires. Returns current assigned tasks and whether any change occurred."),
+		mcpsdk.WithNumber("timeout", mcpsdk.Description("Maximum seconds to wait for new assignments (default 30, max 120).")),
+	), s.handlePollTasks)
+
+	// --- Recurring Tasks ---
+	s.mcpServer.AddTool(mcpsdk.NewTool("create_recurring_task",
+		mcpsdk.WithDescription("Creates a recurring task schedule that automatically spawns task instances on a schedule. Each instance gets access to the previous instance's summary. Use this for regular automated work: weekly reports, daily checks, periodic audits."),
+		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Target project UUID.")),
+		mcpsdk.WithString("title_template", mcpsdk.Required(), mcpsdk.Description("Task title template. Supports {{.Date}}, {{.Number}}, {{.Week}}, {{.Month}}.")),
+		mcpsdk.WithString("frequency", mcpsdk.Required(), mcpsdk.Description("Recurrence frequency: daily, weekly, monthly, custom. Use 'custom' with cron_expr for fine-grained control.")),
+		mcpsdk.WithString("description_template", mcpsdk.Description("Task description template. Also supports {{.PrevSummary}} for previous instance context.")),
+		mcpsdk.WithString("cron_expr", mcpsdk.Description("5-field cron expression (required if frequency=custom). Example: '0 9 * * 1' = every Monday at 9am.")),
+		mcpsdk.WithString("timezone", mcpsdk.Description("IANA timezone for schedule evaluation. Default: UTC.")),
+		mcpsdk.WithString("assignee_id", mcpsdk.Description("Agent or user UUID to assign each instance.")),
+		mcpsdk.WithString("assignee_type", mcpsdk.Description("Assignee type: user, agent, unassigned."), mcpsdk.DefaultString("unassigned")),
+		mcpsdk.WithString("priority", mcpsdk.Description("Priority: urgent, high, medium, low, none."), mcpsdk.DefaultString("none")),
+		mcpsdk.WithArray("labels", mcpsdk.Description("Labels to apply to each instance."), mcpsdk.WithStringItems()),
+		mcpsdk.WithString("starts_at", mcpsdk.Description("When to start the schedule (RFC3339). Default: now.")),
+		mcpsdk.WithString("ends_at", mcpsdk.Description("When to stop the schedule (RFC3339). Default: no end.")),
+		mcpsdk.WithNumber("max_instances", mcpsdk.Description("Maximum number of instances to create. Default: unlimited.")),
+	), s.handleCreateRecurringTask)
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("list_recurring_schedules",
+		mcpsdk.WithDescription("Lists all recurring task schedules for a project."),
+		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
+		mcpsdk.WithBoolean("active_only", mcpsdk.Description("Only return active schedules."), mcpsdk.DefaultBool(true)),
+	), s.handleListRecurringSchedules)
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("get_recurring_history",
+		mcpsdk.WithDescription("Returns the history of all instances for a recurring task schedule. ALWAYS call this when you receive a recurring task — it gives you context on what previous instances accomplished, what issues were found, and what artifacts were produced. Use it to continue work intelligently rather than starting from scratch."),
+		mcpsdk.WithString("recurring_schedule_id", mcpsdk.Required(), mcpsdk.Description("UUID of the recurring schedule. Available in task.recurring_schedule_id field.")),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Number of most recent instances to return. Default: 5. Use higher value for deep historical context.")),
+	), s.handleGetRecurringHistory)
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("trigger_recurring_now",
+		mcpsdk.WithDescription("Immediately creates the next instance of a recurring schedule, without waiting for the scheduled time. Useful for testing or urgent execution."),
+		mcpsdk.WithString("recurring_schedule_id", mcpsdk.Required(), mcpsdk.Description("UUID of the recurring schedule.")),
+	), s.handleTriggerRecurringNow)
 }
 
 // --- Helper functions ---

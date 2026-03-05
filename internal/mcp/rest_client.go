@@ -142,6 +142,11 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 	return nil
 }
 
+// BaseURL returns the base URL used by this client.
+func (c *RESTClient) BaseURL() string {
+	return c.baseURL
+}
+
 // Ping checks connectivity by calling GET /health.
 func (c *RESTClient) Ping(ctx context.Context) error {
 	return c.doJSON(ctx, http.MethodGet, "/health", nil, nil)
@@ -362,6 +367,16 @@ func (c *RESTClient) GetAgentTasks(ctx context.Context, params map[string]string
 	return result, nil
 }
 
+// PollTasks long-polls for new task assignments.
+// timeoutSecs controls how long the server blocks before returning (1–120).
+func (c *RESTClient) PollTasks(ctx context.Context, timeoutSecs int) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/api/v1/agents/me/tasks/poll?timeout=%d", timeoutSecs), nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // PublishEvent publishes an event to the event bus.
 func (c *RESTClient) PublishEvent(ctx context.Context, projectID string, body map[string]any) (map[string]any, error) {
 	var result map[string]any
@@ -420,6 +435,15 @@ func (c *RESTClient) GetTaskDependencies(ctx context.Context, taskID string) ([]
 func (c *RESTClient) UpdateAgent(ctx context.Context, agentID string, body map[string]any) (map[string]any, error) {
 	var result map[string]any
 	if err := c.doJSON(ctx, http.MethodPatch, "/api/v1/agents/"+agentID, body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// UpdateMe updates the calling agent's own profile via PATCH /agents/me (no admin RBAC required).
+func (c *RESTClient) UpdateMe(ctx context.Context, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/v1/agents/me", body, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -563,6 +587,58 @@ func (c *RESTClient) ImportWorkspaceConfig(ctx context.Context, workspaceID stri
 	var result map[string]any
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return result, nil
+}
+
+// CreateRecurringSchedule creates a recurring task schedule for a project.
+func (c *RESTClient) CreateRecurringSchedule(ctx context.Context, projectID string, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/projects/"+projectID+"/recurring", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// ListRecurringSchedules lists recurring schedules for a project.
+func (c *RESTClient) ListRecurringSchedules(ctx context.Context, projectID string, params map[string]string) (map[string]any, error) {
+	path := "/api/v1/projects/" + projectID + "/recurring"
+	if len(params) > 0 {
+		var parts []string
+		for k, v := range params {
+			parts = append(parts, k+"="+v)
+		}
+		path += "?" + strings.Join(parts, "&")
+	}
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetRecurringHistory returns the instance history for a recurring schedule.
+func (c *RESTClient) GetRecurringHistory(ctx context.Context, scheduleID string, params map[string]string) (map[string]any, error) {
+	path := "/api/v1/recurring/" + scheduleID + "/history"
+	if len(params) > 0 {
+		var parts []string
+		for k, v := range params {
+			parts = append(parts, k+"="+v)
+		}
+		path += "?" + strings.Join(parts, "&")
+	}
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// TriggerRecurringNow immediately creates the next instance for a recurring schedule.
+func (c *RESTClient) TriggerRecurringNow(ctx context.Context, scheduleID string) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/recurring/"+scheduleID+"/trigger", nil, &result); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
