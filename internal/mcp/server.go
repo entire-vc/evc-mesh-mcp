@@ -131,7 +131,7 @@ func (s *Server) MCPServer() *mcpserver.MCPServer {
 	return s.mcpServer
 }
 
-// registerTools registers all 38 MCP tools.
+// registerTools registers all 42 MCP tools.
 func (s *Server) registerTools() {
 	// --- Projects & Tasks ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_projects",
@@ -431,6 +431,34 @@ func (s *Server) registerTools() {
 		mcpsdk.WithDescription("Immediately creates the next instance of a recurring schedule, without waiting for the scheduled time. Useful for testing or urgent execution."),
 		mcpsdk.WithString("recurring_schedule_id", mcpsdk.Required(), mcpsdk.Description("UUID of the recurring schedule.")),
 	), s.handleTriggerRecurringNow)
+
+	// --- Auto-Transition Rules ---
+	s.mcpServer.AddTool(mcpsdk.NewTool("list_auto_transition_rules",
+		mcpsdk.WithDescription("List auto-transition rules for a project. Rules define automatic status changes triggered by task lifecycle events (e.g., move parent to review when all subtasks are done)."),
+		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
+	), s.handleListAutoTransitionRules)
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("create_auto_transition_rule",
+		mcpsdk.WithDescription("Create an auto-transition rule for a project. Triggers: 'all_subtasks_done' moves the parent task when all its subtasks reach a done/cancelled status; 'blocking_dep_resolved' moves a blocked task when all its blocking dependencies are resolved. Requires PermManageRules — agents get a 403 unless granted admin rights."),
+		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
+		mcpsdk.WithString("trigger", mcpsdk.Required(), mcpsdk.Description("Trigger type: 'all_subtasks_done' or 'blocking_dep_resolved'.")),
+		mcpsdk.WithString("target_status_id", mcpsdk.Required(), mcpsdk.Description("Target status UUID to transition the task into.")),
+		mcpsdk.WithBoolean("is_enabled", mcpsdk.Description("Whether the rule is active. Default: true.")),
+	), s.handleCreateAutoTransitionRule)
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("update_auto_transition_rule",
+		mcpsdk.WithDescription("Update an auto-transition rule — change its target status or enable/disable it. Requires PermManageRules."),
+		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
+		mcpsdk.WithString("rule_id", mcpsdk.Required(), mcpsdk.Description("Rule ID.")),
+		mcpsdk.WithString("target_status_id", mcpsdk.Description("New target status UUID.")),
+		mcpsdk.WithBoolean("is_enabled", mcpsdk.Description("Enable or disable the rule.")),
+	), s.handleUpdateAutoTransitionRule)
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("delete_auto_transition_rule",
+		mcpsdk.WithDescription("Delete an auto-transition rule permanently. Requires PermManageRules."),
+		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
+		mcpsdk.WithString("rule_id", mcpsdk.Required(), mcpsdk.Description("Rule ID.")),
+	), s.handleDeleteAutoTransitionRule)
 }
 
 // --- Helper functions ---

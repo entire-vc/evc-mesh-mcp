@@ -1507,3 +1507,114 @@ func (s *Server) handleTriggerRecurringNow(ctx context.Context, request mcpsdk.C
 
 	return jsonResult(result)
 }
+
+// ============================================================================
+// 39. list_auto_transition_rules
+// ============================================================================
+
+func (s *Server) handleListAutoTransitionRules(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	projectID := mcpsdk.ParseString(request, "project_id", "")
+	if projectID == "" {
+		return errResult("project_id is required")
+	}
+
+	rules, err := s.getRESTClient(ctx).ListAutoTransitionRules(ctx, projectID)
+	if err != nil {
+		return errResult("failed to list auto-transition rules: %v", err)
+	}
+
+	return jsonResult(rules)
+}
+
+// ============================================================================
+// 40. create_auto_transition_rule
+// ============================================================================
+
+func (s *Server) handleCreateAutoTransitionRule(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	projectID := mcpsdk.ParseString(request, "project_id", "")
+	if projectID == "" {
+		return errResult("project_id is required")
+	}
+
+	trigger := mcpsdk.ParseString(request, "trigger", "")
+	if trigger == "" {
+		return errResult("trigger is required")
+	}
+
+	targetStatusID := mcpsdk.ParseString(request, "target_status_id", "")
+	if targetStatusID == "" {
+		return errResult("target_status_id is required")
+	}
+
+	body := map[string]any{
+		"trigger":          trigger,
+		"target_status_id": targetStatusID,
+		"is_enabled":       true,
+	}
+
+	// Override is_enabled only when caller explicitly provides it.
+	args := request.GetArguments()
+	if v, ok := args["is_enabled"]; ok {
+		body["is_enabled"] = v
+	}
+
+	rule, err := s.getRESTClient(ctx).CreateAutoTransitionRule(ctx, projectID, body)
+	if err != nil {
+		return errResult("failed to create auto-transition rule: %v", err)
+	}
+
+	return jsonResult(rule)
+}
+
+// ============================================================================
+// 41. update_auto_transition_rule
+// ============================================================================
+
+func (s *Server) handleUpdateAutoTransitionRule(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	projectID := mcpsdk.ParseString(request, "project_id", "")
+	ruleID := mcpsdk.ParseString(request, "rule_id", "")
+	if projectID == "" || ruleID == "" {
+		return errResult("project_id and rule_id are required")
+	}
+
+	body := map[string]any{}
+
+	if targetStatusID := mcpsdk.ParseString(request, "target_status_id", ""); targetStatusID != "" {
+		body["target_status_id"] = targetStatusID
+	}
+
+	// Only include is_enabled when the caller explicitly passes it.
+	args := request.GetArguments()
+	if v, ok := args["is_enabled"]; ok {
+		body["is_enabled"] = v
+	}
+
+	if len(body) == 0 {
+		return errResult("at least one field (target_status_id or is_enabled) must be provided")
+	}
+
+	rule, err := s.getRESTClient(ctx).UpdateAutoTransitionRule(ctx, projectID, ruleID, body)
+	if err != nil {
+		return errResult("failed to update auto-transition rule: %v", err)
+	}
+
+	return jsonResult(rule)
+}
+
+// ============================================================================
+// 42. delete_auto_transition_rule
+// ============================================================================
+
+func (s *Server) handleDeleteAutoTransitionRule(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	projectID := mcpsdk.ParseString(request, "project_id", "")
+	ruleID := mcpsdk.ParseString(request, "rule_id", "")
+	if projectID == "" || ruleID == "" {
+		return errResult("project_id and rule_id are required")
+	}
+
+	if err := s.getRESTClient(ctx).DeleteAutoTransitionRule(ctx, projectID, ruleID); err != nil {
+		return errResult("failed to delete auto-transition rule: %v", err)
+	}
+
+	return jsonResult(map[string]string{"status": "deleted", "id": ruleID})
+}

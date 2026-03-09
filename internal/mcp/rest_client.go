@@ -643,6 +643,39 @@ func (c *RESTClient) TriggerRecurringNow(ctx context.Context, scheduleID string)
 	return result, nil
 }
 
+// ListAutoTransitionRules lists auto-transition rules for a project.
+func (c *RESTClient) ListAutoTransitionRules(ctx context.Context, projectID string) ([]map[string]any, error) {
+	var result []map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/api/v1/projects/%s/auto-transition-rules", projectID), nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// CreateAutoTransitionRule creates an auto-transition rule for a project.
+func (c *RESTClient) CreateAutoTransitionRule(ctx context.Context, projectID string, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/v1/projects/%s/auto-transition-rules", projectID), body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// UpdateAutoTransitionRule updates an existing auto-transition rule.
+func (c *RESTClient) UpdateAutoTransitionRule(ctx context.Context, projectID, ruleID string, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPut, fmt.Sprintf("/api/v1/projects/%s/auto-transition-rules/%s", projectID, ruleID), body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// DeleteAutoTransitionRule deletes an auto-transition rule.
+// The API returns 204 No Content on success; doJSON handles this safely when result is nil.
+func (c *RESTClient) DeleteAutoTransitionRule(ctx context.Context, projectID, ruleID string) error {
+	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/projects/%s/auto-transition-rules/%s", projectID, ruleID), nil, nil)
+}
+
 // ExportWorkspaceConfig exports workspace configuration as YAML text.
 func (c *RESTClient) ExportWorkspaceConfig(ctx context.Context, workspaceID string) (string, error) {
 	data, statusCode, err := c.doRaw(ctx, http.MethodGet, "/api/v1/workspaces/"+workspaceID+"/config/export", "", nil)
