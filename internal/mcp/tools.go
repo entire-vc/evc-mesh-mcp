@@ -1185,7 +1185,18 @@ func (s *Server) handleGetTeamDirectory(ctx context.Context, request mcpsdk.Call
 		return errResult("not authenticated: no agent session")
 	}
 
-	result, err := s.getRESTClient(ctx).GetTeamDirectory(ctx, session.WorkspaceID.String())
+	wsID := session.WorkspaceID.String()
+	format := mcpsdk.ParseString(request, "format", "")
+
+	if format == "tree" {
+		result, err := s.getRESTClient(ctx).GetTeamDirectoryTree(ctx, wsID)
+		if err != nil {
+			return errResult("failed to get team directory: %v", err)
+		}
+		return jsonResult(result)
+	}
+
+	result, err := s.getRESTClient(ctx).GetTeamDirectory(ctx, wsID)
 	if err != nil {
 		return errResult("failed to get team directory: %v", err)
 	}
@@ -1617,4 +1628,67 @@ func (s *Server) handleDeleteAutoTransitionRule(ctx context.Context, request mcp
 	}
 
 	return jsonResult(map[string]string{"status": "deleted", "id": ruleID})
+}
+
+// ============================================================================
+// 43. checkout_task
+// ============================================================================
+
+func (s *Server) handleCheckoutTask(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	taskID := mcpsdk.ParseString(request, "task_id", "")
+	if taskID == "" {
+		return errResult("task_id is required")
+	}
+	body := map[string]interface{}{}
+	if v, ok := request.GetArguments()["ttl_minutes"]; ok {
+		body["ttl_minutes"] = v
+	}
+	result, err := s.getRESTClient(ctx).CheckoutTask(ctx, taskID, body)
+	if err != nil {
+		return errResult("failed to checkout task: %v", err)
+	}
+	return jsonResult(result)
+}
+
+// ============================================================================
+// 44. release_task
+// ============================================================================
+
+func (s *Server) handleReleaseTask(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	taskID := mcpsdk.ParseString(request, "task_id", "")
+	token := mcpsdk.ParseString(request, "checkout_token", "")
+	if taskID == "" || token == "" {
+		return errResult("task_id and checkout_token are required")
+	}
+	body := map[string]interface{}{
+		"checkout_token": token,
+	}
+	err := s.getRESTClient(ctx).ReleaseCheckout(ctx, taskID, body)
+	if err != nil {
+		return errResult("failed to release task: %v", err)
+	}
+	return jsonResult(map[string]string{"status": "released", "task_id": taskID})
+}
+
+// ============================================================================
+// 45. extend_checkout
+// ============================================================================
+
+func (s *Server) handleExtendCheckout(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	taskID := mcpsdk.ParseString(request, "task_id", "")
+	token := mcpsdk.ParseString(request, "checkout_token", "")
+	if taskID == "" || token == "" {
+		return errResult("task_id and checkout_token are required")
+	}
+	body := map[string]interface{}{
+		"checkout_token": token,
+	}
+	if v, ok := request.GetArguments()["ttl_minutes"]; ok {
+		body["ttl_minutes"] = v
+	}
+	result, err := s.getRESTClient(ctx).ExtendCheckout(ctx, taskID, body)
+	if err != nil {
+		return errResult("failed to extend checkout: %v", err)
+	}
+	return jsonResult(result)
 }

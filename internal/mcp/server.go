@@ -131,7 +131,7 @@ func (s *Server) MCPServer() *mcpserver.MCPServer {
 	return s.mcpServer
 }
 
-// registerTools registers all 42 MCP tools.
+// registerTools registers all 45 MCP tools.
 func (s *Server) registerTools() {
 	// --- Projects & Tasks ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_projects",
@@ -357,6 +357,7 @@ func (s *Server) registerTools() {
 	// --- Team & Rules ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_team_directory",
 		mcpsdk.WithDescription("Get the workspace team directory listing all agents and human members with their profiles."),
+		mcpsdk.WithString("format", mcpsdk.Description("Response format: 'flat' (default) or 'tree' (hierarchical with children).")),
 	), s.handleGetTeamDirectory)
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_assignment_rules",
@@ -459,6 +460,36 @@ func (s *Server) registerTools() {
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
 		mcpsdk.WithString("rule_id", mcpsdk.Required(), mcpsdk.Description("Rule ID.")),
 	), s.handleDeleteAutoTransitionRule)
+
+	// --- Task Checkout ---
+
+	s.mcpServer.AddTool(
+		mcpsdk.NewTool("checkout_task",
+			mcpsdk.WithDescription("Exclusively lock a task for working. Returns a checkout_token. Other agents cannot checkout the same task until released or TTL expires. Use before starting work on a task to prevent double-work."),
+			mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to checkout.")),
+			mcpsdk.WithNumber("ttl_minutes", mcpsdk.Description("Lock duration in minutes (1-240, default 15).")),
+		),
+		s.handleCheckoutTask,
+	)
+
+	s.mcpServer.AddTool(
+		mcpsdk.NewTool("release_task",
+			mcpsdk.WithDescription("Release a previously checked-out task. Requires the checkout_token from checkout_task."),
+			mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to release.")),
+			mcpsdk.WithString("checkout_token", mcpsdk.Required(), mcpsdk.Description("Token received from checkout_task.")),
+		),
+		s.handleReleaseTask,
+	)
+
+	s.mcpServer.AddTool(
+		mcpsdk.NewTool("extend_checkout",
+			mcpsdk.WithDescription("Extend the checkout TTL for a task you have checked out."),
+			mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
+			mcpsdk.WithString("checkout_token", mcpsdk.Required(), mcpsdk.Description("Token received from checkout_task.")),
+			mcpsdk.WithNumber("ttl_minutes", mcpsdk.Description("New TTL in minutes (1-240, default 15).")),
+		),
+		s.handleExtendCheckout,
+	)
 }
 
 // --- Helper functions ---

@@ -508,6 +508,15 @@ func (c *RESTClient) GetTeamDirectory(ctx context.Context, workspaceID string) (
 	return result, nil
 }
 
+// GetTeamDirectoryTree returns the team directory in hierarchical tree format.
+func (c *RESTClient) GetTeamDirectoryTree(ctx context.Context, workspaceID string) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/team?format=tree", workspaceID), nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // GetAssignmentRules returns effective assignment rules for a project.
 func (c *RESTClient) GetAssignmentRules(ctx context.Context, projectID string) (map[string]any, error) {
 	var result map[string]any
@@ -674,6 +683,25 @@ func (c *RESTClient) UpdateAutoTransitionRule(ctx context.Context, projectID, ru
 // The API returns 204 No Content on success; doJSON handles this safely when result is nil.
 func (c *RESTClient) DeleteAutoTransitionRule(ctx context.Context, projectID, ruleID string) error {
 	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/projects/%s/auto-transition-rules/%s", projectID, ruleID), nil, nil)
+}
+
+// CheckoutTask exclusively locks a task for working. Returns a checkout token.
+func (c *RESTClient) CheckoutTask(ctx context.Context, taskID string, body map[string]interface{}) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%s/checkout", taskID), body, &result)
+	return result, err
+}
+
+// ReleaseCheckout releases an exclusive task lock. Requires the checkout token.
+func (c *RESTClient) ReleaseCheckout(ctx context.Context, taskID string, body map[string]interface{}) error {
+	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%s/checkout", taskID), body, nil)
+}
+
+// ExtendCheckout extends the checkout TTL for a task the caller has locked.
+func (c *RESTClient) ExtendCheckout(ctx context.Context, taskID string, body map[string]interface{}) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/tasks/%s/checkout", taskID), body, &result)
+	return result, err
 }
 
 // ExportWorkspaceConfig exports workspace configuration as YAML text.
