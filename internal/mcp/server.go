@@ -131,7 +131,7 @@ func (s *Server) MCPServer() *mcpserver.MCPServer {
 	return s.mcpServer
 }
 
-// registerTools registers all 45 MCP tools.
+// registerTools registers all MCP tools.
 func (s *Server) registerTools() {
 	// --- Projects & Tasks ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_projects",
@@ -271,6 +271,7 @@ func (s *Server) registerTools() {
 		mcpsdk.WithString("task_id", mcpsdk.Description("Related task ID.")),
 		mcpsdk.WithArray("tags", mcpsdk.Description("Event tags for filtering."), mcpsdk.WithStringItems()),
 		mcpsdk.WithNumber("ttl_hours", mcpsdk.Description("Time-to-live in hours (default 24).")),
+		mcpsdk.WithObject("memory", mcpsdk.Description("Optional memory hint to persist alongside the event (e.g. key decisions, conventions).")),
 	), s.handlePublishEvent)
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("publish_summary",
@@ -308,9 +309,11 @@ func (s *Server) registerTools() {
 
 	// --- Utility ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("heartbeat",
-		mcpsdk.WithDescription("Send a heartbeat to indicate the agent is alive."),
+		mcpsdk.WithDescription("Send a heartbeat to indicate the agent is alive. Optionally report status, message, and metadata."),
 		mcpsdk.WithString("current_task_id", mcpsdk.Description("ID of the task currently being worked on.")),
 		mcpsdk.WithString("status", mcpsdk.Description("Agent status: online, busy, error.")),
+		mcpsdk.WithString("message", mcpsdk.Description("Short human-readable status message (e.g. 'running tests', 'waiting for review').")),
+		mcpsdk.WithObject("metadata", mcpsdk.Description("Arbitrary JSON metadata to store with the heartbeat.")),
 	), s.handleHeartbeat)
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_my_tasks",
@@ -357,7 +360,6 @@ func (s *Server) registerTools() {
 	// --- Team & Rules ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_team_directory",
 		mcpsdk.WithDescription("Get the workspace team directory listing all agents and human members with their profiles."),
-		mcpsdk.WithString("format", mcpsdk.Description("Response format: 'flat' (default) or 'tree' (hierarchical with children).")),
 	), s.handleGetTeamDirectory)
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_assignment_rules",
@@ -433,63 +435,34 @@ func (s *Server) registerTools() {
 		mcpsdk.WithString("recurring_schedule_id", mcpsdk.Required(), mcpsdk.Description("UUID of the recurring schedule.")),
 	), s.handleTriggerRecurringNow)
 
-	// --- Auto-Transition Rules ---
-	s.mcpServer.AddTool(mcpsdk.NewTool("list_auto_transition_rules",
-		mcpsdk.WithDescription("List auto-transition rules for a project. Rules define automatic status changes triggered by task lifecycle events (e.g., move parent to review when all subtasks are done)."),
-		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
-	), s.handleListAutoTransitionRules)
+	// --- Memory tools ---
+	s.mcpServer.AddTool(mcpsdk.NewTool("recall",
+		mcpsdk.WithDescription("Search project and agent memory. Use at session start to load relevant context. Returns scored results."),
+		mcpsdk.WithString("query", mcpsdk.Required(), mcpsdk.Description("Full-text search query.")),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Filter to a specific project.")),
+		mcpsdk.WithString("scope", mcpsdk.Description("Filter by scope: workspace, project, agent, or all (default).")),
+		mcpsdk.WithArray("tags", mcpsdk.Description("Filter by tags."), mcpsdk.WithStringItems()),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 10, max 50).")),
+	), s.handleRecall)
 
-	s.mcpServer.AddTool(mcpsdk.NewTool("create_auto_transition_rule",
-		mcpsdk.WithDescription("Create an auto-transition rule for a project. Triggers: 'all_subtasks_done' moves the parent task when all its subtasks reach a done/cancelled status; 'blocking_dep_resolved' moves a blocked task when all its blocking dependencies are resolved. Requires PermManageRules — agents get a 403 unless granted admin rights."),
-		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
-		mcpsdk.WithString("trigger", mcpsdk.Required(), mcpsdk.Description("Trigger type: 'all_subtasks_done' or 'blocking_dep_resolved'.")),
-		mcpsdk.WithString("target_status_id", mcpsdk.Required(), mcpsdk.Description("Target status UUID to transition the task into.")),
-		mcpsdk.WithBoolean("is_enabled", mcpsdk.Description("Whether the rule is active. Default: true.")),
-	), s.handleCreateAutoTransitionRule)
+	s.mcpServer.AddTool(mcpsdk.NewTool("remember",
+		mcpsdk.WithDescription("Save knowledge to persistent memory. Use for decisions, conventions, preferences. UPSERT by key — calling with same key updates the existing entry."),
+		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Slug key for UPSERT (e.g. 'api-convention', 'license-decision').")),
+		mcpsdk.WithString("content", mcpsdk.Required(), mcpsdk.Description("What to remember (markdown).")),
+		mcpsdk.WithString("scope", mcpsdk.Description("workspace | project | agent (default: project).")),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Project ID (required for project scope).")),
+		mcpsdk.WithArray("tags", mcpsdk.Description("Tags for categorization and filtering."), mcpsdk.WithStringItems()),
+	), s.handleRemember)
 
-	s.mcpServer.AddTool(mcpsdk.NewTool("update_auto_transition_rule",
-		mcpsdk.WithDescription("Update an auto-transition rule — change its target status or enable/disable it. Requires PermManageRules."),
-		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
-		mcpsdk.WithString("rule_id", mcpsdk.Required(), mcpsdk.Description("Rule ID.")),
-		mcpsdk.WithString("target_status_id", mcpsdk.Description("New target status UUID.")),
-		mcpsdk.WithBoolean("is_enabled", mcpsdk.Description("Enable or disable the rule.")),
-	), s.handleUpdateAutoTransitionRule)
+	s.mcpServer.AddTool(mcpsdk.NewTool("get_project_knowledge",
+		mcpsdk.WithDescription("Get all accumulated project knowledge. Call at session start to load context. Returns workspace-level and project-level memories."),
+		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project UUID.")),
+	), s.handleGetProjectKnowledge)
 
-	s.mcpServer.AddTool(mcpsdk.NewTool("delete_auto_transition_rule",
-		mcpsdk.WithDescription("Delete an auto-transition rule permanently. Requires PermManageRules."),
-		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
-		mcpsdk.WithString("rule_id", mcpsdk.Required(), mcpsdk.Description("Rule ID.")),
-	), s.handleDeleteAutoTransitionRule)
-
-	// --- Task Checkout ---
-
-	s.mcpServer.AddTool(
-		mcpsdk.NewTool("checkout_task",
-			mcpsdk.WithDescription("Exclusively lock a task for working. Returns a checkout_token. Other agents cannot checkout the same task until released or TTL expires. Use before starting work on a task to prevent double-work."),
-			mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to checkout.")),
-			mcpsdk.WithNumber("ttl_minutes", mcpsdk.Description("Lock duration in minutes (1-240, default 15).")),
-		),
-		s.handleCheckoutTask,
-	)
-
-	s.mcpServer.AddTool(
-		mcpsdk.NewTool("release_task",
-			mcpsdk.WithDescription("Release a previously checked-out task. Requires the checkout_token from checkout_task."),
-			mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to release.")),
-			mcpsdk.WithString("checkout_token", mcpsdk.Required(), mcpsdk.Description("Token received from checkout_task.")),
-		),
-		s.handleReleaseTask,
-	)
-
-	s.mcpServer.AddTool(
-		mcpsdk.NewTool("extend_checkout",
-			mcpsdk.WithDescription("Extend the checkout TTL for a task you have checked out."),
-			mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
-			mcpsdk.WithString("checkout_token", mcpsdk.Required(), mcpsdk.Description("Token received from checkout_task.")),
-			mcpsdk.WithNumber("ttl_minutes", mcpsdk.Description("New TTL in minutes (1-240, default 15).")),
-		),
-		s.handleExtendCheckout,
-	)
+	s.mcpServer.AddTool(mcpsdk.NewTool("forget",
+		mcpsdk.WithDescription("Delete a memory entry. Agents can only delete their own agent-scope memories."),
+		mcpsdk.WithString("memory_id", mcpsdk.Required(), mcpsdk.Description("UUID of the memory to delete.")),
+	), s.handleForget)
 }
 
 // --- Helper functions ---

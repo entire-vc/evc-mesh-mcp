@@ -676,6 +676,11 @@ func (s *Server) handlePublishEvent(ctx context.Context, request mcpsdk.CallTool
 		body["tags"] = tags
 	}
 
+	// Parse optional memory hint — passed through to the API for persistence.
+	if memoryHint := request.GetArguments()["memory"]; memoryHint != nil {
+		body["memory_hint"] = memoryHint
+	}
+
 	result, err := s.getRESTClient(ctx).PublishEvent(ctx, projectID, body)
 	if err != nil {
 		return errResult("failed to publish event: %v", err)
@@ -897,29 +902,28 @@ func (s *Server) handleHeartbeat(ctx context.Context, request mcpsdk.CallToolReq
 		return errResult("not authenticated: no agent session")
 	}
 
-	result, err := s.getRESTClient(ctx).Heartbeat(ctx)
+	// Build heartbeat body from tool params.
+	body := map[string]any{}
+	if status := mcpsdk.ParseString(request, "status", ""); status != "" {
+		body["status"] = status
+	}
+	if message := mcpsdk.ParseString(request, "message", ""); message != "" {
+		body["message"] = message
+	}
+	if currentTaskID := mcpsdk.ParseString(request, "current_task_id", ""); currentTaskID != "" {
+		body["current_task_id"] = currentTaskID
+	}
+	if args := request.GetArguments(); args != nil {
+		if md, ok := args["metadata"]; ok && md != nil {
+			body["metadata"] = md
+		}
+	}
+
+	_, err := s.getRESTClient(ctx).Heartbeat(ctx, body)
 	if err != nil {
 		return errResult("heartbeat failed: %v", err)
 	}
 
-	// If status or current_task_id are provided, update the agent.
-	status := mcpsdk.ParseString(request, "status", "")
-	currentTaskID := mcpsdk.ParseString(request, "current_task_id", "")
-
-	if status != "" || currentTaskID != "" {
-		updateBody := map[string]any{}
-		if status != "" {
-			updateBody["status"] = status
-		}
-		if currentTaskID != "" {
-			updateBody["current_task_id"] = currentTaskID
-		}
-		// Best-effort agent update.
-		_, _ = s.getRESTClient(ctx).UpdateAgent(ctx, session.AgentID.String(), updateBody)
-	}
-
-	// Return a consistent response regardless of what the REST API returned.
-	_ = result
 	return jsonResult(map[string]any{
 		"status":    "ok",
 		"agent_id":  session.AgentID.String(),
@@ -1185,18 +1189,7 @@ func (s *Server) handleGetTeamDirectory(ctx context.Context, request mcpsdk.Call
 		return errResult("not authenticated: no agent session")
 	}
 
-	wsID := session.WorkspaceID.String()
-	format := mcpsdk.ParseString(request, "format", "")
-
-	if format == "tree" {
-		result, err := s.getRESTClient(ctx).GetTeamDirectoryTree(ctx, wsID)
-		if err != nil {
-			return errResult("failed to get team directory: %v", err)
-		}
-		return jsonResult(result)
-	}
-
-	result, err := s.getRESTClient(ctx).GetTeamDirectory(ctx, wsID)
+	result, err := s.getRESTClient(ctx).GetTeamDirectory(ctx, session.WorkspaceID.String())
 	if err != nil {
 		return errResult("failed to get team directory: %v", err)
 	}
@@ -1520,175 +1513,92 @@ func (s *Server) handleTriggerRecurringNow(ctx context.Context, request mcpsdk.C
 }
 
 // ============================================================================
-// 39. list_auto_transition_rules
+// Memory tools
 // ============================================================================
 
-func (s *Server) handleListAutoTransitionRules(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	session := s.getSession(ctx)
+	if session == nil {
+		return errResult("not authenticated: no agent session")
+	}
+
+	query := mcpsdk.ParseString(request, "query", "")
+	if query == "" {
+		return errResult("query is required")
+	}
+
+	scope := mcpsdk.ParseString(request, "scope", "")
 	projectID := mcpsdk.ParseString(request, "project_id", "")
-	if projectID == "" {
-		return errResult("project_id is required")
-	}
+	tags := parseStringSlice(request, "tags")
+	limit := mcpsdk.ParseInt(request, "limit", 10)
 
-	rules, err := s.getRESTClient(ctx).ListAutoTransitionRules(ctx, projectID)
+	result, err := s.getRESTClient(ctx).RecallMemories(ctx, query, session.WorkspaceID.String(), projectID, scope, tags, limit)
 	if err != nil {
-		return errResult("failed to list auto-transition rules: %v", err)
+		return errResult("recall failed: %v", err)
 	}
 
-	return jsonResult(rules)
+	return jsonResult(result)
 }
 
-// ============================================================================
-// 40. create_auto_transition_rule
-// ============================================================================
+func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	session := s.getSession(ctx)
+	if session == nil {
+		return errResult("not authenticated: no agent session")
+	}
 
-func (s *Server) handleCreateAutoTransitionRule(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	key := mcpsdk.ParseString(request, "key", "")
+	content := mcpsdk.ParseString(request, "content", "")
+	if key == "" || content == "" {
+		return errResult("key and content are required")
+	}
+
+	scope := mcpsdk.ParseString(request, "scope", "project")
 	projectID := mcpsdk.ParseString(request, "project_id", "")
-	if projectID == "" {
-		return errResult("project_id is required")
-	}
-
-	trigger := mcpsdk.ParseString(request, "trigger", "")
-	if trigger == "" {
-		return errResult("trigger is required")
-	}
-
-	targetStatusID := mcpsdk.ParseString(request, "target_status_id", "")
-	if targetStatusID == "" {
-		return errResult("target_status_id is required")
-	}
+	tags := parseStringSlice(request, "tags")
 
 	body := map[string]any{
-		"trigger":          trigger,
-		"target_status_id": targetStatusID,
-		"is_enabled":       true,
+		"workspace_id": session.WorkspaceID.String(),
+		"key":          key,
+		"content":      content,
+		"scope":        scope,
+		"tags":         tags,
+		"source_type":  "agent",
+	}
+	if projectID != "" {
+		body["project_id"] = projectID
 	}
 
-	// Override is_enabled only when caller explicitly provides it.
-	args := request.GetArguments()
-	if v, ok := args["is_enabled"]; ok {
-		body["is_enabled"] = v
-	}
-
-	rule, err := s.getRESTClient(ctx).CreateAutoTransitionRule(ctx, projectID, body)
+	result, err := s.getRESTClient(ctx).Remember(ctx, body)
 	if err != nil {
-		return errResult("failed to create auto-transition rule: %v", err)
+		return errResult("remember failed: %v", err)
 	}
 
-	return jsonResult(rule)
-}
-
-// ============================================================================
-// 41. update_auto_transition_rule
-// ============================================================================
-
-func (s *Server) handleUpdateAutoTransitionRule(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-	projectID := mcpsdk.ParseString(request, "project_id", "")
-	ruleID := mcpsdk.ParseString(request, "rule_id", "")
-	if projectID == "" || ruleID == "" {
-		return errResult("project_id and rule_id are required")
-	}
-
-	body := map[string]any{}
-
-	if targetStatusID := mcpsdk.ParseString(request, "target_status_id", ""); targetStatusID != "" {
-		body["target_status_id"] = targetStatusID
-	}
-
-	// Only include is_enabled when the caller explicitly passes it.
-	args := request.GetArguments()
-	if v, ok := args["is_enabled"]; ok {
-		body["is_enabled"] = v
-	}
-
-	if len(body) == 0 {
-		return errResult("at least one field (target_status_id or is_enabled) must be provided")
-	}
-
-	rule, err := s.getRESTClient(ctx).UpdateAutoTransitionRule(ctx, projectID, ruleID, body)
-	if err != nil {
-		return errResult("failed to update auto-transition rule: %v", err)
-	}
-
-	return jsonResult(rule)
-}
-
-// ============================================================================
-// 42. delete_auto_transition_rule
-// ============================================================================
-
-func (s *Server) handleDeleteAutoTransitionRule(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-	projectID := mcpsdk.ParseString(request, "project_id", "")
-	ruleID := mcpsdk.ParseString(request, "rule_id", "")
-	if projectID == "" || ruleID == "" {
-		return errResult("project_id and rule_id are required")
-	}
-
-	if err := s.getRESTClient(ctx).DeleteAutoTransitionRule(ctx, projectID, ruleID); err != nil {
-		return errResult("failed to delete auto-transition rule: %v", err)
-	}
-
-	return jsonResult(map[string]string{"status": "deleted", "id": ruleID})
-}
-
-// ============================================================================
-// 43. checkout_task
-// ============================================================================
-
-func (s *Server) handleCheckoutTask(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-	taskID := mcpsdk.ParseString(request, "task_id", "")
-	if taskID == "" {
-		return errResult("task_id is required")
-	}
-	body := map[string]interface{}{}
-	if v, ok := request.GetArguments()["ttl_minutes"]; ok {
-		body["ttl_minutes"] = v
-	}
-	result, err := s.getRESTClient(ctx).CheckoutTask(ctx, taskID, body)
-	if err != nil {
-		return errResult("failed to checkout task: %v", err)
-	}
 	return jsonResult(result)
 }
 
-// ============================================================================
-// 44. release_task
-// ============================================================================
+func (s *Server) handleGetProjectKnowledge(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	projectID := mcpsdk.ParseString(request, "project_id", "")
+	if projectID == "" {
+		return errResult("project_id is required")
+	}
 
-func (s *Server) handleReleaseTask(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-	taskID := mcpsdk.ParseString(request, "task_id", "")
-	token := mcpsdk.ParseString(request, "checkout_token", "")
-	if taskID == "" || token == "" {
-		return errResult("task_id and checkout_token are required")
-	}
-	body := map[string]interface{}{
-		"checkout_token": token,
-	}
-	err := s.getRESTClient(ctx).ReleaseCheckout(ctx, taskID, body)
+	result, err := s.getRESTClient(ctx).GetProjectKnowledge(ctx, projectID)
 	if err != nil {
-		return errResult("failed to release task: %v", err)
+		return errResult("get_project_knowledge failed: %v", err)
 	}
-	return jsonResult(map[string]string{"status": "released", "task_id": taskID})
+
+	return jsonResult(result)
 }
 
-// ============================================================================
-// 45. extend_checkout
-// ============================================================================
+func (s *Server) handleForget(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	memoryID := mcpsdk.ParseString(request, "memory_id", "")
+	if memoryID == "" {
+		return errResult("memory_id is required")
+	}
 
-func (s *Server) handleExtendCheckout(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-	taskID := mcpsdk.ParseString(request, "task_id", "")
-	token := mcpsdk.ParseString(request, "checkout_token", "")
-	if taskID == "" || token == "" {
-		return errResult("task_id and checkout_token are required")
+	if err := s.getRESTClient(ctx).ForgetMemory(ctx, memoryID); err != nil {
+		return errResult("forget failed: %v", err)
 	}
-	body := map[string]interface{}{
-		"checkout_token": token,
-	}
-	if v, ok := request.GetArguments()["ttl_minutes"]; ok {
-		body["ttl_minutes"] = v
-	}
-	result, err := s.getRESTClient(ctx).ExtendCheckout(ctx, taskID, body)
-	if err != nil {
-		return errResult("failed to extend checkout: %v", err)
-	}
-	return jsonResult(result)
+
+	return jsonResult(map[string]any{"deleted": true})
 }

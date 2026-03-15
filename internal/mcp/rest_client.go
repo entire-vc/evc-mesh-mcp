@@ -341,10 +341,13 @@ func (c *RESTClient) GetArtifactDownloadURL(ctx context.Context, artifactID stri
 	return c.baseURL + "/api/v1/artifacts/" + artifactID + "/download", nil
 }
 
-// Heartbeat sends a heartbeat for the agent.
-func (c *RESTClient) Heartbeat(ctx context.Context) (map[string]any, error) {
+// Heartbeat sends a heartbeat for the agent with optional status/message/metadata.
+func (c *RESTClient) Heartbeat(ctx context.Context, body map[string]any) (map[string]any, error) {
+	if body == nil {
+		body = map[string]any{}
+	}
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/agents/heartbeat", map[string]any{}, &result); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/agents/heartbeat", body, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -508,15 +511,6 @@ func (c *RESTClient) GetTeamDirectory(ctx context.Context, workspaceID string) (
 	return result, nil
 }
 
-// GetTeamDirectoryTree returns the team directory in hierarchical tree format.
-func (c *RESTClient) GetTeamDirectoryTree(ctx context.Context, workspaceID string) (map[string]any, error) {
-	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%s/team?format=tree", workspaceID), nil, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
 // GetAssignmentRules returns effective assignment rules for a project.
 func (c *RESTClient) GetAssignmentRules(ctx context.Context, projectID string) (map[string]any, error) {
 	var result map[string]any
@@ -652,56 +646,59 @@ func (c *RESTClient) TriggerRecurringNow(ctx context.Context, scheduleID string)
 	return result, nil
 }
 
-// ListAutoTransitionRules lists auto-transition rules for a project.
-func (c *RESTClient) ListAutoTransitionRules(ctx context.Context, projectID string) ([]map[string]any, error) {
-	var result []map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/api/v1/projects/%s/auto-transition-rules", projectID), nil, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// CreateAutoTransitionRule creates an auto-transition rule for a project.
-func (c *RESTClient) CreateAutoTransitionRule(ctx context.Context, projectID string, body map[string]any) (map[string]any, error) {
+// Remember creates or updates a memory entry (UPSERT by key within scope).
+func (c *RESTClient) Remember(ctx context.Context, body map[string]any) (map[string]any, error) {
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/v1/projects/%s/auto-transition-rules", projectID), body, &result); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/memories", body, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-// UpdateAutoTransitionRule updates an existing auto-transition rule.
-func (c *RESTClient) UpdateAutoTransitionRule(ctx context.Context, projectID, ruleID string, body map[string]any) (map[string]any, error) {
+// RecallMemories searches memories via full-text search with optional filters.
+func (c *RESTClient) RecallMemories(ctx context.Context, query, wsID, projectID, scope string, tags []string, limit int) (map[string]any, error) {
+	var parts []string
+	if query != "" {
+		parts = append(parts, "q="+query)
+	}
+	if wsID != "" {
+		parts = append(parts, "workspace_id="+wsID)
+	}
+	if projectID != "" {
+		parts = append(parts, "project_id="+projectID)
+	}
+	if scope != "" {
+		parts = append(parts, "scope="+scope)
+	}
+	for _, tag := range tags {
+		parts = append(parts, "tags="+tag)
+	}
+	if limit > 0 {
+		parts = append(parts, fmt.Sprintf("limit=%d", limit))
+	}
+	path := "/api/v1/memories/search"
+	if len(parts) > 0 {
+		path += "?" + strings.Join(parts, "&")
+	}
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodPut, fmt.Sprintf("/api/v1/projects/%s/auto-transition-rules/%s", projectID, ruleID), body, &result); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-// DeleteAutoTransitionRule deletes an auto-transition rule.
-// The API returns 204 No Content on success; doJSON handles this safely when result is nil.
-func (c *RESTClient) DeleteAutoTransitionRule(ctx context.Context, projectID, ruleID string) error {
-	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/projects/%s/auto-transition-rules/%s", projectID, ruleID), nil, nil)
+// GetProjectKnowledge returns all accumulated knowledge for a project.
+func (c *RESTClient) GetProjectKnowledge(ctx context.Context, projectID string) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/projects/"+projectID+"/knowledge", nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
-// CheckoutTask exclusively locks a task for working. Returns a checkout token.
-func (c *RESTClient) CheckoutTask(ctx context.Context, taskID string, body map[string]interface{}) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%s/checkout", taskID), body, &result)
-	return result, err
-}
-
-// ReleaseCheckout releases an exclusive task lock. Requires the checkout token.
-func (c *RESTClient) ReleaseCheckout(ctx context.Context, taskID string, body map[string]interface{}) error {
-	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/tasks/%s/checkout", taskID), body, nil)
-}
-
-// ExtendCheckout extends the checkout TTL for a task the caller has locked.
-func (c *RESTClient) ExtendCheckout(ctx context.Context, taskID string, body map[string]interface{}) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/tasks/%s/checkout", taskID), body, &result)
-	return result, err
+// ForgetMemory deletes a memory entry by ID.
+func (c *RESTClient) ForgetMemory(ctx context.Context, memoryID string) error {
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/memories/"+memoryID, nil, nil)
 }
 
 // ExportWorkspaceConfig exports workspace configuration as YAML text.
