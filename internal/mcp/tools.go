@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
@@ -96,22 +97,24 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 		params["sort_by"] = sort
 	}
 
-	// status_category: we need to resolve it to a status_id via the API.
-	// The REST API accepts status= as a UUID. We query statuses and filter.
+	// status_category: resolve to all matching status IDs via the API.
+	// The REST API accepts status= as comma-separated UUIDs.
 	if cat := mcpsdk.ParseString(request, "status_category", ""); cat != "" {
 		statuses, err := s.getRESTClient(ctx).GetProjectStatuses(ctx, projectID)
 		if err != nil {
 			return errResult("failed to resolve status category: %v", err)
 		}
-		// Find first status matching the category and use it.
-		// Note: REST API only supports single status_id filter.
+		var matchedIDs []string
 		for _, st := range statuses {
 			stCat, _ := st["category"].(string)
 			if stCat == cat {
-				stID, _ := st["id"].(string)
-				params["status"] = stID
-				break
+				if stID, _ := st["id"].(string); stID != "" {
+					matchedIDs = append(matchedIDs, stID)
+				}
 			}
+		}
+		if len(matchedIDs) > 0 {
+			params["status"] = strings.Join(matchedIDs, ",")
 		}
 	}
 
@@ -1541,6 +1544,68 @@ func (s *Server) handleTriggerRecurringNow(ctx context.Context, request mcpsdk.C
 	}
 
 	return jsonResult(result)
+}
+
+func (s *Server) handleUpdateRecurringSchedule(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	scheduleID := mcpsdk.ParseString(request, "recurring_schedule_id", "")
+	if scheduleID == "" {
+		return errResult("recurring_schedule_id is required")
+	}
+
+	body := map[string]any{}
+	if v := mcpsdk.ParseString(request, "title_template", ""); v != "" {
+		body["title_template"] = v
+	}
+	if v := mcpsdk.ParseString(request, "description_template", ""); v != "" {
+		body["description_template"] = v
+	}
+	if v := mcpsdk.ParseString(request, "frequency", ""); v != "" {
+		body["frequency"] = v
+	}
+	if v := mcpsdk.ParseString(request, "cron_expr", ""); v != "" {
+		body["cron_expr"] = v
+	}
+	if v := mcpsdk.ParseString(request, "timezone", ""); v != "" {
+		body["timezone"] = v
+	}
+	if v := mcpsdk.ParseString(request, "assignee_id", ""); v != "" {
+		body["assignee_id"] = v
+	}
+	if v := mcpsdk.ParseString(request, "assignee_type", ""); v != "" {
+		body["assignee_type"] = v
+	}
+	if v := mcpsdk.ParseString(request, "priority", ""); v != "" {
+		body["priority"] = v
+	}
+	if args := request.GetArguments(); args != nil {
+		if v, ok := args["is_active"]; ok {
+			body["is_active"] = v
+		}
+	}
+
+	if len(body) == 0 {
+		return errResult("at least one field to update is required")
+	}
+
+	result, err := s.getRESTClient(ctx).UpdateRecurringSchedule(ctx, scheduleID, body)
+	if err != nil {
+		return errResult("failed to update recurring schedule: %v", err)
+	}
+
+	return jsonResult(result)
+}
+
+func (s *Server) handleDeleteRecurringSchedule(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	scheduleID := mcpsdk.ParseString(request, "recurring_schedule_id", "")
+	if scheduleID == "" {
+		return errResult("recurring_schedule_id is required")
+	}
+
+	if err := s.getRESTClient(ctx).DeleteRecurringSchedule(ctx, scheduleID); err != nil {
+		return errResult("failed to delete recurring schedule: %v", err)
+	}
+
+	return jsonResult(map[string]any{"deleted": true})
 }
 
 // ============================================================================

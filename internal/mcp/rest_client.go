@@ -63,7 +63,7 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
@@ -102,11 +102,11 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 	if err != nil {
 		return fmt.Errorf("create form file: %w", err)
 	}
-	if _, err := fw.Write(fileContent); err != nil {
+	if _, err = fw.Write(fileContent); err != nil {
 		return fmt.Errorf("write file content: %w", err)
 	}
 
-	if err := mw.Close(); err != nil {
+	if err = mw.Close(); err != nil {
 		return fmt.Errorf("close multipart writer: %w", err)
 	}
 
@@ -123,7 +123,7 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
@@ -540,7 +540,7 @@ func (c *RESTClient) UpdateAgentProfile(ctx context.Context, agentID string, bod
 }
 
 // doRaw executes an HTTP request with a raw body and given Content-Type, returning the response body.
-func (c *RESTClient) doRaw(ctx context.Context, method, path, contentType string, rawBody []byte) ([]byte, int, error) {
+func (c *RESTClient) doRaw(ctx context.Context, method, path, contentType string, rawBody []byte) (body []byte, statusCode int, err error) {
 	var bodyReader io.Reader
 	if rawBody != nil {
 		bodyReader = bytes.NewReader(rawBody)
@@ -561,7 +561,7 @@ func (c *RESTClient) doRaw(ctx context.Context, method, path, contentType string
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -572,7 +572,7 @@ func (c *RESTClient) doRaw(ctx context.Context, method, path, contentType string
 }
 
 // ImportWorkspaceConfig imports workspace configuration from YAML content.
-func (c *RESTClient) ImportWorkspaceConfig(ctx context.Context, workspaceID string, yamlContent string) (map[string]any, error) {
+func (c *RESTClient) ImportWorkspaceConfig(ctx context.Context, workspaceID, yamlContent string) (map[string]any, error) {
 	data, statusCode, err := c.doRaw(ctx, http.MethodPost, "/api/v1/workspaces/"+workspaceID+"/config/import", "text/yaml", []byte(yamlContent))
 	if err != nil {
 		return nil, err
@@ -645,6 +645,20 @@ func (c *RESTClient) TriggerRecurringNow(ctx context.Context, scheduleID string)
 		return nil, err
 	}
 	return result, nil
+}
+
+// UpdateRecurringSchedule updates a recurring schedule by ID.
+func (c *RESTClient) UpdateRecurringSchedule(ctx context.Context, scheduleID string, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/v1/recurring/"+scheduleID, body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// DeleteRecurringSchedule deletes a recurring schedule by ID.
+func (c *RESTClient) DeleteRecurringSchedule(ctx context.Context, scheduleID string) error {
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/recurring/"+scheduleID, nil, nil)
 }
 
 // Remember creates or updates a memory entry (UPSERT by key within scope).
