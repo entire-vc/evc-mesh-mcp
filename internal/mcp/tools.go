@@ -1791,10 +1791,15 @@ func (s *Server) handleCheckoutTask(ctx context.Context, request mcpsdk.CallTool
 	if taskID == "" {
 		return errResult("task_id is required")
 	}
+	ttl := mcpsdk.ParseInt(request, "ttl_minutes", 0)
 
-	result, err := s.getRESTClient(ctx).CheckoutTask(ctx, taskID)
+	result, err := s.getRESTClient(ctx).CheckoutTask(ctx, taskID, ttl)
 	if err != nil {
 		return errResult("checkout_task failed: %v", err)
+	}
+
+	if token, ok := result["checkout_token"].(string); ok && token != "" {
+		s.checkoutTokens.Store(taskID, token)
 	}
 
 	return jsonResult(result)
@@ -1806,11 +1811,46 @@ func (s *Server) handleReleaseTask(ctx context.Context, request mcpsdk.CallToolR
 		return errResult("task_id is required")
 	}
 
-	if err := s.getRESTClient(ctx).ReleaseTask(ctx, taskID); err != nil {
-		return errResult("release_task failed: %v", err)
+	token := ""
+	if v, ok := s.checkoutTokens.Load(taskID); ok {
+		token, _ = v.(string)
+	}
+	if token == "" {
+		return errResult("no checkout token found for task %s — call checkout_task first", taskID)
 	}
 
+	if err := s.getRESTClient(ctx).ReleaseTask(ctx, taskID, token); err != nil {
+		return errResult("release_task failed: %v", err)
+	}
+	s.checkoutTokens.Delete(taskID)
+
 	return jsonResult(map[string]any{"released": true, "task_id": taskID})
+}
+
+func (s *Server) handleExtendCheckout(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	taskID := mcpsdk.ParseString(request, "task_id", "")
+	if taskID == "" {
+		return errResult("task_id is required")
+	}
+	ttl := mcpsdk.ParseInt(request, "ttl_minutes", 0)
+	if ttl <= 0 {
+		return errResult("ttl_minutes must be > 0")
+	}
+
+	token := ""
+	if v, ok := s.checkoutTokens.Load(taskID); ok {
+		token, _ = v.(string)
+	}
+	if token == "" {
+		return errResult("no checkout token found for task %s — call checkout_task first", taskID)
+	}
+
+	result, err := s.getRESTClient(ctx).ExtendCheckout(ctx, taskID, token, ttl)
+	if err != nil {
+		return errResult("extend_checkout failed: %v", err)
+	}
+
+	return jsonResult(result)
 }
 
 // ============================================================================

@@ -772,17 +772,36 @@ func (c *RESTClient) ForgetMemory(ctx context.Context, memoryID string) error {
 }
 
 // CheckoutTask acquires an exclusive TTL-based lock on a task.
-func (c *RESTClient) CheckoutTask(ctx context.Context, taskID string) (map[string]any, error) {
+// ttlMinutes ≤ 0 lets the server apply its default (60 min).
+func (c *RESTClient) CheckoutTask(ctx context.Context, taskID string, ttlMinutes int) (map[string]any, error) {
+	body := map[string]any{}
+	if ttlMinutes > 0 {
+		body["ttl_minutes"] = ttlMinutes
+	}
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/checkout", nil, &result); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/checkout", body, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
 // ReleaseTask releases the exclusive lock on a task acquired via CheckoutTask.
-func (c *RESTClient) ReleaseTask(ctx context.Context, taskID string) error {
-	return c.doJSON(ctx, http.MethodDelete, "/api/v1/tasks/"+taskID+"/checkout", nil, nil)
+func (c *RESTClient) ReleaseTask(ctx context.Context, taskID, checkoutToken string) error {
+	body := map[string]any{"checkout_token": checkoutToken}
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/tasks/"+taskID+"/checkout", body, nil)
+}
+
+// ExtendCheckout extends the TTL of an existing checkout.
+func (c *RESTClient) ExtendCheckout(ctx context.Context, taskID, checkoutToken string, ttlMinutes int) (map[string]any, error) {
+	body := map[string]any{
+		"checkout_token": checkoutToken,
+		"ttl_minutes":    ttlMinutes,
+	}
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/v1/tasks/"+taskID+"/checkout", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // ExportWorkspaceConfig exports workspace configuration as YAML text.

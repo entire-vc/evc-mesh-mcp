@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
@@ -89,11 +90,12 @@ func NewAgentSession(agentID, workspaceID, agentName, agentType string) (AgentSe
 
 // Server wraps an mcp-go MCPServer with a REST API client.
 type Server struct {
-	mcpServer  *mcpserver.MCPServer
-	session    *AgentSession // static session for stdio mode; nil for SSE mode
-	restClient *RESTClient   // default REST client; may be overridden per-request in SSE mode
-	tracker    *SessionTracker
-	profile    string
+	mcpServer      *mcpserver.MCPServer
+	session        *AgentSession // static session for stdio mode; nil for SSE mode
+	restClient     *RESTClient   // default REST client; may be overridden per-request in SSE mode
+	tracker        *SessionTracker
+	profile        string
+	checkoutTokens sync.Map // task_id (string) → checkout_token (string)
 }
 
 // getSession returns the AgentSession for the current request.
@@ -413,12 +415,19 @@ func (s *Server) registerAdvancedTools() {
 	s.mcpServer.AddTool(mcpsdk.NewTool("checkout_task",
 		mcpsdk.WithDescription("Atomically acquire an exclusive lock on a task. Prevents other agents from checking out the same task simultaneously. The lock is TTL-based and will expire automatically. Use before starting work on a task to ensure exclusive access."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to check out.")),
+		mcpsdk.WithNumber("ttl_minutes", mcpsdk.Description("Lock TTL in minutes (default 60).")),
 	), s.tracked("checkout_task", s.handleCheckoutTask))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("release_task",
 		mcpsdk.WithDescription("Release the exclusive lock on a task acquired via checkout_task. Call when done with the task or if you need to hand it off. The lock is also released automatically when it expires."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to release.")),
 	), s.tracked("release_task", s.handleReleaseTask))
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("extend_checkout",
+		mcpsdk.WithDescription("Extend the TTL of an existing task checkout. Use when long-running work will outlast the original TTL. Requires a prior checkout_task call in the same session."),
+		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID whose checkout to extend.")),
+		mcpsdk.WithNumber("ttl_minutes", mcpsdk.Required(), mcpsdk.Description("New TTL from now in minutes.")),
+	), s.tracked("extend_checkout", s.handleExtendCheckout))
 
 	// --- Comments & Artifacts ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_comments",
