@@ -211,11 +211,14 @@ func (s *Server) handleCreateTask(ctx context.Context, request mcpsdk.CallToolRe
 		"priority":      mcpsdk.ParseString(request, "priority", "medium"),
 	}
 
-	// Resolve status slug to status_id.
+	// Resolve status slug to status_id, and guard against creating in review status.
 	if slug := mcpsdk.ParseString(request, "status_slug", ""); slug != "" {
-		stID, _, err := s.resolveStatusSlug(ctx, projectID, slug)
+		stID, _, stCat, err := s.resolveStatusSlug(ctx, projectID, slug)
 		if err != nil {
 			return errResult("invalid status_slug: %v", err)
+		}
+		if strings.EqualFold(stCat, "review") {
+			return errResult("Cannot create task in review status. Use 'todo' or 'in_progress'. Review is for tasks with completed work awaiting check.")
 		}
 		body["status_id"] = stID
 	}
@@ -344,8 +347,8 @@ func (s *Server) handleMoveTask(ctx context.Context, request mcpsdk.CallToolRequ
 		return errResult("task has no project_id")
 	}
 
-	// Resolve slug to status ID.
-	stID, stName, err := s.resolveStatusSlug(ctx, projectID, statusSlug)
+	// Resolve slug to status ID (move_task to review is intentionally allowed).
+	stID, stName, _, err := s.resolveStatusSlug(ctx, projectID, statusSlug)
 	if err != nil {
 		return errResult("invalid status_slug: %v", err)
 	}

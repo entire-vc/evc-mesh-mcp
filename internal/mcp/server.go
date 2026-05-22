@@ -690,19 +690,20 @@ func truncate(s string, maxLen int) string {
 }
 
 // resolveStatusSlug looks up a status UUID from its slug by querying the REST API.
-// Returns the status ID and name on success.
-func (s *Server) resolveStatusSlug(ctx context.Context, projectID, slug string) (statusID, statusName string, err error) {
+// Returns the status ID, name, and category on success.
+func (s *Server) resolveStatusSlug(ctx context.Context, projectID, slug string) (statusID, statusName, statusCategory string, err error) {
 	statuses, err := s.getRESTClient(ctx).GetProjectStatuses(ctx, projectID)
 	if err != nil {
-		return "", "", fmt.Errorf("get statuses: %w", err)
+		return "", "", "", fmt.Errorf("get statuses: %w", err)
 	}
 	for _, st := range statuses {
 		stSlug, _ := st["slug"].(string)
 		if stSlug == slug {
 			stID, _ := st["id"].(string)
 			stName, _ := st["name"].(string)
-			return stID, stName, nil
+			stCat, _ := st["category"].(string)
+			return stID, stName, stCat, nil
 		}
 	}
-	return "", "", fmt.Errorf("status '%s' not found in project", slug)
+	return "", "", "", fmt.Errorf("status '%s' not found in project", slug)
 }
