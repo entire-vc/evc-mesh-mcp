@@ -222,8 +222,9 @@ func (s *Server) registerCoreTools() {
 
 	// --- Task CRUD ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_tasks",
-		mcpsdk.WithDescription("List tasks with filters."),
-		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
+		mcpsdk.WithDescription("List tasks with filters. Provide project_id for project-scoped listing or workspace_id for global search across all projects (requires search parameter)."),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Project ID (required unless workspace_id is provided).")),
+		mcpsdk.WithString("workspace_id", mcpsdk.Description("Workspace ID for global cross-project search (requires search parameter).")),
 		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: backlog, todo, in_progress, review, done, cancelled.")),
 		mcpsdk.WithString("assignee_type", mcpsdk.Description("Filter by assignee type: user, agent, unassigned.")),
 		mcpsdk.WithString("priority", mcpsdk.Description("Filter by priority: urgent, high, medium, low, none.")),
@@ -235,7 +236,7 @@ func (s *Server) registerCoreTools() {
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_task",
 		mcpsdk.WithDescription("Get full task details with optional comments, artifacts, and dependencies."),
-		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
+		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID (full UUID or 6–12 char hex short-ID prefix).")),
 		mcpsdk.WithBoolean("include_comments", mcpsdk.Description("Include comments."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_artifacts", mcpsdk.Description("Include artifacts."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_dependencies", mcpsdk.Description("Include dependencies."), mcpsdk.DefaultBool(false)),

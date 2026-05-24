@@ -75,8 +75,10 @@ func (s *Server) handleGetProject(ctx context.Context, request mcpsdk.CallToolRe
 
 func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	projectID := mcpsdk.ParseString(request, "project_id", "")
-	if projectID == "" {
-		return errResult("project_id is required")
+	workspaceID := mcpsdk.ParseString(request, "workspace_id", "")
+
+	if projectID == "" && workspaceID == "" {
+		return errResult("project_id or workspace_id is required")
 	}
 
 	params := map[string]string{}
@@ -95,6 +97,20 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 	}
 	if sort := mcpsdk.ParseString(request, "sort", ""); sort != "" {
 		params["sort_by"] = sort
+	}
+
+	limit := mcpsdk.ParseInt(request, "limit", 50)
+	if limit > 0 {
+		params["page_size"] = strconv.Itoa(limit)
+	}
+
+	// workspace_id path: global search across all projects.
+	if workspaceID != "" {
+		result, err := s.getRESTClient(ctx).SearchTasks(ctx, workspaceID, params)
+		if err != nil {
+			return errResult("failed to search tasks: %v", err)
+		}
+		return jsonResult(result)
 	}
 
 	// status_category: resolve to all matching status IDs via the API.
@@ -116,11 +132,6 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 		if len(matchedIDs) > 0 {
 			params["status"] = strings.Join(matchedIDs, ",")
 		}
-	}
-
-	limit := mcpsdk.ParseInt(request, "limit", 50)
-	if limit > 0 {
-		params["page_size"] = strconv.Itoa(limit)
 	}
 
 	result, err := s.getRESTClient(ctx).ListTasks(ctx, projectID, params)
