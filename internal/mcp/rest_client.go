@@ -805,6 +805,30 @@ func (c *RESTClient) ReleaseTask(ctx context.Context, taskID string) error {
 }
 
 // ExportWorkspaceConfig exports workspace configuration as YAML text.
+// reportSessionBody is the JSON body for POST /api/v1/agents/me/sessions/report.
+type reportSessionBody struct {
+	TokensIn      int64   `json:"tokens_in"`
+	TokensOut     int64   `json:"tokens_out"`
+	Model         string  `json:"model,omitempty"`
+	EstimatedCost float64 `json:"estimated_cost"`
+}
+
+// ReportSession accumulates token/cost usage onto the calling agent's active session.
+// Returns the session totals as returned by the server, or an error.
+func (c *RESTClient) ReportSession(ctx context.Context, tokensIn, tokensOut int64, model string, estimatedCost float64) (map[string]any, error) {
+	body := reportSessionBody{
+		TokensIn:      tokensIn,
+		TokensOut:     tokensOut,
+		Model:         model,
+		EstimatedCost: estimatedCost,
+	}
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/agents/me/sessions/report", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (c *RESTClient) ExportWorkspaceConfig(ctx context.Context, workspaceID string) (string, error) {
 	data, statusCode, err := c.doRaw(ctx, http.MethodGet, "/api/v1/workspaces/"+workspaceID+"/config/export", "", nil)
 	if err != nil {

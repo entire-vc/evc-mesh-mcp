@@ -1833,8 +1833,8 @@ func (s *Server) handleReleaseTask(ctx context.Context, request mcpsdk.CallToolR
 
 func (s *Server) handleSessionReport(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	model := mcpsdk.ParseString(request, "model", "")
-	tokensIn := int(mcpsdk.ParseFloat64(request, "tokens_in", 0))
-	tokensOut := int(mcpsdk.ParseFloat64(request, "tokens_out", 0))
+	tokensIn := int64(mcpsdk.ParseFloat64(request, "tokens_in", 0))
+	tokensOut := int64(mcpsdk.ParseFloat64(request, "tokens_out", 0))
 	cost := mcpsdk.ParseFloat64(request, "estimated_cost", 0)
 
 	stats := s.tracker.Stats()
@@ -1854,6 +1854,24 @@ func (s *Server) handleSessionReport(ctx context.Context, request mcpsdk.CallToo
 	score, detail := s.tracker.ComplianceScore()
 	stats["compliance_score"] = score
 	stats["compliance_detail"] = detail
+
+	// Persist usage onto the agent's active session in agent_sessions.
+	// Errors are non-fatal: include them in the response so the caller can inspect,
+	// but don't prevent the stats from being returned.
+	if rc := s.getRESTClient(ctx); rc != nil {
+		persisted, err := rc.ReportSession(ctx, tokensIn, tokensOut, model, cost)
+		if err != nil {
+			stats["persist_error"] = err.Error()
+		} else {
+			stats["persisted"] = true
+			if totals, ok := persisted["totals"]; ok {
+				stats["session_totals"] = totals
+			}
+			if sessionID, ok := persisted["session_id"]; ok {
+				stats["session_id"] = sessionID
+			}
+		}
+	}
 
 	return jsonResult(stats)
 }
