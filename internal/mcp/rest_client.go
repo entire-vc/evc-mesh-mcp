@@ -791,9 +791,10 @@ func (c *RESTClient) ForgetMemory(ctx context.Context, memoryID string) error {
 }
 
 // CheckoutTask acquires an exclusive TTL-based lock on a task.
-func (c *RESTClient) CheckoutTask(ctx context.Context, taskID string) (map[string]any, error) {
+func (c *RESTClient) CheckoutTask(ctx context.Context, taskID string, ttlMinutes int) (map[string]any, error) {
+	body := map[string]int{"ttl_minutes": ttlMinutes}
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/checkout", nil, &result); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/checkout", body, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
