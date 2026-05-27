@@ -1805,8 +1805,12 @@ func (s *Server) handleCheckoutTask(ctx context.Context, request mcpsdk.CallTool
 	if taskID == "" {
 		return errResult("task_id is required")
 	}
+	ttlMinutes := mcpsdk.ParseInt(request, "ttl_minutes", 120)
+	if ttlMinutes <= 0 {
+		ttlMinutes = 120
+	}
 
-	result, err := s.getRESTClient(ctx).CheckoutTask(ctx, taskID)
+	result, err := s.getRESTClient(ctx).CheckoutTask(ctx, taskID, ttlMinutes)
 	if err != nil {
 		return errResult("checkout_task failed: %v", err)
 	}

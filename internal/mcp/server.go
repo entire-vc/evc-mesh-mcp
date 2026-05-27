@@ -412,8 +412,9 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Atomic Task Checkout ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("checkout_task",
-		mcpsdk.WithDescription("Atomically acquire an exclusive lock on a task. Prevents other agents from checking out the same task simultaneously. The lock is TTL-based and will expire automatically. Use before starting work on a task to ensure exclusive access."),
+		mcpsdk.WithDescription("Atomically acquire an exclusive lock on a task. Prevents other agents from checking out the same task simultaneously. The lock is TTL-based and will expire automatically after ttl_minutes (default 120). Use before starting work on a task to ensure exclusive access."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to check out.")),
+		mcpsdk.WithNumber("ttl_minutes", mcpsdk.Description("Lock TTL in minutes (default 120).")),
 	), s.tracked("checkout_task", s.handleCheckoutTask))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("release_task",
