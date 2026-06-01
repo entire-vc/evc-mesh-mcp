@@ -361,6 +361,22 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("source_url", mcpsdk.Description("Optional URL/path to the source of this knowledge.")),
 	), s.tracked("set_project_knowledge", s.handleSetProjectKnowledge))
 
+	s.mcpServer.AddTool(mcpsdk.NewTool("pavel_decision",
+		mcpsdk.WithDescription("Record a Pavel directive as a canonical decision in project_knowledge. Broadcasts to specified agents via propagate_to tags. privacy:private records are stored but EXCLUDED from get_canonical_updates. Auto-flags private if text contains secrets."),
+		mcpsdk.WithString("text", mcpsdk.Required(), mcpsdk.Description("Full text of the decision/directive.")),
+		mcpsdk.WithString("summary", mcpsdk.Required(), mcpsdk.Description("One-line summary used as UPSERT key (dedupes same decision on same day).")),
+		mcpsdk.WithArray("propagate_to", mcpsdk.Description("Agent slugs to propagate to, e.g. ['linus','bill']. Use ['all'] for workspace-wide broadcast."), mcpsdk.WithStringItems()),
+		mcpsdk.WithString("scope", mcpsdk.Description("Optional project_id UUID. Omit for workspace-level decisions.")),
+		mcpsdk.WithString("privacy", mcpsdk.Description("'public' (default, visible in change-feed) or 'private' (recorded but hidden)."), mcpsdk.DefaultString("public")),
+	), s.tracked("pavel_decision", s.handlePavelDecision))
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("get_canonical_updates",
+		mcpsdk.WithDescription("Fetch canonical decisions broadcast since a given time. Call at ACP step 6 (session start) to catch up on Pavel directives since your previous session. Returns only privacy:public records targeted at you or all agents."),
+		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 cursor. Defaults to your previous session's start time (server-resolved). Omit on first call.")),
+		mcpsdk.WithString("agent", mcpsdk.Description("Your agent slug (e.g. 'linus'). Used to filter propagate_to:<slug> records. Omit to get only propagate_to:all records.")),
+		mcpsdk.WithString("scope", mcpsdk.Description("Optional project UUID to restrict to project-scoped decisions.")),
+	), s.tracked("get_canonical_updates", s.handleGetCanonicalUpdates))
+
 	// --- Utility ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_projects",
 		mcpsdk.WithDescription("List available projects in the workspace."),
