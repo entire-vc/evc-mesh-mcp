@@ -1677,6 +1677,30 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	return jsonResult(result)
 }
 
+func (s *Server) handleRecallGraph(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	session := s.getSession(ctx)
+	if session == nil {
+		return errResult("not authenticated: no agent session")
+	}
+
+	query := mcpsdk.ParseString(request, "query", "")
+	if query == "" {
+		return errResult("query is required")
+	}
+
+	hops := mcpsdk.ParseInt(request, "hops", 2)
+	weightThreshold := mcpsdk.ParseFloat64(request, "weight_threshold", 0.3)
+	projectID := mcpsdk.ParseString(request, "project_id", "")
+	taskID := mcpsdk.ParseString(request, "task_id", "")
+
+	result, err := s.getRESTClient(ctx).RecallGraph(ctx, session.WorkspaceID.String(), query, hops, weightThreshold, projectID, taskID)
+	if err != nil {
+		return errResult("recall_graph failed: %v", err)
+	}
+
+	return jsonResult(result)
+}
+
 func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	session := s.getSession(ctx)
 	if session == nil {

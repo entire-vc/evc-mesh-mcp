@@ -334,6 +334,15 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithNumber("offset", mcpsdk.Description("Pagination offset (default 0).")),
 	), s.tracked("recall", s.handleRecall))
 
+	s.mcpServer.AddTool(mcpsdk.NewTool("recall_graph",
+		mcpsdk.WithDescription("Multi-hop knowledge-graph traversal: seeds memories via recall, then BFS-expands along KG edges weighted by relevance. Returns results ranked by composite score (seed_score × Π edge_weights) with provenance tags (via:recall | via:graph). Use when you suspect the answer lives one or two hops from an initial topic match — e.g. «what do we know about X's dependencies» or «recall everything related to auth»."),
+		mcpsdk.WithString("query", mcpsdk.Required(), mcpsdk.Description("Natural language query to seed the graph traversal.")),
+		mcpsdk.WithNumber("hops", mcpsdk.Description("BFS hop depth (default 2, max 5).")),
+		mcpsdk.WithNumber("weight_threshold", mcpsdk.Description("Minimum edge weight to follow (default 0.3, range 0–1). Lower = broader traversal.")),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Filter seed recall and graph expansion to a specific project.")),
+		mcpsdk.WithString("task_id", mcpsdk.Description("Optional task UUID used as cache-key discriminator (5-min in-process TTL per task).")),
+	), s.tracked("recall_graph", s.handleRecallGraph))
+
 	s.mcpServer.AddTool(mcpsdk.NewTool("remember",
 		mcpsdk.WithDescription("Save knowledge to persistent memory. Use for decisions, conventions, preferences. UPSERT by key — calling with same key updates the existing entry."),
 		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Slug key for UPSERT (e.g. 'api-convention', 'license-decision').")),

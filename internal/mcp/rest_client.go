@@ -792,6 +792,32 @@ func (c *RESTClient) ForgetMemory(ctx context.Context, memoryID string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/memories/"+memoryID, nil, nil)
 }
 
+// RecallGraph performs a multi-hop knowledge-graph traversal.
+// Seeds from hybrid recall, then BFS-expands along memory_edges.
+func (c *RESTClient) RecallGraph(ctx context.Context, workspaceID, query string, hops int, weightThreshold float64, projectID, taskID string) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("query", query)
+	params.Set("workspace_id", workspaceID)
+	if hops > 0 {
+		params.Set("hops", fmt.Sprintf("%d", hops))
+	}
+	if weightThreshold > 0 {
+		params.Set("weight_threshold", fmt.Sprintf("%g", weightThreshold))
+	}
+	if projectID != "" {
+		params.Set("project_id", projectID)
+	}
+	if taskID != "" {
+		params.Set("task_id", taskID)
+	}
+	path := "/api/v1/memories/recall_graph?" + params.Encode()
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // CheckoutTask acquires an exclusive TTL-based lock on a task.
 func (c *RESTClient) CheckoutTask(ctx context.Context, taskID string, ttlMinutes int) (map[string]any, error) {
 	body := map[string]int{"ttl_minutes": ttlMinutes}
