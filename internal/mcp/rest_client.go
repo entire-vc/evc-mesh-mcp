@@ -742,9 +742,7 @@ func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams)
 	if p.RelevanceMin > 0 {
 		params.Set("relevance_min", fmt.Sprintf("%g", p.RelevanceMin))
 	}
-	if p.ImportanceMin > 0 {
-		params.Set("importance_score_min", fmt.Sprintf("%g", p.ImportanceMin))
-	}
+	params.Set("min_importance", fmt.Sprintf("%g", p.ImportanceMin))
 	if p.ApplyRecencyDecay {
 		params.Set("apply_recency_decay", "true")
 	}
