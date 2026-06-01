@@ -1655,6 +1655,7 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	applyDecay := mcpsdk.ParseBoolean(request, "apply_recency_decay", false)
 	orderBy := mcpsdk.ParseString(request, "order_by", "")
 	includeExpired := mcpsdk.ParseBoolean(request, "include_expired", false)
+	includeArchived := mcpsdk.ParseBoolean(request, "include_archived", false)
 
 	result, err := s.getRESTClient(ctx).RecallMemories(ctx, RecallMemoriesParams{
 		Query:             query,
@@ -1671,6 +1672,7 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 		ApplyRecencyDecay: applyDecay,
 		OrderBy:           orderBy,
 		IncludeExpired:    includeExpired,
+		IncludeArchived:   includeArchived,
 		Limit:             limit,
 		Offset:            offset,
 	})
