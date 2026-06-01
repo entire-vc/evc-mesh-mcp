@@ -830,6 +830,23 @@ func (c *RESTClient) ReportSession(ctx context.Context, tokensIn, tokensOut int6
 	return result, nil
 }
 
+// GetCanonicalUpdates fetches canonical decisions recorded since a given timestamp.
+func (c *RESTClient) GetCanonicalUpdates(ctx context.Context, params map[string]string) (map[string]any, error) {
+	path := "/api/v1/canonical_updates"
+	sep := "?"
+	for k, v := range params {
+		if v != "" {
+			path += sep + k + "=" + url.QueryEscape(v)
+			sep = "&"
+		}
+	}
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (c *RESTClient) ExportWorkspaceConfig(ctx context.Context, workspaceID string) (string, error) {
 	data, statusCode, err := c.doRaw(ctx, http.MethodGet, "/api/v1/workspaces/"+workspaceID+"/config/export", "", nil)
 	if err != nil {

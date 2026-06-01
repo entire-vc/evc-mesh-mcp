@@ -587,6 +587,23 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithDescription("Delete a recurring task schedule. Existing task instances are not affected."),
 		mcpsdk.WithString("recurring_schedule_id", mcpsdk.Required(), mcpsdk.Description("UUID of the recurring schedule to delete.")),
 	), s.tracked("delete_recurring_schedule", s.handleDeleteRecurringSchedule))
+
+	// --- Canonical decisions (C3) ---
+	s.mcpServer.AddTool(mcpsdk.NewTool("pavel_decision",
+		mcpsdk.WithDescription("Record a Pavel directive as a structured canonical decision in project knowledge. Auto-flags privacy:private if text contains secrets. Idempotent: same (summary, scope) upserts instead of duplicating."),
+		mcpsdk.WithString("scope", mcpsdk.Required(), mcpsdk.Description("Project UUID to store the decision in.")),
+		mcpsdk.WithString("text", mcpsdk.Required(), mcpsdk.Description("Full decision text. Auto-flagged private if it contains secrets/tokens.")),
+		mcpsdk.WithString("propagate_to", mcpsdk.Required(), mcpsdk.Description("Comma-separated agent slugs to propagate to, or 'all' for all agents.")),
+		mcpsdk.WithString("summary", mcpsdk.Required(), mcpsdk.Description("One-line summary used as the idempotency key.")),
+		mcpsdk.WithString("privacy", mcpsdk.Description("'public' (default) or 'private'. Private decisions are recorded but excluded from canonical_updates feed.")),
+	), s.tracked("pavel_decision", s.handlePavelDecision))
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("get_canonical_updates",
+		mcpsdk.WithDescription("Fetch canonical decisions recorded since a given timestamp. Call at ACP step 6 on spawn to catch up on Pavel directives since your last session. Returns structured list of decisions with propagation targets."),
+		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 timestamp cursor. Default: server uses your previous session start time.")),
+		mcpsdk.WithString("agent", mcpsdk.Description("Agent slug to filter decisions targeted to. Default: server uses calling agent's context.")),
+		mcpsdk.WithString("scope", mcpsdk.Description("Project UUID to narrow results. Default: all projects in workspace.")),
+	), s.tracked("get_canonical_updates", s.handleGetCanonicalUpdates))
 }
 
 // --- Helper functions ---
