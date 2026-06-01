@@ -1881,3 +1881,270 @@ func (s *Server) handleSessionReport(ctx context.Context, request mcpsdk.CallToo
 
 	return jsonResult(stats)
 }
+
+// ============================================================================
+// get_canonical — canonical knowledge layer read tool (Memory E3 / C2)
+// ============================================================================
+
+// canonicalEntry is a single result record returned by get_canonical.
+type canonicalEntry struct {
+	Source    string `json:"source"`
+	Key       string `json:"key"`
+	Content   string `json:"content"`
+	UpdatedAt string `json:"updated_at"`
+	Project   string `json:"project,omitempty"`
+}
+
+// slugVariants returns all known slug aliases for a project so that workspace
+// memory queries find records fragmented across multiple slug labels.
+// Source: Phase A audit — one logical project written under 2-3 slug variants.
+var slugVariantTable = map[string][]string{
+	"evc-mesh":       {"evc-mesh", "mesh-dev", "mesh"},
+	"mesh-dev":       {"evc-mesh", "mesh-dev", "mesh"},
+	"mesh":           {"evc-mesh", "mesh-dev", "mesh"},
+	"evc-spark":      {"evc-spark", "spark"},
+	"spark":          {"evc-spark", "spark"},
+	"evc-team-relay": {"evc-team-relay", "team-relay"},
+	"team-relay":     {"evc-team-relay", "team-relay"},
+}
+
+func slugVariants(slug string) []string {
+	if v, ok := slugVariantTable[slug]; ok {
+		return v
+	}
+	return []string{slug}
+}
+
+// canonicalSlug normalises known project slug aliases to a primary slug.
+func canonicalSlug(slug string) string {
+	aliases := map[string]string{
+		"mesh-dev":   "evc-mesh",
+		"mesh":       "evc-mesh",
+		"spark":      "evc-spark",
+		"team-relay": "evc-team-relay",
+	}
+	if c, ok := aliases[slug]; ok {
+		return c
+	}
+	return slug
+}
+
+// resolveProjectID finds the UUID of the first project whose slug matches any
+// of the given variants by listing projects in the workspace.
+func resolveProjectID(ctx context.Context, client *RESTClient, workspaceID string, slugs []string) string {
+	result, err := client.ListProjects(ctx, workspaceID, false)
+	if err != nil {
+		return ""
+	}
+	projects, _ := result["projects"].([]any)
+	slugSet := make(map[string]struct{}, len(slugs))
+	for _, s := range slugs {
+		slugSet[s] = struct{}{}
+	}
+	for _, p := range projects {
+		proj, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, field := range []string{"slug", "name"} {
+			if v, ok := proj[field].(string); ok {
+				if _, found := slugSet[strings.ToLower(v)]; found {
+					if id, ok := proj["id"].(string); ok {
+						return id
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// stringsFromAnyMap extracts a []string from a []any field on a map[string]any.
+func stringsFromAnyMap(m map[string]any, field string) []string {
+	raw, _ := m[field].([]any)
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// projectTagFromMemory returns the first "project:<slug>" tag value in a memory map.
+func projectTagFromMemory(m map[string]any) string {
+	for _, t := range stringsFromAnyMap(m, "tags") {
+		if strings.HasPrefix(t, "project:") {
+			return strings.TrimPrefix(t, "project:")
+		}
+	}
+	return ""
+}
+
+// memoryTimestamp returns the best available timestamp from a memory map.
+func memoryTimestamp(m map[string]any) string {
+	for _, f := range []string{"updated_at", "created_at", "ts"} {
+		if v, ok := m[f].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func (s *Server) handleGetCanonical(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	session := s.getSession(ctx)
+	if session == nil {
+		return errResult("not authenticated: no agent session")
+	}
+
+	topic := mcpsdk.ParseString(request, "topic", "")
+	if topic == "" {
+		return errResult("topic is required")
+	}
+	projectSlug := mcpsdk.ParseString(request, "project", "")
+	client := s.getRESTClient(ctx)
+	wsID := session.WorkspaceID.String()
+
+	var results []canonicalEntry
+	seen := make(map[string]struct{})
+	dedupKey := func(src, key string) string { return src + "\x00" + key }
+
+	// --- Source 1: workspace_memories tagged kind:canonical ---
+	// Filtering for kind:canonical implicitly excludes session-checkpoint entries
+	// (those are tagged kind:session-checkpoint, not kind:canonical).
+	wsTags := []string{"kind:canonical"}
+	if projectSlug != "" {
+		// Expand all slug variants so fragmented entries are not silently missed.
+		for _, v := range slugVariants(projectSlug) {
+			wsTags = append(wsTags, "project:"+v)
+		}
+	}
+	wsMemories, wsErr := client.RecallMemories(ctx, RecallMemoriesParams{
+		Query:             topic,
+		WorkspaceID:       wsID,
+		TagsAny:           wsTags,
+		ApplyRecencyDecay: true,
+		OrderBy:           "relevance:desc",
+		Limit:             25,
+	})
+	if wsErr == nil {
+		memories, _ := wsMemories["memories"].([]any)
+		for _, raw := range memories {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			// Defensive guard: never surface session-checkpoints.
+			if kind, _ := m["kind"].(string); kind == "session-checkpoint" {
+				continue
+			}
+			// When a project filter is active, tags_any may have matched on a
+			// "project:<slug>" tag without kind:canonical. Keep only canonical entries.
+			if projectSlug != "" {
+				isCanonical := false
+				if kind, _ := m["kind"].(string); kind == "canonical" {
+					isCanonical = true
+				}
+				if !isCanonical {
+					for _, t := range stringsFromAnyMap(m, "tags") {
+						if t == "kind:canonical" {
+							isCanonical = true
+							break
+						}
+					}
+				}
+				if !isCanonical {
+					continue
+				}
+			}
+			key, _ := m["key"].(string)
+			content, _ := m["content"].(string)
+			dk := dedupKey("workspace_memories", key)
+			if _, dup := seen[dk]; dup {
+				continue
+			}
+			seen[dk] = struct{}{}
+			results = append(results, canonicalEntry{
+				Source:    "workspace_memories",
+				Key:       key,
+				Content:   content,
+				UpdatedAt: memoryTimestamp(m),
+				Project:   canonicalSlug(projectTagFromMemory(m)),
+			})
+		}
+	}
+
+	// --- Source 2: project_memories (key LIKE canonical:% or kind:canonical) ---
+	// Requires resolving the project slug to a UUID via ListProjects.
+	// Skipped gracefully if slug is absent, unresolvable, or GetProjectKnowledge fails.
+	if projectSlug != "" {
+		projID := resolveProjectID(ctx, client, wsID, slugVariants(projectSlug))
+		if projID != "" {
+			pkResult, pkErr := client.GetProjectKnowledge(ctx, projID)
+			if pkErr == nil {
+				topicLower := strings.ToLower(topic)
+				pms, _ := pkResult["project_memories"].([]any)
+				for _, raw := range pms {
+					pm, ok := raw.(map[string]any)
+					if !ok {
+						continue
+					}
+					key, _ := pm["key"].(string)
+					kind, _ := pm["kind"].(string)
+					if !strings.HasPrefix(key, "canonical:") && kind != "canonical" {
+						continue
+					}
+					// Basic topic relevance check against key + content.
+					content, _ := pm["content"].(string)
+					if content == "" {
+						content, _ = pm["value"].(string)
+					}
+					if topicLower != "" && !strings.Contains(strings.ToLower(key+" "+content), topicLower) {
+						continue
+					}
+					dk := dedupKey("project_memories", key)
+					if _, dup := seen[dk]; dup {
+						continue
+					}
+					seen[dk] = struct{}{}
+					results = append(results, canonicalEntry{
+						Source:    "project_memories",
+						Key:       key,
+						Content:   content,
+						UpdatedAt: memoryTimestamp(pm),
+						Project:   canonicalSlug(projectSlug),
+					})
+				}
+			}
+		}
+	}
+
+	merged := buildCanonicalMarkdown(results, topic)
+	return jsonResult(map[string]any{
+		"topic":           topic,
+		"count":           len(results),
+		"results":         results,
+		"merged_markdown": merged,
+	})
+}
+
+// buildCanonicalMarkdown renders canonical entries as a readable markdown document.
+func buildCanonicalMarkdown(entries []canonicalEntry, topic string) string {
+	if len(entries) == 0 {
+		return fmt.Sprintf("No canonical entries found for topic: %s\n", topic)
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Canonical knowledge: %s\n\n", topic))
+	sb.WriteString(fmt.Sprintf("*%d record(s)*\n\n", len(entries)))
+	for _, e := range entries {
+		sb.WriteString(fmt.Sprintf("## %s\n", e.Key))
+		proj := e.Project
+		if proj == "" {
+			proj = "—"
+		}
+		sb.WriteString(fmt.Sprintf("_source: %s · project: %s · updated: %s_\n\n", e.Source, proj, e.UpdatedAt))
+		sb.WriteString(e.Content)
+		sb.WriteString("\n\n---\n\n")
+	}
+	return sb.String()
+}
