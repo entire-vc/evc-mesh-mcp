@@ -701,6 +701,7 @@ type RecallMemoriesParams struct {
 	Since             string
 	Until             string
 	RelevanceMin      float64
+	ImportanceMin     float64
 	ApplyRecencyDecay bool
 	OrderBy           string
 	IncludeExpired    bool
@@ -741,6 +742,7 @@ func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams)
 	if p.RelevanceMin > 0 {
 		params.Set("relevance_min", fmt.Sprintf("%g", p.RelevanceMin))
 	}
+	params.Set("min_importance", fmt.Sprintf("%g", p.ImportanceMin))
 	if p.ApplyRecencyDecay {
 		params.Set("apply_recency_decay", "true")
 	}
