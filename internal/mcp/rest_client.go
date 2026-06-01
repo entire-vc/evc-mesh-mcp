@@ -850,3 +850,23 @@ func (c *RESTClient) ExportWorkspaceConfig(ctx context.Context, workspaceID stri
 	}
 	return string(data), nil
 }
+
+// GetCanonicalUpdates calls GET /api/v1/canonical_updates.
+// params keys: since (RFC3339), agent (slug), scope (project UUID) — all optional/empty.
+func (c *RESTClient) GetCanonicalUpdates(ctx context.Context, params map[string]string) (map[string]any, error) {
+	path := "/api/v1/canonical_updates"
+	q := url.Values{}
+	for k, v := range params {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}

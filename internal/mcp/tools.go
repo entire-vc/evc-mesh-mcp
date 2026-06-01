@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1880,4 +1881,129 @@ func (s *Server) handleSessionReport(ctx context.Context, request mcpsdk.CallToo
 	}
 
 	return jsonResult(stats)
+}
+
+// ============================================================================
+// pavel_decision / get_canonical_updates
+// ============================================================================
+
+// secretPattern matches text that should be auto-flagged privacy:private.
+// Matches: password/token/secret/bearer/api-key keywords OR continuous hex ≥40 chars.
+var secretPattern = regexp.MustCompile(`(?i)\b(password|api[_-]?key|secret|bearer|private[_-]?key)\b|agk_\w+|[0-9a-fA-F]{40,}`)
+
+// containsSecret reports whether text matches a secret/credential pattern.
+func containsSecret(text string) bool {
+	return secretPattern.MatchString(text)
+}
+
+// slugify converts a summary string to a URL-safe slug (max 50 chars).
+func slugify(s string) string {
+	s = strings.ToLower(s)
+	s = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '-'
+	}, s)
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+	s = strings.Trim(s, "-")
+	if len(s) > 50 {
+		s = s[:50]
+	}
+	return s
+}
+
+func (s *Server) handlePavelDecision(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	session := s.getSession(ctx)
+	if session == nil {
+		return errResult("not authenticated: no agent session")
+	}
+
+	text := mcpsdk.ParseString(request, "text", "")
+	summary := mcpsdk.ParseString(request, "summary", "")
+	if text == "" || summary == "" {
+		return errResult("text and summary are required")
+	}
+
+	projectID := mcpsdk.ParseString(request, "scope", "")
+	privacy := mcpsdk.ParseString(request, "privacy", "public")
+	propagateTo := parseStringSlice(request, "propagate_to")
+
+	// Backstop: auto-flag private if text matches secret pattern.
+	if privacy == "public" && containsSecret(text) {
+		privacy = "private"
+	}
+
+	day := time.Now().UTC().Format("2006-01-02")
+	tags := []string{
+		"kind:canonical-decision",
+		"owner:riker",
+		"source:pavel-tg",
+		"privacy:" + privacy,
+	}
+	for _, target := range propagateTo {
+		if target != "" {
+			tags = append(tags, "propagate_to:"+target)
+		}
+	}
+
+	key := "canonical-decision:" + day + ":" + slugify(summary)
+
+	bodyScope := "workspace"
+	body := map[string]any{
+		"workspace_id": session.WorkspaceID.String(),
+		"key":          key,
+		"content":      text,
+		"scope":        bodyScope,
+		"tags":         tags,
+		"source_type":  "human",
+	}
+	if projectID != "" {
+		body["project_id"] = projectID
+		body["scope"] = "project"
+	}
+
+	result, err := s.getRESTClient(ctx).Remember(ctx, body)
+	if err != nil {
+		return errResult("pavel_decision failed: %v", err)
+	}
+
+	var id, recordedAt string
+	if mem, ok := result["memory"].(map[string]any); ok {
+		if v, ok2 := mem["id"].(string); ok2 {
+			id = v
+		}
+		if v, ok2 := mem["created_at"].(string); ok2 {
+			recordedAt = v
+		}
+	}
+
+	return jsonResult(map[string]any{
+		"id":          id,
+		"recorded_at": recordedAt,
+		"affects":     propagateTo,
+		"privacy":     privacy,
+		"key":         key,
+	})
+}
+
+func (s *Server) handleGetCanonicalUpdates(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	since := mcpsdk.ParseString(request, "since", "")
+	agentSlug := mcpsdk.ParseString(request, "agent", "")
+	scope := mcpsdk.ParseString(request, "scope", "")
+
+	params := map[string]string{
+		"since": since,
+		"agent": agentSlug,
+		"scope": scope,
+	}
+
+	result, err := s.getRESTClient(ctx).GetCanonicalUpdates(ctx, params)
+	if err != nil {
+		return errResult("get_canonical_updates failed: %v", err)
+	}
+
+	return jsonResult(result)
 }
