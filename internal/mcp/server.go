@@ -587,6 +587,13 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithDescription("Delete a recurring task schedule. Existing task instances are not affected."),
 		mcpsdk.WithString("recurring_schedule_id", mcpsdk.Required(), mcpsdk.Description("UUID of the recurring schedule to delete.")),
 	), s.tracked("delete_recurring_schedule", s.handleDeleteRecurringSchedule))
+
+	// --- Canonical knowledge layer ---
+	s.mcpServer.AddTool(mcpsdk.NewTool("get_canonical",
+		mcpsdk.WithDescription("Query the canonical knowledge layer: returns curated facts, decisions, and strategy docs for a topic, merged from project_memories (key canonical:*) and workspace_memories (kind:canonical). Excludes ephemeral session-checkpoints. Slug aliases are resolved automatically (e.g. mesh-dev == evc-mesh). Call before authoring any doc that might conflict with existing canonical knowledge."),
+		mcpsdk.WithString("topic", mcpsdk.Required(), mcpsdk.Description("Topic or keyword to search (e.g. 'auth middleware', 'evc-spark roadmap').")),
+		mcpsdk.WithString("project", mcpsdk.Description("Optional project slug to narrow results (e.g. 'evc-mesh', 'evc-spark'). Aliases resolved automatically.")),
+	), s.tracked("get_canonical", s.handleGetCanonical))
 }
 
 // --- Helper functions ---
