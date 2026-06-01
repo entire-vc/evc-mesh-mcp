@@ -1677,6 +1677,36 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	return jsonResult(result)
 }
 
+func (s *Server) handleRecallWithGraph(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	session := s.getSession(ctx)
+	if session == nil {
+		return errResult("not authenticated: no agent session")
+	}
+	query := mcpsdk.ParseString(request, "q", "")
+	if query == "" {
+		return errResult("q (query) is required")
+	}
+	projectID := mcpsdk.ParseString(request, "project_id", "")
+	scope := mcpsdk.ParseString(request, "scope", "")
+	tags := parseStringSlice(request, "tags")
+	limit := int(mcpsdk.ParseFloat64(request, "limit", 20))
+	hops := int(mcpsdk.ParseFloat64(request, "hops", 1))
+
+	result, err := s.getRESTClient(ctx).RecallWithGraph(ctx, RecallWithGraphParams{
+		Query:       query,
+		WorkspaceID: session.WorkspaceID.String(),
+		ProjectID:   projectID,
+		Scope:       scope,
+		Tags:        tags,
+		Limit:       limit,
+		Hops:        hops,
+	})
+	if err != nil {
+		return errResult("recall_with_graph failed: %v", err)
+	}
+	return jsonResult(result)
+}
+
 func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	session := s.getSession(ctx)
 	if session == nil {

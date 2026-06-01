@@ -769,6 +769,53 @@ func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams)
 	return result, nil
 }
 
+// RecallWithGraphParams holds parameters for graph-expanded memory recall.
+type RecallWithGraphParams struct {
+	Query       string
+	WorkspaceID string
+	ProjectID   string
+	Scope       string
+	Tags        []string
+	Limit       int
+	Hops        int
+}
+
+// RecallWithGraph calls GET /api/v1/memories/recall-with-graph with graph traversal.
+// Returns direct RRF matches plus graph-connected memories boosted by edge weight.
+func (c *RESTClient) RecallWithGraph(ctx context.Context, p RecallWithGraphParams) (map[string]any, error) {
+	params := make(url.Values)
+	if p.Query != "" {
+		params.Set("q", p.Query)
+	}
+	if p.WorkspaceID != "" {
+		params.Set("workspace_id", p.WorkspaceID)
+	}
+	if p.ProjectID != "" {
+		params.Set("project_id", p.ProjectID)
+	}
+	if p.Scope != "" {
+		params.Set("scope", p.Scope)
+	}
+	for _, tag := range p.Tags {
+		params.Add("tags", tag)
+	}
+	if p.Limit > 0 {
+		params.Set("limit", fmt.Sprintf("%d", p.Limit))
+	}
+	if p.Hops > 0 {
+		params.Set("hops", fmt.Sprintf("%d", p.Hops))
+	}
+	path := "/api/v1/memories/recall-with-graph"
+	if encoded := params.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // SetProjectKnowledge upserts a project-scoped knowledge entry by key.
 func (c *RESTClient) SetProjectKnowledge(ctx context.Context, projectID string, body map[string]any) (map[string]any, error) {
 	var result map[string]any

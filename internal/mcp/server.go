@@ -334,6 +334,16 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithNumber("offset", mcpsdk.Description("Pagination offset (default 0).")),
 	), s.tracked("recall", s.handleRecall))
 
+	s.mcpServer.AddTool(mcpsdk.NewTool("recall_with_graph",
+		mcpsdk.WithDescription("Search memory with Knowledge Graph expansion. Returns direct RRF matches PLUS graph-connected memories boosted by edge weight. Use when you want broader context — related decisions, connected incidents, derived learnings. Via field indicates 'rrf' (direct hit) or 'graph' (connected via edge)."),
+		mcpsdk.WithString("q", mcpsdk.Required(), mcpsdk.Description("Search query (keywords or natural language).")),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Filter to a specific project.")),
+		mcpsdk.WithString("scope", mcpsdk.Description("Memory scope: workspace, project, or agent.")),
+		mcpsdk.WithArray("tags", mcpsdk.Description("AND-filter: memory must contain ALL listed tags."), mcpsdk.WithStringItems()),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results to return (default 20).")),
+		mcpsdk.WithNumber("hops", mcpsdk.Description("Graph traversal depth (currently capped at 1).")),
+	), s.tracked("recall_with_graph", s.handleRecallWithGraph))
+
 	s.mcpServer.AddTool(mcpsdk.NewTool("remember",
 		mcpsdk.WithDescription("Save knowledge to persistent memory. Use for decisions, conventions, preferences. UPSERT by key — calling with same key updates the existing entry."),
 		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Slug key for UPSERT (e.g. 'api-convention', 'license-decision').")),
