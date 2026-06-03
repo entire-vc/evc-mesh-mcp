@@ -242,6 +242,45 @@ PostgreSQL / Redis / NATS / S3
 
 The MCP server is a lightweight proxy — it translates MCP tool calls into REST API requests. No direct database access needed.
 
+## Deploy checklist (prod server — no CI)
+
+evc-mesh-mcp has no CD pipeline; deploys are manual. **Mandatory order** (per
+[CLAUDE-workflow.md §1b Deploy Discipline](https://github.com/entire-vc/evc-mesh/blob/main/CLAUDE-workflow.md)):
+`migrate (goose up)` → `binary swap` → `restart`. Never swap the binary before migrations pass.
+
+```bash
+# 1. Build for the prod target
+GOOS=linux GOARCH=amd64 go build -o evc-mesh-mcp .
+
+# 2. Copy binary to prod
+scp evc-mesh-mcp root@prod-host:/opt/evc-mesh-mcp/evc-mesh-mcp.new
+
+# 3. On the prod host: run migrations FIRST, then swap binary
+ssh root@prod-host
+
+  # STEP 1 — Run evc-mesh DB migrations (mcp server reads the same DB).
+  # goose CLI is not installed on the host — use the official docker image.
+  # If this exits non-zero, STOP — do NOT swap the binary.
+  DB_URL=$(grep ^DATABASE_URL /opt/evc-mesh/.env.prod | cut -d= -f2-)
+  docker run --rm --network host \
+    -v /opt/evc-mesh/migrations:/migrations \
+    ghcr.io/pressly/goose:latest \
+    goose -dir /migrations postgres "$DB_URL" up
+
+  # STEP 2 — Swap binary (only after migrations succeed)
+  mv /opt/evc-mesh-mcp/evc-mesh-mcp /opt/evc-mesh-mcp/evc-mesh-mcp.bak.$(date +%Y%m%d-%H%M%S)
+  mv /opt/evc-mesh-mcp/evc-mesh-mcp.new /opt/evc-mesh-mcp/evc-mesh-mcp
+
+  # STEP 3 — Restart
+  sudo systemctl restart evc-mesh-mcp
+
+  # STEP 4 — Smoke test
+  curl -sf http://localhost:8081/health || echo "SMOKE FAILED"
+```
+
+> evc-mesh-mcp does not run its own migrations — it relies on the evc-mesh API's
+> schema. The goose step above ensures the schema matches before the new binary serves traffic.
+
 ## Related
 
 - [evc-mesh](https://github.com/entire-vc/evc-mesh) — Core platform (API + Web UI)
