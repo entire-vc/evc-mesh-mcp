@@ -260,6 +260,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("parent_task_id", mcpsdk.Description("Parent task ID for subtask.")),
 		mcpsdk.WithString("due_date", mcpsdk.Description("Due date in RFC3339 format.")),
 		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours for the task.")),
+		mcpsdk.WithString("delegation_level", mcpsdk.Description("Delegation level: auto, review, supervised.")),
 	), s.tracked("create_task", s.handleCreateTask))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("update_task",

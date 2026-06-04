@@ -260,6 +260,9 @@ func (s *Server) handleCreateTask(ctx context.Context, request mcpsdk.CallToolRe
 	if cfMap := mcpsdk.ParseStringMap(request, "custom_fields", nil); cfMap != nil {
 		body["custom_fields"] = cfMap
 	}
+	if dl := mcpsdk.ParseString(request, "delegation_level", ""); dl != "" {
+		body["delegation_level"] = dl
+	}
 
 	result, err := s.getRESTClient(ctx).CreateTask(ctx, projectID, body)
 	if err != nil {
