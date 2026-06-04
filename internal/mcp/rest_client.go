@@ -803,8 +803,11 @@ func (c *RESTClient) CheckoutTask(ctx context.Context, taskID string, ttlMinutes
 }
 
 // ReleaseTask releases the exclusive lock on a task acquired via CheckoutTask.
-func (c *RESTClient) ReleaseTask(ctx context.Context, taskID string) error {
-	return c.doJSON(ctx, http.MethodDelete, "/api/v1/tasks/"+taskID+"/checkout", nil, nil)
+// checkoutToken must be the value returned by CheckoutTask; the API rejects releases
+// that do not present the matching token.
+func (c *RESTClient) ReleaseTask(ctx context.Context, taskID, checkoutToken string) error {
+	body := map[string]string{"checkout_token": checkoutToken}
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/tasks/"+taskID+"/checkout", body, nil)
 }
 
 // ExportWorkspaceConfig exports workspace configuration as YAML text.
