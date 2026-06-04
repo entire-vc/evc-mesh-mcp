@@ -1818,6 +1818,12 @@ func (s *Server) handleCheckoutTask(ctx context.Context, request mcpsdk.CallTool
 		return errResult("checkout_task failed: %v", err)
 	}
 
+	// Cache the token so release_task can forward it without requiring the
+	// agent to track it manually (Option B — schema stays task_id-only).
+	if token, ok := result["checkout_token"].(string); ok && token != "" {
+		s.checkouts.Store(taskID, token)
+	}
+
 	return jsonResult(result)
 }
 
@@ -1827,9 +1833,16 @@ func (s *Server) handleReleaseTask(ctx context.Context, request mcpsdk.CallToolR
 		return errResult("task_id is required")
 	}
 
-	if err := s.getRESTClient(ctx).ReleaseTask(ctx, taskID); err != nil {
+	token, ok := s.checkouts.Load(taskID)
+	if !ok {
+		return errResult("release_task: no checkout_token found for task %s — checkout may have been acquired in a different session or already released", taskID)
+	}
+	checkoutToken, _ := token.(string)
+
+	if err := s.getRESTClient(ctx).ReleaseTask(ctx, taskID, checkoutToken); err != nil {
 		return errResult("release_task failed: %v", err)
 	}
+	s.checkouts.Delete(taskID)
 
 	return jsonResult(map[string]any{"released": true, "task_id": taskID})
 }

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
@@ -94,6 +95,9 @@ type Server struct {
 	restClient *RESTClient   // default REST client; may be overridden per-request in SSE mode
 	tracker    *SessionTracker
 	profile    string
+	// checkouts stores checkout_token keyed by task_id for graceful release.
+	// Populated by handleCheckoutTask; consumed and cleared by handleReleaseTask.
+	checkouts sync.Map
 }
 
 // getSession returns the AgentSession for the current request.
