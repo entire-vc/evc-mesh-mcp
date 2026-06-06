@@ -705,6 +705,7 @@ type RecallMemoriesParams struct {
 	ApplyRecencyDecay bool
 	OrderBy           string
 	IncludeExpired    bool
+	IncludeArchived   bool
 	Limit             int
 	Offset            int
 }
@@ -751,6 +752,9 @@ func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams)
 	}
 	if p.IncludeExpired {
 		params.Set("include_expired", "true")
+	}
+	if p.IncludeArchived {
+		params.Set("include_archived", "true")
 	}
 	if p.Limit > 0 {
 		params.Set("limit", fmt.Sprintf("%d", p.Limit))
