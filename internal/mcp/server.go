@@ -90,11 +90,12 @@ func NewAgentSession(agentID, workspaceID, agentName, agentType string) (AgentSe
 
 // Server wraps an mcp-go MCPServer with a REST API client.
 type Server struct {
-	mcpServer  *mcpserver.MCPServer
-	session    *AgentSession // static session for stdio mode; nil for SSE mode
-	restClient *RESTClient   // default REST client; may be overridden per-request in SSE mode
-	tracker    *SessionTracker
-	profile    string
+	mcpServer   *mcpserver.MCPServer
+	session     *AgentSession // static session for stdio mode; nil for SSE mode
+	restClient  *RESTClient   // default REST client; may be overridden per-request in SSE mode
+	tracker     *SessionTracker
+	ReadCounter *ReadCounter // per-agent/per-tool read counter; exported for main.go endpoint
+	profile     string
 	// checkouts stores checkout_token keyed by task_id for graceful release.
 	// Populated by handleCheckoutTask; consumed and cleared by handleReleaseTask.
 	checkouts sync.Map
@@ -144,11 +145,12 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 
 	s := &Server{
-		mcpServer:  mcpserver.NewMCPServer(serverName, "0.1.0"),
-		session:    cfg.Session,
-		restClient: cfg.RESTClient,
-		tracker:    NewSessionTracker(),
-		profile:    profile,
+		mcpServer:   mcpserver.NewMCPServer(serverName, "0.1.0"),
+		session:     cfg.Session,
+		restClient:  cfg.RESTClient,
+		tracker:     NewSessionTracker(),
+		ReadCounter: NewReadCounter(),
+		profile:     profile,
 	}
 
 	s.registerCoreTools()
@@ -166,6 +168,20 @@ func (s *Server) tracked(name string, handler func(ctx context.Context, req mcps
 		}
 		return handler(ctx, req)
 	}
+}
+
+// recordMemoryRead increments the ReadCounter for the calling agent and tool.
+// Call this after a successful memory-read tool invocation.
+func (s *Server) recordMemoryRead(ctx context.Context, toolName string) {
+	if s.ReadCounter == nil {
+		return
+	}
+	session := s.getSession(ctx)
+	agentID := "unknown"
+	if session != nil {
+		agentID = session.AgentID.String()
+	}
+	s.ReadCounter.Inc(agentID, toolName)
 }
 
 // contextWarning returns a non-empty warning string when the agent has not yet
