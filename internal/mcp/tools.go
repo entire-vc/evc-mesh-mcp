@@ -901,6 +901,7 @@ func (s *Server) handleGetTaskContext(ctx context.Context, request mcpsdk.CallTo
 		}
 	}
 
+	s.recordMemoryRead(ctx, "get_task_context")
 	return jsonResult(result)
 }
 
