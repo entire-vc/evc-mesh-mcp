@@ -1705,6 +1705,17 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 	expiresAt := mcpsdk.ParseString(request, "expires_at", "")
 	sourceURL := mcpsdk.ParseString(request, "source_url", "")
 
+	// Auto-populate project_id from the most recently checked-out task when the
+	// agent omits it. This fixes the Memory Eval E·P2 issue where 99% of episodic
+	// entries had project_id=NULL because agents didn't pass it explicitly.
+	if projectID == "" {
+		if stored, ok := s.activeProjects.Load(session.AgentID); ok {
+			if pid, ok2 := stored.(string); ok2 {
+				projectID = pid
+			}
+		}
+	}
+
 	body := map[string]any{
 		"workspace_id": session.WorkspaceID.String(),
 		"key":          key,
@@ -1831,6 +1842,14 @@ func (s *Server) handleCheckoutTask(ctx context.Context, request mcpsdk.CallTool
 	// agent to track it manually (Option B — schema stays task_id-only).
 	if token, ok := result["checkout_token"].(string); ok && token != "" {
 		s.checkouts.Store(taskID, token)
+	}
+
+	// Track the checked-out task's project so handleRemember can auto-populate
+	// project_id when the agent omits it (Memory Eval E·P2 fix).
+	if projID, ok := result["project_id"].(string); ok && projID != "" {
+		if session := s.getSession(ctx); session != nil {
+			s.activeProjects.Store(session.AgentID, projID)
+		}
 	}
 
 	return jsonResult(result)
