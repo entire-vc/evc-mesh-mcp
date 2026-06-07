@@ -845,6 +845,7 @@ func (s *Server) handleGetContext(ctx context.Context, request mcpsdk.CallToolRe
 	}
 	// knowledgeErr is intentionally ignored — context events are still useful without it.
 
+	s.recordMemoryRead(ctx, "get_context")
 	return jsonResult(resp)
 }
 
@@ -1680,6 +1681,7 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 		return errResult("recall failed: %v", err)
 	}
 
+	s.recordMemoryRead(ctx, "recall")
 	return jsonResult(result)
 }
 
@@ -1788,6 +1790,7 @@ func (s *Server) handleGetProjectKnowledge(ctx context.Context, request mcpsdk.C
 		return errResult("get_project_knowledge failed: %v", err)
 	}
 
+	s.recordMemoryRead(ctx, "get_project_knowledge")
 	return jsonResult(result)
 }
 
@@ -2023,6 +2026,7 @@ func (s *Server) handleGetCanonicalUpdates(ctx context.Context, request mcpsdk.C
 		return errResult("get_canonical_updates failed: %v", err)
 	}
 
+	s.recordMemoryRead(ctx, "get_canonical_updates")
 	return jsonResult(result)
 }
 
@@ -2264,6 +2268,7 @@ func (s *Server) handleGetCanonical(ctx context.Context, request mcpsdk.CallTool
 	}
 
 	merged := buildCanonicalMarkdown(results, topic)
+	s.recordMemoryRead(ctx, "get_canonical")
 	return jsonResult(map[string]any{
 		"topic":           topic,
 		"count":           len(results),

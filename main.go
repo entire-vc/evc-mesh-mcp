@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	mcpserver "github.com/entire-vc/evc-mesh-mcp/internal/mcp"
 
@@ -172,6 +175,18 @@ func main() {
 			}),
 		)
 
+		// Start periodic flush of read-counter to disk (every 5 minutes).
+		counterFile := readCounterFilePath()
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				if err := srv.ReadCounter.WriteFile(counterFile); err != nil {
+					log.Printf("read-counter flush error: %v", err)
+				}
+			}
+		}()
+
 		// Wrap the SSE endpoint handler to validate agent key at connection time.
 		mux := http.NewServeMux()
 		mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
@@ -194,9 +209,23 @@ func main() {
 		})
 		mux.Handle("/message", sseServer.MessageHandler())
 
+		// /read-counter — unauthenticated JSON snapshot for nightly cron / Grafana scrape.
+		mux.HandleFunc("/read-counter", func(w http.ResponseWriter, r *http.Request) {
+			snap := srv.ReadCounter.Snapshot()
+			data, err := json.Marshal(snap)
+			if err != nil {
+				http.Error(w, "marshal error", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(data)
+		})
+
 		log.Printf("Starting MCP SSE server on %s (multi-agent mode)", addr)
 		log.Printf("  SSE endpoint:     %s/sse", baseURL)
 		log.Printf("  Message endpoint: %s/message", baseURL)
+		log.Printf("  Read counter:     %s/read-counter", baseURL)
+		log.Printf("  Counter file:     %s", counterFile)
 		log.Printf("  Auth: Authorization: Bearer agk_..., X-Agent-Key, or ?agent_key=agk_...")
 
 		httpServer := &http.Server{
@@ -207,6 +236,19 @@ func main() {
 			log.Fatalf("MCP SSE server error: %v", err)
 		}
 	}
+}
+
+// readCounterFilePath returns the path for the read-counter JSON file.
+// Override via MESH_MCP_COUNTER_FILE env var; defaults to ~/.openclaw/metrics/mcp-read-counter.json.
+func readCounterFilePath() string {
+	if p := os.Getenv("MESH_MCP_COUNTER_FILE"); p != "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "/tmp/mcp-read-counter.json"
+	}
+	return filepath.Join(home, ".openclaw", "metrics", "mcp-read-counter.json")
 }
 
 // buildSession creates an AgentSession from API response strings.
