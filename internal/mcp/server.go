@@ -99,6 +99,9 @@ type Server struct {
 	// checkouts stores checkout_token keyed by task_id for graceful release.
 	// Populated by handleCheckoutTask; consumed and cleared by handleReleaseTask.
 	checkouts sync.Map
+	// activeProjects maps agentID (uuid.UUID) to the project_id of the most recently
+	// checked-out task. Used by handleRemember to auto-populate project_id when absent.
+	activeProjects sync.Map
 }
 
 // getSession returns the AgentSession for the current request.
