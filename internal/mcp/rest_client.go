@@ -769,23 +769,23 @@ func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams)
 	return result, nil
 }
 
-// RecallWithGraphParams holds parameters for graph-expanded memory recall.
+// RecallWithGraphParams holds parameters for KG-expanded memory recall.
 type RecallWithGraphParams struct {
-	Query       string
-	WorkspaceID string
-	ProjectID   string
-	Scope       string
-	Tags        []string
-	Limit       int
-	Hops        int
+	Query           string
+	WorkspaceID     string
+	ProjectID       string
+	TaskID          string
+	Hops            int
+	WeightThreshold float64
 }
 
-// RecallWithGraph calls GET /api/v1/memories/recall-with-graph with graph traversal.
-// Returns direct RRF matches plus graph-connected memories boosted by edge weight.
+// RecallWithGraph calls GET /api/v1/memories/recall_graph — multi-hop KG traversal
+// seeded from hybrid recall hits. Returns memories ranked by composite score with
+// hop_distance and provenance (rrf | graph) fields.
 func (c *RESTClient) RecallWithGraph(ctx context.Context, p RecallWithGraphParams) (map[string]any, error) {
 	params := make(url.Values)
 	if p.Query != "" {
-		params.Set("q", p.Query)
+		params.Set("query", p.Query)
 	}
 	if p.WorkspaceID != "" {
 		params.Set("workspace_id", p.WorkspaceID)
@@ -793,19 +793,16 @@ func (c *RESTClient) RecallWithGraph(ctx context.Context, p RecallWithGraphParam
 	if p.ProjectID != "" {
 		params.Set("project_id", p.ProjectID)
 	}
-	if p.Scope != "" {
-		params.Set("scope", p.Scope)
-	}
-	for _, tag := range p.Tags {
-		params.Add("tags", tag)
-	}
-	if p.Limit > 0 {
-		params.Set("limit", fmt.Sprintf("%d", p.Limit))
+	if p.TaskID != "" {
+		params.Set("task_id", p.TaskID)
 	}
 	if p.Hops > 0 {
 		params.Set("hops", fmt.Sprintf("%d", p.Hops))
 	}
-	path := "/api/v1/memories/recall-with-graph"
+	if p.WeightThreshold > 0 {
+		params.Set("weight_threshold", fmt.Sprintf("%g", p.WeightThreshold))
+	}
+	path := "/api/v1/memories/recall_graph"
 	if encoded := params.Encode(); encoded != "" {
 		path += "?" + encoded
 	}

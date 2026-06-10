@@ -1687,19 +1687,17 @@ func (s *Server) handleRecallWithGraph(ctx context.Context, request mcpsdk.CallT
 		return errResult("q (query) is required")
 	}
 	projectID := mcpsdk.ParseString(request, "project_id", "")
-	scope := mcpsdk.ParseString(request, "scope", "")
-	tags := parseStringSlice(request, "tags")
-	limit := int(mcpsdk.ParseFloat64(request, "limit", 20))
-	hops := int(mcpsdk.ParseFloat64(request, "hops", 1))
+	taskID := mcpsdk.ParseString(request, "task_id", "")
+	hops := int(mcpsdk.ParseFloat64(request, "hops", 2))
+	weightThreshold := mcpsdk.ParseFloat64(request, "weight_threshold", 0.3)
 
 	result, err := s.getRESTClient(ctx).RecallWithGraph(ctx, RecallWithGraphParams{
-		Query:       query,
-		WorkspaceID: session.WorkspaceID.String(),
-		ProjectID:   projectID,
-		Scope:       scope,
-		Tags:        tags,
-		Limit:       limit,
-		Hops:        hops,
+		Query:           query,
+		WorkspaceID:     session.WorkspaceID.String(),
+		ProjectID:       projectID,
+		TaskID:          taskID,
+		Hops:            hops,
+		WeightThreshold: weightThreshold,
 	})
 	if err != nil {
 		return errResult("recall_with_graph failed: %v", err)
