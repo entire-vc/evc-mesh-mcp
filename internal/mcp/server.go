@@ -102,6 +102,10 @@ type Server struct {
 	// activeProjects maps agentID (uuid.UUID) to the project_id of the most recently
 	// checked-out task. Used by handleRemember to auto-populate project_id when absent.
 	activeProjects sync.Map
+	// activeTaskIDs maps agentID (uuid.UUID) to the task_id of the most recently
+	// checked-out task. Used by handleRemember to auto-populate source_task_id when
+	// absent, enabling Amendment 2/3 edge hooks (thread + task-graph bridges).
+	activeTaskIDs sync.Map
 }
 
 // getSession returns the AgentSession for the current request.
@@ -378,6 +382,8 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithNumber("relevance", mcpsdk.Description("Relevance score 0-1 (default 1.0).")),
 		mcpsdk.WithString("expires_at", mcpsdk.Description("RFC3339 timestamp or Go duration (e.g. '72h') when this memory should expire.")),
 		mcpsdk.WithString("source_url", mcpsdk.Description("Optional URL/path to the source of this knowledge (task ID, PR, file path).")),
+		mcpsdk.WithString("source_task_id", mcpsdk.Description("UUID of the Mesh task that produced this memory. Auto-populated from the current checkout when omitted. Enables Amendment 2/3 KG edge hooks (thread-id propagation + task-graph bridge).")),
+		mcpsdk.WithString("thread_id", mcpsdk.Description("Thread identifier for same-session memory grouping. Auto-populated from the checkout task when omitted.")),
 	), s.tracked("remember", s.handleRemember))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("forget",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1682,8 +1683,74 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 		return errResult("recall failed: %v", err)
 	}
 
+	// When RECALL_GRAPH_ENABLED=true, fire a secondary KG-expanded recall and
+	// append any hop>0 items not already present in the base results.
+	if os.Getenv("RECALL_GRAPH_ENABLED") == "true" {
+		graphResult, graphErr := s.getRESTClient(ctx).RecallWithGraph(ctx, RecallWithGraphParams{
+			Query:           query,
+			WorkspaceID:     session.WorkspaceID.String(),
+			ProjectID:       projectID,
+			Hops:            2,
+			WeightThreshold: 0.3,
+		})
+		if graphErr == nil {
+			result = mergeGraphResults(result, graphResult)
+		}
+	}
+
 	s.recordMemoryRead(ctx, "recall")
 	return jsonResult(result)
+}
+
+// mergeGraphResults appends hop>0 graph-expanded items from graphResult that are
+// not already present in baseResult, marking them with graph_boost=true.
+// Both inputs are expected to carry an "items" array.
+func mergeGraphResults(base, graph map[string]any) map[string]any {
+	baseItems, _ := base["items"].([]any)
+
+	// Collect IDs already present in base result.
+	seenIDs := make(map[string]bool, len(baseItems))
+	for _, item := range baseItems {
+		if m, ok := item.(map[string]any); ok {
+			if id, ok2 := m["id"].(string); ok2 {
+				seenIDs[id] = true
+			}
+		}
+	}
+
+	graphItems, _ := graph["items"].([]any)
+	boosted := 0
+	for _, item := range graphItems {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		hopRaw := m["hop_distance"]
+		hop, _ := hopRaw.(float64) // JSON numbers unmarshal as float64
+		if hop <= 0 {
+			continue // rrf-seeded hit already in base
+		}
+		id, _ := m["id"].(string)
+		if seenIDs[id] {
+			continue
+		}
+		m["graph_boost"] = true
+		baseItems = append(baseItems, m)
+		seenIDs[id] = true
+		boosted++
+	}
+
+	if boosted > 0 {
+		out := make(map[string]any, len(base))
+		for k, v := range base {
+			out[k] = v
+		}
+		out["items"] = baseItems
+		out["total"] = len(baseItems)
+		out["graph_boost_count"] = boosted
+		return out
+	}
+	return base
 }
 
 func (s *Server) handleRecallWithGraph(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
@@ -1732,6 +1799,8 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 	relevance := mcpsdk.ParseFloat64(request, "relevance", 0)
 	expiresAt := mcpsdk.ParseString(request, "expires_at", "")
 	sourceURL := mcpsdk.ParseString(request, "source_url", "")
+	sourceTaskID := mcpsdk.ParseString(request, "source_task_id", "")
+	threadID := mcpsdk.ParseString(request, "thread_id", "")
 
 	// Auto-populate project_id from the most recently checked-out task when the
 	// agent omits it. This fixes the Memory Eval E·P2 issue where 99% of episodic
@@ -1740,6 +1809,17 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 		if stored, ok := s.activeProjects.Load(session.AgentID); ok {
 			if pid, ok2 := stored.(string); ok2 {
 				projectID = pid
+			}
+		}
+	}
+	// Auto-populate source_task_id from the active checkout when omitted.
+	// Activates Amendment 2/3 KG edge hooks (thread-id propagation +
+	// task-graph bridge derived_from edges) without requiring callers to
+	// pass it explicitly on every remember() call.
+	if sourceTaskID == "" {
+		if stored, ok := s.activeTaskIDs.Load(session.AgentID); ok {
+			if tid, ok2 := stored.(string); ok2 {
+				sourceTaskID = tid
 			}
 		}
 	}
@@ -1763,6 +1843,12 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 	}
 	if sourceURL != "" {
 		body["source_url"] = sourceURL
+	}
+	if sourceTaskID != "" {
+		body["source_task_id"] = sourceTaskID
+	}
+	if threadID != "" {
+		body["thread_id"] = threadID
 	}
 
 	result, err := s.getRESTClient(ctx).Remember(ctx, body)
@@ -1874,10 +1960,13 @@ func (s *Server) handleCheckoutTask(ctx context.Context, request mcpsdk.CallTool
 
 	// Track the checked-out task's project so handleRemember can auto-populate
 	// project_id when the agent omits it (Memory Eval E·P2 fix).
-	if projID, ok := result["project_id"].(string); ok && projID != "" {
-		if session := s.getSession(ctx); session != nil {
+	if session := s.getSession(ctx); session != nil {
+		if projID, ok := result["project_id"].(string); ok && projID != "" {
 			s.activeProjects.Store(session.AgentID, projID)
 		}
+		// Also store the task_id so handleRemember can auto-populate source_task_id,
+		// which activates Amendment 2/3 KG edge hooks on subsequent remember() calls.
+		s.activeTaskIDs.Store(session.AgentID, taskID)
 	}
 
 	return jsonResult(result)
