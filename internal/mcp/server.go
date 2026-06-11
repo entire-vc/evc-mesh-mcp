@@ -359,6 +359,15 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithNumber("offset", mcpsdk.Description("Pagination offset (default 0).")),
 	), s.tracked("recall", s.handleRecall))
 
+	s.mcpServer.AddTool(mcpsdk.NewTool("recall_with_graph",
+		mcpsdk.WithDescription("Search memory with Knowledge Graph expansion. Seeds from hybrid recall, then BFS-traverses memory_edges up to hops depth. Returns memories ranked by composite score with hop_distance and provenance fields. Use when you want broader context — related decisions, connected incidents, derived learnings."),
+		mcpsdk.WithString("q", mcpsdk.Required(), mcpsdk.Description("Search query (keywords or natural language).")),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Filter to a specific project.")),
+		mcpsdk.WithString("task_id", mcpsdk.Description("Optional task ID — used as cache key discriminator for session-scoped traversal.")),
+		mcpsdk.WithNumber("hops", mcpsdk.Description("Graph traversal depth (default 2, max 5).")),
+		mcpsdk.WithNumber("weight_threshold", mcpsdk.Description("Minimum edge weight to follow (default 0.3).")),
+	), s.tracked("recall_with_graph", s.handleRecallWithGraph))
+
 	s.mcpServer.AddTool(mcpsdk.NewTool("remember",
 		mcpsdk.WithDescription("Save knowledge to persistent memory. Use for decisions, conventions, preferences. UPSERT by key — calling with same key updates the existing entry."),
 		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Slug key for UPSERT (e.g. 'api-convention', 'license-decision').")),
