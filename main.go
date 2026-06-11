@@ -15,6 +15,7 @@ import (
 
 	mcpserver "github.com/entire-vc/evc-mesh-mcp/internal/mcp"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	sdkserver "github.com/mark3labs/mcp-go/server"
 )
 
@@ -221,10 +222,14 @@ func main() {
 			_, _ = w.Write(data)
 		})
 
+		// Prometheus metrics — no auth required (IP-locked via Caddy on :9105).
+		mux.Handle("/metrics", promhttp.Handler())
+
 		log.Printf("Starting MCP SSE server on %s (multi-agent mode)", addr)
 		log.Printf("  SSE endpoint:     %s/sse", baseURL)
 		log.Printf("  Message endpoint: %s/message", baseURL)
 		log.Printf("  Read counter:     %s/read-counter", baseURL)
+		log.Printf("  Metrics:          %s/metrics", baseURL)
 		log.Printf("  Counter file:     %s", counterFile)
 		log.Printf("  Auth: Authorization: Bearer agk_..., X-Agent-Key, or ?agent_key=agk_...")
 
