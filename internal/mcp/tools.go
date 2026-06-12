@@ -1691,8 +1691,8 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 			WorkspaceID:     session.WorkspaceID.String(),
 			ProjectID:       projectID,
 			Hops:            2,
-			WeightThreshold: 0.3,
-			Limit:           50, // fetch wider set so hop>0 neighbors are included
+			WeightThreshold: 0.1, // wide traversal: at 0.3 hop>0 items don't survive importance filter
+			Limit:           50,  // request wider set so hop>0 neighbors are included
 		})
 		if graphErr == nil {
 			result = mergeGraphResults(result, graphResult)
