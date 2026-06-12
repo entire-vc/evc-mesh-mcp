@@ -781,6 +781,7 @@ type RecallWithGraphParams struct {
 	TaskID          string
 	Hops            int
 	WeightThreshold float64
+	Limit           int
 }
 
 // RecallWithGraph calls GET /api/v1/memories/recall_graph — multi-hop KG traversal
@@ -805,6 +806,9 @@ func (c *RESTClient) RecallWithGraph(ctx context.Context, p RecallWithGraphParam
 	}
 	if p.WeightThreshold > 0 {
 		params.Set("weight_threshold", fmt.Sprintf("%g", p.WeightThreshold))
+	}
+	if p.Limit > 0 {
+		params.Set("limit", fmt.Sprintf("%d", p.Limit))
 	}
 	path := "/api/v1/memories/recall_graph"
 	if encoded := params.Encode(); encoded != "" {
