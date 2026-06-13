@@ -382,8 +382,9 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithNumber("relevance", mcpsdk.Description("Relevance score 0-1 (default 1.0).")),
 		mcpsdk.WithString("expires_at", mcpsdk.Description("RFC3339 timestamp or Go duration (e.g. '72h') when this memory should expire.")),
 		mcpsdk.WithString("source_url", mcpsdk.Description("Optional URL/path to the source of this knowledge (task ID, PR, file path).")),
-		mcpsdk.WithString("source_task_id", mcpsdk.Description("UUID of the Mesh task that produced this memory. Auto-populated from the current checkout when omitted. Enables Amendment 2/3 KG edge hooks (thread-id propagation + task-graph bridge).")),
-		mcpsdk.WithString("thread_id", mcpsdk.Description("Thread identifier for same-session memory grouping. Auto-populated from the checkout task when omitted.")),
+		mcpsdk.WithString("source_task_id", mcpsdk.Description("UUID of the Mesh task that produced this memory. Auto-populated from the fiddler side-channel (FIDDLER_STATE_FILE) or active checkout. Enables Amendment 2/3 KG edge hooks.")),
+		mcpsdk.WithString("thread_id", mcpsdk.Description("Thread identifier for same-session memory grouping. Auto-populated from the fiddler side-channel when omitted.")),
+		mcpsdk.WithBoolean("attach_context", mcpsdk.Description("When false, disables auto-injection of thread_id and source_task_id. Use for cross-cutting records not tied to the active task."), mcpsdk.DefaultBool(true)),
 	), s.tracked("remember", s.handleRemember))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("forget",
@@ -399,6 +400,9 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("category", mcpsdk.Description("Optional category: deploy, stack, conventions, gotchas, api, auth, etc.")),
 		mcpsdk.WithArray("tags", mcpsdk.Description("Additional tags for filtering."), mcpsdk.WithStringItems()),
 		mcpsdk.WithString("source_url", mcpsdk.Description("Optional URL/path to the source of this knowledge.")),
+		mcpsdk.WithString("source_task_id", mcpsdk.Description("UUID of the Mesh task that produced this fact. Auto-populated from the fiddler side-channel when omitted.")),
+		mcpsdk.WithString("thread_id", mcpsdk.Description("Thread identifier. Auto-populated from the fiddler side-channel when omitted.")),
+		mcpsdk.WithBoolean("attach_context", mcpsdk.Description("When false, disables auto-injection of thread_id and source_task_id."), mcpsdk.DefaultBool(true)),
 	), s.tracked("set_project_knowledge", s.handleSetProjectKnowledge))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("pavel_decision",

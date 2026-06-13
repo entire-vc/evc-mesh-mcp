@@ -49,10 +49,10 @@ func (rc *ReadCounter) Inc(agentID, toolName string) {
 
 // readCounterSnapshot is the JSON-serialisable view of ReadCounter.
 type readCounterSnapshot struct {
-	GeneratedAt string                       `json:"generated_at"`
-	StartedAt   string                       `json:"started_at"`
-	TotalByTool map[string]int64             `json:"total_by_tool"`
-	ByAgent     map[string]map[string]int64  `json:"by_agent"`
+	GeneratedAt string                      `json:"generated_at"`
+	StartedAt   string                      `json:"started_at"`
+	TotalByTool map[string]int64            `json:"total_by_tool"`
+	ByAgent     map[string]map[string]int64 `json:"by_agent"`
 }
 
 // Snapshot returns a consistent copy of all counters suitable for JSON marshalling.

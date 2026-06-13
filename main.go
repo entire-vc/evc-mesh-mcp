@@ -15,8 +15,8 @@ import (
 
 	mcpserver "github.com/entire-vc/evc-mesh-mcp/internal/mcp"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	sdkserver "github.com/mark3labs/mcp-go/server"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {

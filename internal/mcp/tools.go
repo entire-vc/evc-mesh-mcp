@@ -13,6 +13,28 @@ import (
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
 
+// readFiddlerContext reads the per-session side-channel file written by fiddler.py
+// on each task feed. The path comes from the FIDDLER_STATE_FILE env var set when
+// the tmux session is (re)launched. Returns empty strings on any error.
+func readFiddlerContext() (taskID, threadID string) {
+	path := os.Getenv("FIDDLER_STATE_FILE")
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var ctx struct {
+		TaskID   string `json:"task_id"`
+		ThreadID string `json:"thread_id"`
+	}
+	if json.Unmarshal(data, &ctx) != nil {
+		return
+	}
+	return ctx.TaskID, ctx.ThreadID
+}
+
 // ============================================================================
 // 1. list_projects
 // ============================================================================
@@ -1802,6 +1824,7 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 	sourceURL := mcpsdk.ParseString(request, "source_url", "")
 	sourceTaskID := mcpsdk.ParseString(request, "source_task_id", "")
 	threadID := mcpsdk.ParseString(request, "thread_id", "")
+	attachContext := mcpsdk.ParseBoolean(request, "attach_context", true)
 
 	// Auto-populate project_id from the most recently checked-out task when the
 	// agent omits it. This fixes the Memory Eval E·P2 issue where 99% of episodic
@@ -1813,15 +1836,22 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 			}
 		}
 	}
-	// Auto-populate source_task_id from the active checkout when omitted.
-	// Activates Amendment 2/3 KG edge hooks (thread-id propagation +
-	// task-graph bridge derived_from edges) without requiring callers to
-	// pass it explicitly on every remember() call.
-	if sourceTaskID == "" {
-		if stored, ok := s.activeTaskIDs.Load(session.AgentID); ok {
-			if tid, ok2 := stored.(string); ok2 {
-				sourceTaskID = tid
+	// Auto-populate source_task_id + thread_id when attach_context=true (default).
+	// Priority: fiddler side-channel file (survives MCP restart) → sync.Map fallback.
+	// Pass attach_context=false for cross-cutting records not tied to the active task.
+	if attachContext {
+		fTaskID, fThreadID := readFiddlerContext()
+		if sourceTaskID == "" {
+			if fTaskID != "" {
+				sourceTaskID = fTaskID
+			} else if stored, ok := s.activeTaskIDs.Load(session.AgentID); ok {
+				if tid, ok2 := stored.(string); ok2 {
+					sourceTaskID = tid
+				}
 			}
+		}
+		if threadID == "" {
+			threadID = fThreadID
 		}
 	}
 
@@ -1882,6 +1912,25 @@ func (s *Server) handleSetProjectKnowledge(ctx context.Context, request mcpsdk.C
 	category := mcpsdk.ParseString(request, "category", "")
 	tags := parseStringSlice(request, "tags")
 	sourceURL := mcpsdk.ParseString(request, "source_url", "")
+	sourceTaskID := mcpsdk.ParseString(request, "source_task_id", "")
+	threadID := mcpsdk.ParseString(request, "thread_id", "")
+	attachContext := mcpsdk.ParseBoolean(request, "attach_context", true)
+
+	if attachContext {
+		fTaskID, fThreadID := readFiddlerContext()
+		if sourceTaskID == "" {
+			if fTaskID != "" {
+				sourceTaskID = fTaskID
+			} else if stored, ok := s.activeTaskIDs.Load(session.AgentID); ok {
+				if tid, ok2 := stored.(string); ok2 {
+					sourceTaskID = tid
+				}
+			}
+		}
+		if threadID == "" {
+			threadID = fThreadID
+		}
+	}
 
 	body := map[string]any{
 		"key":         key,
@@ -1896,6 +1945,12 @@ func (s *Server) handleSetProjectKnowledge(ctx context.Context, request mcpsdk.C
 	}
 	if sourceURL != "" {
 		body["source_url"] = sourceURL
+	}
+	if sourceTaskID != "" {
+		body["source_task_id"] = sourceTaskID
+	}
+	if threadID != "" {
+		body["thread_id"] = threadID
 	}
 
 	result, err := s.getRESTClient(ctx).SetProjectKnowledge(ctx, projectID, body)

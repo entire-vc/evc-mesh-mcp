@@ -177,7 +177,7 @@ func TestHandlePavelDecision_SecretBackstop(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"memory": map[string]any{"id": uuid.New().String(), "created_at": time.Now().UTC().Format(time.RFC3339)},
+			"memory":  map[string]any{"id": uuid.New().String(), "created_at": time.Now().UTC().Format(time.RFC3339)},
 			"outcome": "created",
 		})
 	}))
@@ -236,7 +236,7 @@ func TestHandlePavelDecision_DeduplicatesViaSameKey(t *testing.T) {
 		lastKey, _ = body["key"].(string)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"memory": map[string]any{"id": uuid.New().String(), "created_at": time.Now().UTC().Format(time.RFC3339)},
+			"memory":  map[string]any{"id": uuid.New().String(), "created_at": time.Now().UTC().Format(time.RFC3339)},
 			"outcome": "updated", // second call returns "updated" (server-side upsert)
 		})
 	}))
