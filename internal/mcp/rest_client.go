@@ -830,10 +830,18 @@ func (c *RESTClient) SetProjectKnowledge(ctx context.Context, projectID string, 
 	return result, nil
 }
 
-// GetProjectKnowledge returns all accumulated knowledge for a project.
-func (c *RESTClient) GetProjectKnowledge(ctx context.Context, projectID string) (map[string]any, error) {
+// GetProjectKnowledge returns knowledge for a project with optional workspace-tier pagination.
+// limit/offset apply to workspace memories; minImportance and tagsAny filter workspace-tier.
+func (c *RESTClient) GetProjectKnowledge(ctx context.Context, projectID string, limit, offset int, minImportance float64, tagsAny string) (map[string]any, error) {
+	path := fmt.Sprintf("/api/v1/projects/%s/knowledge?limit=%d&offset=%d", projectID, limit, offset)
+	if minImportance > 0 {
+		path += fmt.Sprintf("&min_importance=%g", minImportance)
+	}
+	if tagsAny != "" {
+		path += "&tags_any=" + tagsAny
+	}
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/projects/"+projectID+"/knowledge", nil, &result); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
