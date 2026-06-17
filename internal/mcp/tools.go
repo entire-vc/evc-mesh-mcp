@@ -2163,7 +2163,7 @@ func (s *Server) handlePavelDecision(ctx context.Context, request mcpsdk.CallToo
 		}
 	}
 
-	key := "canonical-decision:" + day + ":" + slugify(summary)
+	key := "canonical-decision-" + day + "-" + slugify(summary)
 
 	bodyScope := "workspace"
 	body := map[string]any{
@@ -2172,7 +2172,6 @@ func (s *Server) handlePavelDecision(ctx context.Context, request mcpsdk.CallToo
 		"content":      text,
 		"scope":        bodyScope,
 		"tags":         tags,
-		"source_type":  "human",
 	}
 	if projectID != "" {
 		body["project_id"] = projectID
