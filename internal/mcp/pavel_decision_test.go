@@ -144,10 +144,10 @@ func TestHandlePavelDecision_PublicDecision(t *testing.T) {
 		t.Error("expected non-empty id in response")
 	}
 
-	// Verify the key format: canonical-decision:{date}:{slug}
+	// Verify the key format: canonical-decision-{date}-{slug}
 	key, _ := out["key"].(string)
 	day := time.Now().UTC().Format("2006-01-02")
-	expectedKey := "canonical-decision:" + day + ":use-redis-for-sessions"
+	expectedKey := "canonical-decision-" + day + "-use-redis-for-sessions"
 	if key != expectedKey {
 		t.Errorf("key = %q, want %q", key, expectedKey)
 	}
@@ -266,7 +266,7 @@ func TestHandlePavelDecision_DeduplicatesViaSameKey(t *testing.T) {
 
 	// Both calls must produce the same key (server-side upsert handles dedup).
 	day := time.Now().UTC().Format("2006-01-02")
-	want := fmt.Sprintf("canonical-decision:%s:same-summary", day)
+	want := fmt.Sprintf("canonical-decision-%s-same-summary", day)
 	if lastKey != want {
 		t.Errorf("key = %q, want %q", lastKey, want)
 	}
