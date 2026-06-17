@@ -224,6 +224,10 @@ func (s *Server) registerCoreTools() {
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_project_knowledge",
 		mcpsdk.WithDescription("Get ALL PERMANENT KNOWLEDGE for a project: decisions, conventions, accumulated context. Call at session start (ACP Step 2). Returns workspace-level + project-level memories. For RECENT events, use get_context instead."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project UUID.")),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Max workspace-tier memories (default 100, max 500).")),
+		mcpsdk.WithNumber("offset", mcpsdk.Description("Pagination offset for workspace-tier (default 0).")),
+		mcpsdk.WithNumber("min_importance", mcpsdk.Description("Minimum importance_score for workspace-tier (default 0 = all).")),
+		mcpsdk.WithString("tags_any", mcpsdk.Description("Comma-separated tag OR-filter for workspace-tier, e.g. 'kind:decision,kind:incident'.")),
 	), s.tracked("get_project_knowledge", s.handleGetProjectKnowledge))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_my_rules",

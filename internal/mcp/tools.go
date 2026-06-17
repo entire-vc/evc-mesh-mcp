@@ -857,7 +857,7 @@ func (s *Server) handleGetContext(ctx context.Context, request mcpsdk.CallToolRe
 	}
 
 	// Also fetch project knowledge and merge it (non-fatal if it fails).
-	knowledge, knowledgeErr := s.getRESTClient(ctx).GetProjectKnowledge(ctx, projectID)
+	knowledge, knowledgeErr := s.getRESTClient(ctx).GetProjectKnowledge(ctx, projectID, 100, 0, 0, "")
 	if knowledgeErr == nil {
 		// Prefer the "items" slice if present, otherwise embed the full response.
 		if items, ok := knowledge["items"]; ok {
@@ -1967,7 +1967,12 @@ func (s *Server) handleGetProjectKnowledge(ctx context.Context, request mcpsdk.C
 		return errResult("project_id is required")
 	}
 
-	result, err := s.getRESTClient(ctx).GetProjectKnowledge(ctx, projectID)
+	limit := mcpsdk.ParseInt(request, "limit", 100)
+	offset := mcpsdk.ParseInt(request, "offset", 0)
+	minImportance := mcpsdk.ParseFloat64(request, "min_importance", 0)
+	tagsAny := mcpsdk.ParseString(request, "tags_any", "")
+
+	result, err := s.getRESTClient(ctx).GetProjectKnowledge(ctx, projectID, limit, offset, minImportance, tagsAny)
 	if err != nil {
 		return errResult("get_project_knowledge failed: %v", err)
 	}
@@ -2420,7 +2425,7 @@ func (s *Server) handleGetCanonical(ctx context.Context, request mcpsdk.CallTool
 	if projectSlug != "" {
 		projID := resolveProjectID(ctx, client, wsID, slugVariants(projectSlug))
 		if projID != "" {
-			pkResult, pkErr := client.GetProjectKnowledge(ctx, projID)
+			pkResult, pkErr := client.GetProjectKnowledge(ctx, projID, 100, 0, 0, "")
 			if pkErr == nil {
 				topicLower := strings.ToLower(topic)
 				pms, _ := pkResult["project_memories"].([]any)
