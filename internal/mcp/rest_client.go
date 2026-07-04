@@ -703,9 +703,11 @@ type RecallMemoriesParams struct {
 	RelevanceMin      float64
 	ImportanceMin     float64
 	ApplyRecencyDecay bool
+	HalfLifeDays      int   // >0 → passed as half_life_days to server (P1-D feature)
 	OrderBy           string
 	IncludeExpired    bool
 	IncludeArchived   bool
+	ExcludeSuperseded *bool // nil = server default (true); false = include superseded entries
 	Limit             int
 	Offset            int
 }
@@ -747,6 +749,9 @@ func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams)
 	if p.ApplyRecencyDecay {
 		params.Set("apply_recency_decay", "true")
 	}
+	if p.HalfLifeDays > 0 {
+		params.Set("half_life_days", fmt.Sprintf("%d", p.HalfLifeDays))
+	}
 	if p.OrderBy != "" {
 		params.Set("order_by", p.OrderBy)
 	}
@@ -755,6 +760,9 @@ func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams)
 	}
 	if p.IncludeArchived {
 		params.Set("include_archived", "true")
+	}
+	if p.ExcludeSuperseded != nil {
+		params.Set("exclude_superseded", fmt.Sprintf("%t", *p.ExcludeSuperseded))
 	}
 	if p.Limit > 0 {
 		params.Set("limit", fmt.Sprintf("%d", p.Limit))

@@ -1682,7 +1682,27 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	includeExpired := mcpsdk.ParseBoolean(request, "include_expired", false)
 	includeArchived := mcpsdk.ParseBoolean(request, "include_archived", false)
 
-	result, err := s.getRESTClient(ctx).RecallMemories(ctx, RecallMemoriesParams{
+	// Classify the query and apply profile-specific parameter presets.
+	// An explicit recall_profile param overrides the auto-classifier.
+	profile := ClassifyQuery(query)
+	if explicit := mcpsdk.ParseString(request, "recall_profile", ""); explicit != "" {
+		profile = RecallProfile(explicit)
+	}
+	pp := GetProfileParams(profile)
+	if pp.ApplyDecay {
+		applyDecay = true
+	}
+	if pp.MinImportance > 0 {
+		minImportance = pp.MinImportance
+	}
+	if pp.OrderBy != "" {
+		orderBy = pp.OrderBy
+	}
+	if pp.Limit > 0 {
+		limit = pp.Limit
+	}
+
+	rp := RecallMemoriesParams{
 		Query:             query,
 		WorkspaceID:       session.WorkspaceID.String(),
 		ProjectID:         projectID,
@@ -1695,12 +1715,19 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 		RelevanceMin:      relevanceMin,
 		ImportanceMin:     minImportance,
 		ApplyRecencyDecay: applyDecay,
+		HalfLifeDays:      pp.HalfLifeDays,
 		OrderBy:           orderBy,
 		IncludeExpired:    includeExpired,
 		IncludeArchived:   includeArchived,
 		Limit:             limit,
 		Offset:            offset,
-	})
+	}
+	if pp.IncludeSuperseded {
+		falseVal := false
+		rp.ExcludeSuperseded = &falseVal
+	}
+
+	result, err := s.getRESTClient(ctx).RecallMemories(ctx, rp)
 	if err != nil {
 		return errResult("recall failed: %v", err)
 	}
