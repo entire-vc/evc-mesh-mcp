@@ -1744,7 +1744,7 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 			Limit:           50,  // request wider set so hop>0 neighbors are included
 		})
 		if graphErr == nil {
-			result = mergeGraphResults(result, graphResult)
+			result = mergeGraphResults(result, graphResult, limit)
 		}
 	}
 
@@ -1754,8 +1754,9 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 
 // mergeGraphResults appends hop>0 graph-expanded items from graphResult that are
 // not already present in baseResult, marking them with graph_boost=true.
-// Both inputs are expected to carry an "items" array.
-func mergeGraphResults(base, graph map[string]any) map[string]any {
+// maxBoost caps how many graph items may be appended (prevents response explosion
+// when graph traversal returns hundreds of weakly-connected neighbors).
+func mergeGraphResults(base, graph map[string]any, maxBoost int) map[string]any {
 	baseItems, _ := base["items"].([]any)
 
 	// Collect IDs already present in base result.
@@ -1771,6 +1772,9 @@ func mergeGraphResults(base, graph map[string]any) map[string]any {
 	graphItems, _ := graph["items"].([]any)
 	boosted := 0
 	for _, item := range graphItems {
+		if boosted >= maxBoost {
+			break // cap reached — discard remaining graph-only items
+		}
 		m, ok := item.(map[string]any)
 		if !ok {
 			continue
