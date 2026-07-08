@@ -24,7 +24,22 @@ type ProfileParams struct {
 }
 
 var temporalKeywords = []string{
+	// Point-in-time / recency (original set)
 	"when", "ago", "yesterday", "last week", "recently", "before", "after",
+	// Elapsed-time / date-math questions (LongMemEval-style)
+	"how many days", "how many weeks", "how many months", "how many years",
+	"days passed", "weeks passed", "months passed",
+	"days ago", "weeks ago", "months ago",
+	"how long", "time between", "time span", "time elapsed",
+	"passed between", "elapsed between", "how long ago",
+	// Ordering / sequence questions
+	"from first to last", "from last to first", "first to last", "last to first",
+	"in what order", "what order", "chronological",
+	"first mention", "last mention", "first time", "last time",
+	"consecutive", "in a row", "back to back",
+	"sequence", "timeline",
+	// Point-in-time variants
+	"what day", "what date", "before or after", "since then",
 }
 
 var multiSessionKeywords = []string{
@@ -124,10 +139,12 @@ func queryContainsEnvVar(query string) bool {
 func GetProfileParams(profile RecallProfile) ProfileParams {
 	switch profile {
 	case ProfileTemporal:
+		// Do NOT apply recency decay for temporal queries: questions about
+		// "how many days between X and Y" need old sessions as much as recent
+		// ones. Pure FTS relevance finds the right sessions better than a
+		// decay that penalises older conversations.
 		return ProfileParams{
-			ApplyDecay:   true,
-			HalfLifeDays: 7,
-			OrderBy:      "decayed_relevance:desc",
+			OrderBy: "relevance:desc",
 		}
 	case ProfileMultiSession:
 		return ProfileParams{
