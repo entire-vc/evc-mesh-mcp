@@ -178,7 +178,7 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 | Tool | Description |
 |------|-------------|
 | `get_project` | Get project details with statuses and custom fields |
-| `create_subtask` | Create subtask under a parent |
+| `create_subtask` | Create subtask under a parent (`status_slug` optional; defaults to the project's default status, not the parent's) |
 | `add_dependency` | Add dependency between tasks |
 | `checkout_task` | Atomic task lock for multi-agent coordination |
 | `release_task` | Release atomic task lock |
