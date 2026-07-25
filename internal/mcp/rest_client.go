@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -68,13 +69,7 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		msg := fmt.Sprintf("API error %d", resp.StatusCode)
-		if m, ok := errBody["message"].(string); ok {
-			msg = m
-		} else if m, ok := errBody["error"].(string); ok {
-			msg = m
-		}
-		return fmt.Errorf("%s: %s", http.StatusText(resp.StatusCode), msg)
+		return fmt.Errorf("%s: %s", http.StatusText(resp.StatusCode), apiErrorMessage(errBody, resp.StatusCode))
 	}
 
 	if result != nil {
@@ -83,6 +78,34 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 		}
 	}
 	return nil
+}
+
+// apiErrorMessage builds a human-readable message from a Mesh API error body.
+// The API returns {"message": "...", "validation": {"field": "reason", ...}} for
+// 400s from apierror.ValidationError — without this, callers only ever saw the
+// generic "Validation failed" message and lost the field-level detail entirely.
+func apiErrorMessage(errBody map[string]any, statusCode int) string {
+	msg := fmt.Sprintf("API error %d", statusCode)
+	if m, ok := errBody["message"].(string); ok {
+		msg = m
+	} else if m, ok := errBody["error"].(string); ok {
+		msg = m
+	}
+
+	if validation, ok := errBody["validation"].(map[string]any); ok && len(validation) > 0 {
+		fields := make([]string, 0, len(validation))
+		for field, reason := range validation {
+			if reasonStr, ok := reason.(string); ok {
+				fields = append(fields, fmt.Sprintf("%s: %s", field, reasonStr))
+			}
+		}
+		sort.Strings(fields)
+		if len(fields) > 0 {
+			msg = fmt.Sprintf("%s (%s)", msg, strings.Join(fields, "; "))
+		}
+	}
+
+	return msg
 }
 
 // doMultipart executes a multipart/form-data POST and decodes the JSON response into result.
@@ -128,11 +151,7 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		msg := fmt.Sprintf("API error %d", resp.StatusCode)
-		if m, ok := errBody["message"].(string); ok {
-			msg = m
-		}
-		return fmt.Errorf("%s: %s", http.StatusText(resp.StatusCode), msg)
+		return fmt.Errorf("%s: %s", http.StatusText(resp.StatusCode), apiErrorMessage(errBody, resp.StatusCode))
 	}
 
 	if result != nil {
