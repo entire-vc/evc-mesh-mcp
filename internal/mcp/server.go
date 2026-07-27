@@ -363,7 +363,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("order_by", mcpsdk.Description("Sort order: created_at:desc (default), created_at:asc, relevance:desc, decayed_relevance:desc.")),
 		mcpsdk.WithBoolean("include_expired", mcpsdk.Description("Include expired memories (default false)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_archived", mcpsdk.Description("Include archived memories in results (default false)."), mcpsdk.DefaultBool(false)),
-		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 10, max 50).")),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 10, max 50). This is a hard bound: the response never contains more than limit items. When knowledge-graph boost is enabled, a share of the page (limit/4, at least 1 when limit>=2) may be filled with graph-expanded neighbours, marked graph_boost=true and provenance=via:graph — they take the tail slots instead of being added on top. Rows that fail scope/tags are dropped, never returned unmarked, whether they arrived by retrieval, by pinning, or by graph expansion.")),
 		mcpsdk.WithNumber("offset", mcpsdk.Description("Pagination offset (default 0).")),
 	), s.tracked("recall", s.handleRecall))
 
@@ -684,6 +684,21 @@ func jsonResult(v any) (*mcpsdk.CallToolResult, error) {
 // errResult returns an error tool result with a formatted message.
 func errResult(format string, args ...any) (*mcpsdk.CallToolResult, error) {
 	return mcpsdk.NewToolResultError(fmt.Sprintf(format, args...)), nil
+}
+
+// hasArgument reports whether the caller supplied the given argument at all.
+//
+// mcpsdk's Parse* helpers collapse "absent" and "explicitly set to the default"
+// into the same value, which is fine for reading a value and wrong for deciding
+// whether a preset may overwrite one. Anything a profile is allowed to override
+// needs this distinction.
+func hasArgument(request mcpsdk.CallToolRequest, key string) bool {
+	args := request.GetArguments()
+	if args == nil {
+		return false
+	}
+	v, ok := args[key]
+	return ok && v != nil
 }
 
 // parseStringSlice extracts a string slice from request arguments.
