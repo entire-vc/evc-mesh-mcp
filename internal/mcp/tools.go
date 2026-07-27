@@ -1715,7 +1715,12 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	if pp.OrderBy != "" {
 		orderBy = pp.OrderBy
 	}
-	if pp.Limit > 0 {
+	// A profile may widen the page only when the caller did not ask for a size.
+	// Overriding an explicit limit made the parameter unpredictable: the same
+	// recall(limit=6) returned 6 or 20 rows depending on whether the query text
+	// happened to trip a keyword in the multi-session classifier, and nothing in
+	// the response explained the difference.
+	if pp.Limit > 0 && !hasArgument(request, "limit") {
 		limit = pp.Limit
 	}
 
@@ -1769,11 +1774,39 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	return jsonResult(result)
 }
 
-// mergeGraphResults appends hop>0 graph-expanded items from graphResult that are
-// not already present in baseResult, marking them with graph_boost=true.
-// maxBoost caps how many graph items may be appended (prevents response explosion
-// when graph traversal returns hundreds of weakly-connected neighbors).
-func mergeGraphResults(base, graph map[string]any, maxBoost int) map[string]any {
+// graphBoostReserve returns how many of the caller's `limit` slots may be spent on
+// graph-expanded neighbours.
+//
+// Why a reserve rather than ranking the two sets together: base items carry `score`
+// (RRF over the two retrieval arms) and graph neighbours carry `composite_score`
+// from a separate traversal. They are different fields on different scales, and in
+// practice every observed neighbour scores below every base hit — so sorting the
+// union on a common key does not balance the two, it silently drops graph boost
+// entirely. A reserve makes the trade explicit and tunable instead of an accident
+// of score distributions.
+//
+// The reserve is a ceiling, not a quota: unused slots stay with the base results.
+func graphBoostReserve(limit int) int {
+	if limit < 2 {
+		return 0 // never spend the caller's only slot on a neighbour
+	}
+	reserve := limit / 4
+	if reserve < 1 {
+		reserve = 1
+	}
+	return reserve
+}
+
+// mergeGraphResults folds hop>0 graph-expanded items into the base result, marking
+// them with graph_boost=true.
+//
+// The merged result NEVER exceeds limit. Graph neighbours take the tail slots of
+// the page, displacing the weakest base hits; they are not appended on top of a
+// full page. Appending (as this did until #4c65d3e2) meant recall(limit=10) handed
+// back 20 rows while the response still echoed "limit": 10 — the caller could not
+// see that it had been overserved, and half of what arrived was not what it asked
+// for. Every agent's mandatory wake-up recall paid that cost on every spawn.
+func mergeGraphResults(base, graph map[string]any, limit int) map[string]any {
 	baseItems, _ := base["items"].([]any)
 
 	// Collect IDs already present in base result.
@@ -1786,11 +1819,14 @@ func mergeGraphResults(base, graph map[string]any, maxBoost int) map[string]any 
 		}
 	}
 
+	// Select eligible neighbours first, so the base page is only shortened by the
+	// number of neighbours actually available.
+	maxBoost := graphBoostReserve(limit)
 	graphItems, _ := graph["items"].([]any)
-	boosted := 0
+	picked := make([]any, 0, maxBoost)
 	for _, item := range graphItems {
-		if boosted >= maxBoost {
-			break // cap reached — discard remaining graph-only items
+		if len(picked) >= maxBoost {
+			break // reserve exhausted — discard remaining graph-only items
 		}
 		m, ok := item.(map[string]any)
 		if !ok {
@@ -1806,22 +1842,36 @@ func mergeGraphResults(base, graph map[string]any, maxBoost int) map[string]any 
 			continue
 		}
 		m["graph_boost"] = true
-		baseItems = append(baseItems, m)
+		picked = append(picked, m)
 		seenIDs[id] = true
-		boosted++
 	}
 
-	if boosted > 0 {
-		out := make(map[string]any, len(base))
-		for k, v := range base {
-			out[k] = v
-		}
-		out["items"] = baseItems
-		out["total"] = len(baseItems)
-		out["graph_boost_count"] = boosted
-		return out
+	if len(picked) == 0 {
+		return base
 	}
-	return base
+
+	// Make room for the neighbours rather than growing the page past the limit.
+	if keep := limit - len(picked); len(baseItems) > keep {
+		if keep < 0 {
+			keep = 0
+		}
+		baseItems = baseItems[:keep]
+	}
+	merged := append(baseItems, picked...)
+
+	// Belt and braces: whatever the arithmetic above, the caller's bound holds.
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+
+	out := make(map[string]any, len(base))
+	for k, v := range base {
+		out[k] = v
+	}
+	out["items"] = merged
+	out["total"] = len(merged)
+	out["graph_boost_count"] = len(picked)
+	return out
 }
 
 func (s *Server) handleRecallWithGraph(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
