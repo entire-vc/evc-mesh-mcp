@@ -321,6 +321,50 @@ func TestHandleAddVCSLink_SelfHostedWithExplicitExternalID(t *testing.T) {
 	}
 }
 
+// #df734dd9: the whole point of exposing status is linking a PR that was
+// already merged before this call — the one case a GitHub webhook can never
+// backfill, since the merge event fired before the link existed.
+func TestHandleAddVCSLink_ExplicitStatusIsForwarded(t *testing.T) {
+	for _, given := range []string{"merged", "MERGED", " merged "} {
+		t.Run(given, func(t *testing.T) {
+			taskID := uuid.New().String()
+			server, captured, closeSrv := addVCSLinkHarness(t, taskID)
+			defer closeSrv()
+
+			result := callAddVCSLink(t, server, map[string]any{
+				"task_id": taskID,
+				"url":     "https://github.com/entire-vc/evc-mesh-mcp/pull/40",
+				"status":  given,
+			})
+			if result.IsError {
+				t.Fatalf("tool returned an error result: %v", result.Content)
+			}
+			if got := (*captured)["status"]; got != "merged" {
+				t.Errorf("status sent to the API = %v, want merged", got)
+			}
+		})
+	}
+}
+
+// Omitting status must not send an empty/zero value the API would have to
+// special-case — the field is simply absent, same treatment as title.
+func TestHandleAddVCSLink_OmittedStatusIsNotSent(t *testing.T) {
+	taskID := uuid.New().String()
+	server, captured, closeSrv := addVCSLinkHarness(t, taskID)
+	defer closeSrv()
+
+	result := callAddVCSLink(t, server, map[string]any{
+		"task_id": taskID,
+		"url":     "https://github.com/entire-vc/evc-mesh/pull/426",
+	})
+	if result.IsError {
+		t.Fatalf("tool returned an error result: %v", result.Content)
+	}
+	if _, ok := (*captured)["status"]; ok {
+		t.Errorf("status was sent without being asked for: %v", (*captured)["status"])
+	}
+}
+
 func TestHandleAddVCSLink_RequiredArguments(t *testing.T) {
 	taskID := uuid.New().String()
 	server, _, closeSrv := addVCSLinkHarness(t, taskID)

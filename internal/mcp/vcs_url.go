@@ -35,6 +35,15 @@ func normalizeVCSLinkType(raw string) string {
 	return cleaned
 }
 
+// normalizeVCSLinkStatus folds case/whitespace the same way link_type does.
+// Unlike link_type it has no aliases and no inferred default — status is
+// either stated explicitly by the caller or left for the API to default
+// (open, for PR links; see evc-mesh vcs_link_service.Create). An unrecognised
+// value is returned lower-cased and unchanged so the API decides validity.
+func normalizeVCSLinkStatus(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
 // vcsURLFacts holds what a VCS URL says about itself. Every field is best
 // effort: a URL shape we do not recognise yields a zero value, and the caller
 // falls back to explicit arguments.
