@@ -21,7 +21,7 @@ import (
 
 // Profile constants for MCP server tool sets.
 const (
-	// ProfileCore registers only the 20 essential tools for lightweight agents.
+	// ProfileCore registers only the 25 essential tools for lightweight agents.
 	ProfileCore = "core"
 	// ProfileFull registers all tools (core + advanced). This is the default.
 	ProfileFull = "full"
@@ -134,7 +134,7 @@ type ServerConfig struct {
 	Session *AgentSession
 	// RESTClient is the HTTP client used to call the Mesh REST API.
 	RESTClient *RESTClient
-	// Profile controls which tools are registered: "core" (20 essential tools)
+	// Profile controls which tools are registered: "core" (25 essential tools)
 	// or "full" (all tools, default).
 	Profile string
 }
@@ -210,7 +210,7 @@ func (s *Server) MCPServer() *mcpserver.MCPServer {
 	return s.mcpServer
 }
 
-// registerCoreTools registers the 20 essential tools with optimized, directive descriptions.
+// registerCoreTools registers the 25 essential tools with optimized, directive descriptions.
 func (s *Server) registerCoreTools() {
 	// --- ACP / Session tools ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("heartbeat",
@@ -333,6 +333,16 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("parent_comment_id", mcpsdk.Description("Parent comment ID for threading.")),
 		mcpsdk.WithObject("metadata", mcpsdk.Description("Additional metadata as key-value pairs.")),
 	), s.tracked("add_comment", s.handleAddComment))
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("add_vcs_link",
+		mcpsdk.WithDescription("Link a task to a pull request, commit, or branch. This is what makes the task↔PR join real: a task with no VCS link cannot be matched to the code that implements it, so PR-driven status automation and any 'what shipped for this task?' report simply will not see it. Call it as soon as the PR exists. Only task_id and url are needed — provider, link_type and external_id are inferred from a GitHub or GitLab URL."),
+		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
+		mcpsdk.WithString("url", mcpsdk.Required(), mcpsdk.Description("Link URL, e.g. https://github.com/owner/repo/pull/123.")),
+		mcpsdk.WithString("provider", mcpsdk.Description("VCS provider: github, gitlab. Inferred from the URL host; defaults to github.")),
+		mcpsdk.WithString("link_type", mcpsdk.Description("What the URL points at: pr (alias: pull_request), commit, branch. Inferred from the URL path; defaults to pr.")),
+		mcpsdk.WithString("external_id", mcpsdk.Description("PR number, commit SHA, or branch name. Inferred from the URL; only needed when the URL is not a recognised PR/commit/branch link.")),
+		mcpsdk.WithString("title", mcpsdk.Description("Human-readable label, e.g. the PR title.")),
+	), s.tracked("add_vcs_link", s.handleAddVCSLink))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("publish_event",
 		mcpsdk.WithDescription("Publish an event to the event bus. For summaries, use event_type='summary'. Add memory={persist:true, key:'decision-name'} to also save as permanent memory. Replaces the deprecated publish_summary tool."),
