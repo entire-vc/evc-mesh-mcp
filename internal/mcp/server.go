@@ -335,13 +335,14 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("add_comment", s.handleAddComment))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("add_vcs_link",
-		mcpsdk.WithDescription("Link a task to a pull request, commit, or branch. This is what makes the task↔PR join real: a task with no VCS link cannot be matched to the code that implements it, so PR-driven status automation and any 'what shipped for this task?' report simply will not see it. Call it as soon as the PR exists. Only task_id and url are needed — provider, link_type and external_id are inferred from a GitHub or GitLab URL."),
+		mcpsdk.WithDescription("Link a task to a pull request, commit, or branch. This is what makes the task↔PR join real: a task with no VCS link cannot be matched to the code that implements it, so PR-driven status automation and any 'what shipped for this task?' report simply will not see it. Call it as soon as the PR exists. Only task_id and url are needed — provider, link_type and external_id are inferred from a GitHub or GitLab URL. If the PR is ALREADY merged (or closed) by the time you call this — e.g. you finished, merged, and are linking retroactively — pass status='merged' (or 'closed'). Without it the link starts as 'open' and the done-evidence gate will block move→done on it forever: no GitHub webhook fires for a merge that happened before the link existed."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("url", mcpsdk.Required(), mcpsdk.Description("Link URL, e.g. https://github.com/owner/repo/pull/123.")),
 		mcpsdk.WithString("provider", mcpsdk.Description("VCS provider: github, gitlab. Inferred from the URL host; defaults to github.")),
 		mcpsdk.WithString("link_type", mcpsdk.Description("What the URL points at: pr (alias: pull_request), commit, branch. Inferred from the URL path; defaults to pr.")),
 		mcpsdk.WithString("external_id", mcpsdk.Description("PR number, commit SHA, or branch name. Inferred from the URL; only needed when the URL is not a recognised PR/commit/branch link.")),
 		mcpsdk.WithString("title", mcpsdk.Description("Human-readable label, e.g. the PR title.")),
+		mcpsdk.WithString("status", mcpsdk.Description("PR status, if you already know it: open, merged, closed. Pass 'merged' when linking a PR that was merged before this call — that is the one case a webhook can never backfill. Omit it to let the link start as 'open' (the safe default when the PR is still active). Calling add_vcs_link again on the same PR with a status update is safe — it corrects the existing link rather than failing.")),
 	), s.tracked("add_vcs_link", s.handleAddVCSLink))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("publish_event",

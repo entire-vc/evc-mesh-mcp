@@ -645,6 +645,17 @@ func (s *Server) handleAddVCSLink(ctx context.Context, request mcpsdk.CallToolRe
 		reqBody["title"] = title
 	}
 
+	// status has no inferred default here — a caller who does not state it
+	// gets whatever the API defaults to (open, for PR links). It exists so a
+	// PR that was already merged before this call links it can be recorded
+	// as such immediately: no GitHub webhook will ever arrive for a merge
+	// that predates the link, so without this the row is stuck unresolvable
+	// forever (#df734dd9) and the done-evidence gate blocks the task on it
+	// permanently.
+	if status := mcpsdk.ParseString(request, "status", ""); status != "" {
+		reqBody["status"] = normalizeVCSLinkStatus(status)
+	}
+
 	result, err := s.getRESTClient(ctx).AddVCSLink(ctx, taskID, reqBody)
 	if err != nil {
 		return errResult("failed to add VCS link: %v", err)
