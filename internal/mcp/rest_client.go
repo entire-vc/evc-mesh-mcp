@@ -325,6 +325,15 @@ func (c *RESTClient) AddComment(ctx context.Context, taskID string, body map[str
 	return result, nil
 }
 
+// AddVCSLink links a task to a pull request, commit, or branch.
+func (c *RESTClient) AddVCSLink(ctx context.Context, taskID string, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/vcs-links", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // ListComments lists comments on a task.
 func (c *RESTClient) ListComments(ctx context.Context, taskID string, params map[string]string) (map[string]any, error) {
 	path := "/api/v1/tasks/" + taskID + "/comments"

@@ -585,6 +585,75 @@ func (s *Server) handleAddComment(ctx context.Context, request mcpsdk.CallToolRe
 }
 
 // ============================================================================
+// 11a. add_vcs_link
+// ============================================================================
+
+func (s *Server) handleAddVCSLink(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	session := s.getSession(ctx)
+	if session == nil {
+		return errResult("not authenticated: no agent session")
+	}
+
+	taskID := mcpsdk.ParseString(request, "task_id", "")
+	if taskID == "" {
+		return errResult("task_id is required")
+	}
+
+	rawURL := mcpsdk.ParseString(request, "url", "")
+	if rawURL == "" {
+		return errResult("url is required")
+	}
+
+	// Everything below the URL is inferred unless the caller overrides it.
+	facts := parseVCSURL(rawURL)
+
+	provider := mcpsdk.ParseString(request, "provider", "")
+	if provider == "" {
+		provider = facts.Provider
+	}
+	if provider == "" {
+		provider = "github"
+	}
+
+	linkType := mcpsdk.ParseString(request, "link_type", "")
+	if linkType == "" {
+		linkType = facts.LinkType
+	}
+	if linkType == "" {
+		linkType = vcsLinkTypePR
+	}
+	linkType = normalizeVCSLinkType(linkType)
+
+	externalID := mcpsdk.ParseString(request, "external_id", "")
+	if externalID == "" {
+		externalID = facts.ExternalID
+	}
+	if externalID == "" {
+		return errResult(
+			"could not infer external_id from url %q — pass external_id explicitly "+
+				"(the PR number, commit SHA, or branch name)", rawURL)
+	}
+
+	reqBody := map[string]any{
+		"provider":    strings.ToLower(provider),
+		"link_type":   linkType,
+		"external_id": externalID,
+		"url":         rawURL,
+	}
+
+	if title := mcpsdk.ParseString(request, "title", ""); title != "" {
+		reqBody["title"] = title
+	}
+
+	result, err := s.getRESTClient(ctx).AddVCSLink(ctx, taskID, reqBody)
+	if err != nil {
+		return errResult("failed to add VCS link: %v", err)
+	}
+
+	return jsonResult(result)
+}
+
+// ============================================================================
 // 12. list_comments
 // ============================================================================
 
