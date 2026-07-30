@@ -2008,7 +2008,16 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 	// Auto-populate project_id from the most recently checked-out task when the
 	// agent omits it. This fixes the Memory Eval E·P2 issue where 99% of episodic
 	// entries had project_id=NULL because agents didn't pass it explicitly.
-	if projectID == "" {
+	//
+	// Gated to scope=="project" only (task #2c0154db/F3): identity now follows
+	// declared scope (workspace -> (ws,key), project -> (ws,project,key)) since
+	// evc-mesh#444/memory_service.go:488 narrowed the server-side twin of this
+	// same auto-stamp the same way. Without this gate, a workspace-scope
+	// remember() from inside a checked-out task silently gets a project_id it
+	// never asked for, which is exactly the drift #4edf3fb5's collapse had to
+	// clean up once (582 rows) and started regressing again within 2h of that
+	// cleanup (2 rows) because only the server side had been fixed.
+	if projectID == "" && scope == "project" {
 		if stored, ok := s.activeProjects.Load(session.AgentID); ok {
 			if pid, ok2 := stored.(string); ok2 {
 				projectID = pid
