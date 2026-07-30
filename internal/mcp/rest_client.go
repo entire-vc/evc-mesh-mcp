@@ -731,7 +731,7 @@ type RecallMemoriesParams struct {
 	RelevanceMin      float64
 	ImportanceMin     float64
 	ApplyRecencyDecay bool
-	HalfLifeDays      int   // >0 → passed as half_life_days to server (P1-D feature)
+	HalfLifeDays      int // >0 → passed as half_life_days to server (P1-D feature)
 	OrderBy           string
 	IncludeExpired    bool
 	IncludeArchived   bool
@@ -810,11 +810,21 @@ func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams)
 }
 
 // RecallWithGraphParams holds parameters for KG-expanded memory recall.
+//
+// Scope/Tags/TagsAny restrict both the seed recall AND the BFS-expanded
+// neighbours server-side (domain.RecallGraphOpts, task #2c087b2a) — graph
+// expansion walks memory_edges, which carry no notion of scope, so without
+// these an out-of-scope memory adjacent to an in-scope seed is returned. The
+// server accepted these fields from day one; nothing on this path sent them
+// until task #37e9344c, so the filter bypass was live on every call.
 type RecallWithGraphParams struct {
 	Query           string
 	WorkspaceID     string
 	ProjectID       string
 	TaskID          string
+	Scope           string
+	Tags            []string
+	TagsAny         []string
 	Hops            int
 	WeightThreshold float64
 	Limit           int
@@ -836,6 +846,22 @@ func (c *RESTClient) RecallWithGraph(ctx context.Context, p RecallWithGraphParam
 	}
 	if p.TaskID != "" {
 		params.Set("task_id", p.TaskID)
+	}
+	if p.Scope != "" {
+		params.Set("scope", p.Scope)
+	}
+	// recall_graph's query struct binds Tags/TagsAny as plain strings via
+	// echo's c.Bind, which — unlike the repeatable-param handling the regular
+	// /search endpoint uses — keeps only the FIRST occurrence of a repeated
+	// param. Sending repeated tags=a&tags=b here would silently narrow a
+	// two-tag filter to one tag with no error (the exact C4-channel gotcha
+	// from #2c087b2a). The server splits on comma (splitCSV), so a single
+	// comma-joined value is the only encoding that survives intact.
+	if len(p.Tags) > 0 {
+		params.Set("tags", strings.Join(p.Tags, ","))
+	}
+	if len(p.TagsAny) > 0 {
+		params.Set("tags_any", strings.Join(p.TagsAny, ","))
 	}
 	if p.Hops > 0 {
 		params.Set("hops", fmt.Sprintf("%d", p.Hops))

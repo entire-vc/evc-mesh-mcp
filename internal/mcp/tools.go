@@ -1839,9 +1839,15 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	// append any hop>0 items not already present in the base results.
 	if os.Getenv("RECALL_GRAPH_ENABLED") == "true" {
 		graphResult, graphErr := s.getRESTClient(ctx).RecallWithGraph(ctx, RecallWithGraphParams{
-			Query:           query,
-			WorkspaceID:     session.WorkspaceID.String(),
-			ProjectID:       projectID,
+			Query:       query,
+			WorkspaceID: session.WorkspaceID.String(),
+			ProjectID:   projectID,
+			// Reuse rp's already-parsed Scope/Tags/TagsAny rather than re-reading
+			// them from the request — a second parse is a second place for the
+			// two to silently disagree (task #37e9344c).
+			Scope:           rp.Scope,
+			Tags:            rp.Tags,
+			TagsAny:         rp.TagsAny,
 			Hops:            2,
 			WeightThreshold: 0.1, // wide traversal: at 0.3 hop>0 items don't survive importance filter
 			Limit:           50,  // request wider set so hop>0 neighbors are included
