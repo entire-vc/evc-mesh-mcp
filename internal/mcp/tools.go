@@ -1099,9 +1099,10 @@ func (s *Server) handleHeartbeat(ctx context.Context, request mcpsdk.CallToolReq
 	}
 
 	return jsonResult(map[string]any{
-		"status":    "ok",
-		"agent_id":  session.AgentID.String(),
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"status":       "ok",
+		"agent_id":     session.AgentID.String(),
+		"timestamp":    time.Now().UTC().Format(time.RFC3339),
+		"mesh_version": BuildSHA,
 	})
 }
 
