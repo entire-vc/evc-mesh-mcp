@@ -130,7 +130,7 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 
 | Tool | Description |
 |------|-------------|
-| `heartbeat` | Send heartbeat. Call at session start with status=online |
+| `heartbeat` | Send heartbeat. Call at session start with status=online. Response includes `mesh_version` (the running binary's build git-SHA, or `"dev"` for an unpinned local build) — cheap way to check whether a fix has actually reached the installed binary without shelling out to the host. |
 | `get_project_knowledge` | Get ALL permanent knowledge (decisions, conventions). ACP Step 2 |
 | `get_my_rules` | Get ALL governance rules (workflow + assignment). ACP Step 3 |
 | `get_context` | Get recent activity + project knowledge. ACP Step 4 |
@@ -313,6 +313,20 @@ ssh root@prod-host
 
 > evc-mesh-mcp does not run its own migrations — it relies on the evc-mesh API's
 > schema. The goose step above ensures the schema matches before the new binary serves traffic.
+
+## Local stdio binary — this repo also builds the tool your agent runs
+
+The checklist above is for the SSE/HTTP prod server. This repo also builds the
+binary a local `stdio` MCP client runs directly (no network deploy involved,
+e.g. Claude Code's `.mcp.json` pointing at `~/bin/mesh-mcp`). That path used to
+be entirely manual — a merged fix could sit uninstalled indefinitely, looking
+identical to "the feature doesn't exist" from inside an agent session (no
+error, just an outdated tool). Where the fleet builds this way, a poll-based
+watcher (not a GitHub-hosted runner — self-hosted CI runners on developer
+machines are a known supply-chain risk this fleet avoids) rebuilds and
+atomically installs the binary on `origin/main` changes, and the `heartbeat`
+tool's `mesh_version` field (see the tools table above) lets a session confirm
+which commit is actually installed without shelling out to the host.
 
 ## Related
 
