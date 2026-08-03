@@ -302,6 +302,8 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithObject("custom_fields", mcpsdk.Description("Custom field values to update.")),
 		mcpsdk.WithString("due_date", mcpsdk.Description("Due date in RFC3339 format.")),
 		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours.")),
+		mcpsdk.WithString("delegation_level", mcpsdk.Description("Routing after work: auto, review, or supervised.")),
+		mcpsdk.WithBoolean("completion_signal", mcpsdk.Description("Mark agent-side work as finished.")),
 	), s.tracked("update_task", s.handleUpdateTask))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("move_task",
