@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net/textproto"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -252,9 +253,15 @@ func TestUploadArtifact_ForwardsMimeTypeOnFilePart(t *testing.T) {
 	}
 }
 
-// TestUploadArtifact_NoMimeTypeKeepsDefaultPart is the negative control for the part
-// rewrite: with no mime_type the hand-built header path must not be taken, and the
-// filename must still survive.
+// TestUploadArtifact_NoMimeTypeKeepsDefaultPart pins what happens when the caller
+// omits mime_type.
+//
+// Note which branch actually runs: handleUploadArtifact fills mimeType with
+// detectMIMEType(name), whose default arm returns "application/octet-stream", so
+// fileMime is NEVER empty and the CreatePart path is the only one production takes.
+// An earlier version of this comment claimed the opposite, and the test passed anyway
+// because it asserted nothing that could tell the two branches apart — which is how a
+// header-injection bug lived in the "untaken" branch through a green suite.
 func TestUploadArtifact_NoMimeTypeKeepsDefaultPart(t *testing.T) {
 	got := captureUpload(t, map[string]any{
 		"task_id": uuid.New().String(),
@@ -275,4 +282,115 @@ func TestUploadArtifact_NoMimeTypeKeepsDefaultPart(t *testing.T) {
 	if ct := got.filePart.contentType; ct != "text/plain" {
 		t.Errorf("Content-Type on the default part = %q, want the detected text/plain", ct)
 	}
+}
+
+
+// TestUploadArtifact_FilenameCannotInjectHeaders is the regression guard for a defect
+// introduced while wiring mime_type through: the Content-Disposition was built with
+// Sprintf and a hand-written quote escaper that copied two of the standard library's
+// four replacements, dropping \r -> %0D and \n -> %0A.
+//
+// A filename containing CRLF therefore closed the header line early and injected
+// arbitrary headers into the part, including a second Content-Type — and Header.Get
+// returns the injected one in preference to ours, so an attacker-chosen filename
+// controlled the MIME type the server stored.
+//
+// The assertions are on the PARSED part, not on the raw bytes: what matters is what a
+// multipart reader (the server uses the same standard library) makes of it.
+func TestUploadArtifact_FilenameCannotInjectHeaders(t *testing.T) {
+	hostile := "evil.txt\r\nX-Injected: pwned\r\nContent-Type: text/html"
+
+	got := captureUploadParts(t, map[string]any{
+		"task_id":   uuid.New().String(),
+		"name":      hostile,
+		"content":   "x",
+		"mime_type": "image/svg+xml",
+	})
+
+	if v := got.header.Get("X-Injected"); v != "" {
+		t.Errorf("filename injected a header into the part: X-Injected=%q", v)
+	}
+	if cts := got.header.Values("Content-Type"); len(cts) != 1 {
+		t.Errorf("part carries %d Content-Type values %v — exactly one must survive", len(cts), cts)
+	}
+	if ct := got.header.Get("Content-Type"); ct != "image/svg+xml" {
+		t.Errorf("Content-Type = %q, want the caller's image/svg+xml, not a filename-supplied one", ct)
+	}
+	// The header must be ONE line — the injected content has to live inside the
+	// encoded parameter value, not as separate header lines.
+	cd := got.header.Get("Content-Disposition")
+	if strings.ContainsAny(cd, "\r\n") {
+		t.Errorf("Content-Disposition contains a raw CR/LF, so the value escaped its header: %q", cd)
+	}
+	if !strings.Contains(cd, "%0D%0A") {
+		t.Errorf("expected the CRLF to survive percent-encoded (RFC 2231), got %q", cd)
+	}
+
+	// Deliberately NOT asserting an exact filename round-trip here: Part.FileName()
+	// applies filepath.Base per RFC 7578 4.2, and this hostile name contains "/" in
+	// "text/html", so the reader legitimately returns "html". That is a path-traversal
+	// guard doing its job, not truncation by the injection — the exact round-trip is
+	// covered by TestUploadArtifact_UnicodeFilenameRoundTrips on a name without a
+	// separator. What matters here is that nothing became a header.
+}
+
+// TestUploadArtifact_UnicodeFilenameRoundTrips guards the encoding the fix relies on:
+// FormatMediaType switches to RFC 2231 (filename*=utf-8'') for non-ASCII, and the
+// reader must decode it back.
+func TestUploadArtifact_UnicodeFilenameRoundTrips(t *testing.T) {
+	name := "отчёт-\"quoted\".md"
+	got := captureUploadParts(t, map[string]any{
+		"task_id": uuid.New().String(), "name": name, "content": "x", "mime_type": "text/markdown",
+	})
+	if got.filename != name {
+		t.Errorf("filename did not round-trip: got %q, want %q", got.filename, name)
+	}
+}
+
+type partCapture struct {
+	header   textproto.MIMEHeader
+	filename string
+}
+
+// captureUploadParts returns the parsed file part: its full header set and the
+// filename a multipart reader recovers from it.
+func captureUploadParts(t *testing.T, args map[string]any) partCapture {
+	t.Helper()
+	var out partCapture
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/artifacts") && r.Method == http.MethodPost {
+			_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err == nil {
+				mr := multipart.NewReader(r.Body, params["boundary"])
+				for {
+					p, perr := mr.NextPart()
+					if perr != nil {
+						break
+					}
+					if p.FileName() != "" || p.FormName() == "file" {
+						out.header = p.Header
+						out.filename = p.FileName()
+					}
+					_, _ = io.ReadAll(p)
+				}
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": uuid.New().String()})
+	}))
+	t.Cleanup(srv.Close)
+
+	server := &Server{restClient: NewRESTClient(srv.URL, "k"), tracker: NewSessionTracker()}
+	req := mcpsdk.CallToolRequest{}
+	req.Params.Arguments = args
+	ctx := withTestSession(context.Background(), server, uuid.New())
+	result, err := server.handleUploadArtifact(ctx, req)
+	if err != nil {
+		t.Fatalf("handleUploadArtifact: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleUploadArtifact error result: %+v", result.Content)
+	}
+	return out
 }

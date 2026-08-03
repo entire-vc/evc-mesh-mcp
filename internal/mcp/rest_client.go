@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/textproto"
 	"net/http"
@@ -145,9 +146,23 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 		err error
 	)
 	if fileMime != "" {
+		// Build the Content-Disposition with mime.FormatMediaType rather than by hand.
+		// An earlier version formatted it with Sprintf and a locally-written quote
+		// escaper; that escaper copied two of the standard library's four
+		// replacements and dropped \r -> %0D and \n -> %0A, so a filename containing
+		// CRLF terminated the header early and injected arbitrary headers into the
+		// part — including a second Content-Type that Header.Get returns in
+		// preference to ours. FormatMediaType is the standard library's own encoder:
+		// it percent-encodes such values per RFC 2231 instead of interpolating them.
+		disposition := mime.FormatMediaType("form-data", map[string]string{
+			"name":     fileField,
+			"filename": fileName,
+		})
+		if disposition == "" {
+			return fmt.Errorf("cannot encode Content-Disposition for file name %q", fileName)
+		}
 		h := make(textproto.MIMEHeader)
-		h.Set("Content-Disposition",
-			fmt.Sprintf(`form-data; name="%s"; filename="%s"`, escapeQuotes(fileField), escapeQuotes(fileName)))
+		h.Set("Content-Disposition", disposition)
 		h.Set("Content-Type", fileMime)
 		fw, err = mw.CreatePart(h)
 	} else {
@@ -418,12 +433,6 @@ func (c *RESTClient) UploadArtifact(ctx context.Context, taskID, name, artifactT
 		return nil, err
 	}
 	return result, nil
-}
-
-// escapeQuotes matches mime/multipart's own unexported quoteEscaper, so a part header
-// we build by hand is quoted exactly the way CreateFormFile would have done it.
-func escapeQuotes(s string) string {
-	return strings.NewReplacer("\\", "\\\\", `"`, `\"`).Replace(s)
 }
 
 // ListArtifacts lists artifacts for a task.
