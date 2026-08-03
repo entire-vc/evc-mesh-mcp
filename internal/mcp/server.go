@@ -480,6 +480,16 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithString("description", mcpsdk.Description("Subtask description.")),
 		mcpsdk.WithString("priority", mcpsdk.Description("Priority: urgent, high, medium, low, none."), mcpsdk.DefaultString("medium")),
 		mcpsdk.WithString("status_slug", mcpsdk.Description("Status slug (e.g. 'todo'). Uses project default if omitted.")),
+		// The subtask REST endpoint accepts all of the following, and create_task
+		// already exposes them. Omitting them here made the two sibling tools diverge
+		// for no stated reason — and because MCP does not reject unknown arguments, a
+		// caller passing assignee_id got 201 back with the value silently discarded.
+		mcpsdk.WithString("assignee_id", mcpsdk.Description("Agent or user ID to assign the subtask to. Defaults to the creator if omitted.")),
+		mcpsdk.WithString("assignee_type", mcpsdk.Description("Assignee type: agent, user, or unassigned.")),
+		mcpsdk.WithArray("labels", mcpsdk.Description("Labels for the subtask.")),
+		mcpsdk.WithObject("custom_fields", mcpsdk.Description("Custom field values, keyed by field slug.")),
+		mcpsdk.WithString("due_date", mcpsdk.Description("Due date, RFC3339 (e.g. 2026-08-10T12:00:00Z).")),
+		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours.")),
 	), s.tracked("create_subtask", s.handleCreateSubtask))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("add_dependency",
