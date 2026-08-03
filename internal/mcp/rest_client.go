@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net/textproto"
 	"net/http"
 	"net/url"
 	"sort"
@@ -123,7 +124,7 @@ func apiErrorMessage(errBody map[string]any, statusCode int) string {
 }
 
 // doMultipart executes a multipart/form-data POST and decodes the JSON response into result.
-func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[string]string, fileField, fileName string, fileContent []byte, result any) error {
+func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[string]string, fileField, fileName, fileMime string, fileContent []byte, result any) error {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
@@ -134,8 +135,24 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 		}
 	}
 
-	// Write file content as a form file.
-	fw, err := mw.CreateFormFile(fileField, fileName)
+	// Write file content as a form file. When the caller supplies a MIME type we set
+	// it on the part header rather than letting CreateFormFile default to
+	// application/octet-stream: the API derives the stored MimeType from this header
+	// (inferMimeType(part Content-Type, filename)), so it is the only channel an
+	// explicit mime_type can travel through.
+	var (
+		fw  io.Writer
+		err error
+	)
+	if fileMime != "" {
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition",
+			fmt.Sprintf(`form-data; name="%s"; filename="%s"`, escapeQuotes(fileField), escapeQuotes(fileName)))
+		h.Set("Content-Type", fileMime)
+		fw, err = mw.CreatePart(h)
+	} else {
+		fw, err = mw.CreateFormFile(fileField, fileName)
+	}
 	if err != nil {
 		return fmt.Errorf("create form file: %w", err)
 	}
@@ -381,16 +398,32 @@ func (c *RESTClient) ListComments(ctx context.Context, taskID string, params map
 }
 
 // UploadArtifact uploads an artifact to a task using multipart form.
-func (c *RESTClient) UploadArtifact(ctx context.Context, taskID, name, artifactType, mimeType string, content []byte) (map[string]any, error) {
+// UploadArtifact uploads an artifact. metadata, when non-empty, must be a JSON object
+// string — the API reads it from the "metadata" form field and stores it verbatim.
+//
+// mimeType previously arrived as a parameter and was discarded: it was in the
+// signature but never written to the request, so callers setting it got the inferred
+// type regardless. It now travels on the file part's Content-Type header, which is
+// where the API looks for it.
+func (c *RESTClient) UploadArtifact(ctx context.Context, taskID, name, artifactType, mimeType, metadata string, content []byte) (map[string]any, error) {
 	fields := map[string]string{
 		"name":          name,
 		"artifact_type": artifactType,
 	}
+	if metadata != "" {
+		fields["metadata"] = metadata
+	}
 	var result map[string]any
-	if err := c.doMultipart(ctx, "/api/v1/tasks/"+taskID+"/artifacts", fields, "file", name, content, &result); err != nil {
+	if err := c.doMultipart(ctx, "/api/v1/tasks/"+taskID+"/artifacts", fields, "file", name, mimeType, content, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
+}
+
+// escapeQuotes matches mime/multipart's own unexported quoteEscaper, so a part header
+// we build by hand is quoted exactly the way CreateFormFile would have done it.
+func escapeQuotes(s string) string {
+	return strings.NewReplacer("\\", "\\\\", `"`, `\"`).Replace(s)
 }
 
 // ListArtifacts lists artifacts for a task.

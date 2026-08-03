@@ -340,6 +340,16 @@ func (s *Server) handleUpdateTask(ctx context.Context, request mcpsdk.CallToolRe
 		eh := mcpsdk.ParseFloat64(request, "estimated_hours", 0)
 		body["estimated_hours"] = eh
 	}
+	// delegation_level is settable at creation but was unsettable afterwards — an
+	// asymmetry with no rationale, so a task's routing could never be corrected.
+	if dl := mcpsdk.ParseString(request, "delegation_level", ""); dl != "" {
+		body["delegation_level"] = dl
+	}
+	// completion_signal is documented in the domain as "set by an agent to indicate
+	// agent-side work is done" — agent-facing by design, and unreachable until now.
+	if _, ok := args["completion_signal"]; ok {
+		body["completion_signal"] = mcpsdk.ParseBoolean(request, "completion_signal", false)
+	}
 
 	if len(body) == 0 {
 		return errResult("no fields to update")
@@ -738,7 +748,18 @@ func (s *Server) handleUploadArtifact(ctx context.Context, request mcpsdk.CallTo
 
 	artifactType := mcpsdk.ParseString(request, "artifact_type", "file")
 
-	result, err := s.getRESTClient(ctx).UploadArtifact(ctx, taskID, name, artifactType, mimeType, []byte(content))
+	// metadata was declared on this tool and never read — the schema promised a field
+	// the handler dropped. The API stores it verbatim from the "metadata" form field.
+	metadataJSON := ""
+	if md := mcpsdk.ParseStringMap(request, "metadata", nil); md != nil {
+		raw, err := json.Marshal(md)
+		if err != nil {
+			return errResult("invalid metadata: %v", err)
+		}
+		metadataJSON = string(raw)
+	}
+
+	result, err := s.getRESTClient(ctx).UploadArtifact(ctx, taskID, name, artifactType, mimeType, metadataJSON, []byte(content))
 	if err != nil {
 		return errResult("failed to upload artifact: %v", err)
 	}
@@ -935,6 +956,16 @@ func (s *Server) handleGetContext(ctx context.Context, request mcpsdk.CallToolRe
 	limit := mcpsdk.ParseInt(request, "limit", 50)
 	if limit > 0 {
 		params["page_size"] = strconv.Itoa(limit)
+	}
+
+	// The schema advertises `since` as an RFC3339 lower bound and the handler used to
+	// drop it, so a caller narrowing the window silently got the default one instead.
+	// The API spells the same filter `date_from` (listEventsQuery.DateFrom).
+	if since := mcpsdk.ParseString(request, "since", ""); since != "" {
+		if _, err := time.Parse(time.RFC3339, since); err != nil {
+			return errResult("invalid since format, expected RFC3339: %v", err)
+		}
+		params["date_from"] = since
 	}
 
 	if eventTypes := parseStringSlice(request, "event_types"); len(eventTypes) > 0 {
