@@ -373,20 +373,12 @@ func (s *Server) handleMoveTask(ctx context.Context, request mcpsdk.CallToolRequ
 		return errResult("status_slug is required")
 	}
 
-	// We need the project_id to resolve the status slug.
-	// Get the task first to find its project_id.
-	task, err := s.getRESTClient(ctx).GetTask(ctx, taskID)
-	if err != nil {
-		return errResult("failed to get task: %v", err)
-	}
-
-	projectID, _ := task["project_id"].(string)
-	if projectID == "" {
-		return errResult("task has no project_id")
-	}
-
 	// Resolve slug to status ID (move_task to review is intentionally allowed).
-	stID, stName, _, err := s.resolveStatusSlug(ctx, projectID, statusSlug)
+	// Read through the task-scoped route: it carries the same workspace gate as the
+	// move itself, so a caller entitled to the transition is entitled to the lookup.
+	// The project-scoped route would refuse a workspace member who is not a member of
+	// the task's project, with a 403 naming the project rather than the move.
+	stID, stName, _, err := s.resolveStatusSlugForTask(ctx, taskID, statusSlug)
 	if err != nil {
 		return errResult("invalid status_slug: %v", err)
 	}
@@ -449,16 +441,11 @@ func (s *Server) handleCreateSubtask(ctx context.Context, request mcpsdk.CallToo
 	}
 
 	// Resolve status slug against the parent's project. Omitted → project default.
+	// Same gate reasoning as move_task: POST /tasks/:task_id/subtasks is workspace-gated,
+	// so the slug lookup it depends on is read through the task-scoped route too.
+	// Fixing only move_task would have left this second entry into the same dead end open.
 	if slug := mcpsdk.ParseString(request, "status_slug", ""); slug != "" {
-		parent, err := s.getRESTClient(ctx).GetTask(ctx, parentTaskID)
-		if err != nil {
-			return errResult("failed to load parent task: %v", err)
-		}
-		projectID, _ := parent["project_id"].(string)
-		if projectID == "" {
-			return errResult("parent task has no project_id")
-		}
-		stID, _, _, err := s.resolveStatusSlug(ctx, projectID, slug)
+		stID, _, _, err := s.resolveStatusSlugForTask(ctx, parentTaskID, slug)
 		if err != nil {
 			return errResult("invalid status_slug: %v", err)
 		}

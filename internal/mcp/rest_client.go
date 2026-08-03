@@ -69,7 +69,7 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return fmt.Errorf("%s: %s", http.StatusText(resp.StatusCode), apiErrorMessage(errBody, resp.StatusCode))
+		return &APIError{StatusCode: resp.StatusCode, Message: apiErrorMessage(errBody, resp.StatusCode)}
 	}
 
 	if result != nil {
@@ -78,6 +78,20 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 		}
 	}
 	return nil
+}
+
+// APIError is a failed API response. It carries the HTTP status alongside the
+// server's message so callers can branch on the status — e.g. tell "this server
+// predates the route" (404) apart from "this server refused me" (403) — without
+// pattern-matching on error text. Error() renders exactly as before, so existing
+// callers and their error strings are unchanged.
+type APIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s: %s", http.StatusText(e.StatusCode), e.Message)
 }
 
 // apiErrorMessage builds a human-readable message from a Mesh API error body.
@@ -151,7 +165,7 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return fmt.Errorf("%s: %s", http.StatusText(resp.StatusCode), apiErrorMessage(errBody, resp.StatusCode))
+		return &APIError{StatusCode: resp.StatusCode, Message: apiErrorMessage(errBody, resp.StatusCode)}
 	}
 
 	if result != nil {
@@ -207,6 +221,21 @@ func (c *RESTClient) GetProject(ctx context.Context, projectID string) (map[stri
 func (c *RESTClient) GetProjectStatuses(ctx context.Context, projectID string) ([]map[string]any, error) {
 	var result []map[string]any
 	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/projects/"+projectID+"/statuses", nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetTaskStatuses returns the statuses of the project owning the given task.
+//
+// This route carries the same workspace gate as POST /tasks/:task_id/move, whereas
+// GET /projects/:proj_id/statuses is project-gated. Resolving a status slug is a
+// precondition of the move, so it must be read through the route whose gate matches
+// the move — otherwise a caller entitled to the transition is refused the lookup and
+// the 403 it gets back names the project rather than the move.
+func (c *RESTClient) GetTaskStatuses(ctx context.Context, taskID string) ([]map[string]any, error) {
+	var result []map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/tasks/"+taskID+"/statuses", nil, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
