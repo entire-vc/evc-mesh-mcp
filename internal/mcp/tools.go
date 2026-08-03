@@ -439,6 +439,32 @@ func (s *Server) handleCreateSubtask(ctx context.Context, request mcpsdk.CallToo
 	if desc := mcpsdk.ParseString(request, "description", ""); desc != "" {
 		body["description"] = desc
 	}
+	// Forward the rest of what POST /tasks/:task_id/subtasks accepts, mirroring
+	// handleCreateTask field for field. assignee_id matters most: our convention is that a
+	// subtask is owned by whoever will do the work, not by whoever split the parent
+	// task up — and until this was forwarded, following that convention produced the
+	// exact outcome it prevents, silently, because MCP ignores undeclared arguments.
+	if assigneeID := mcpsdk.ParseString(request, "assignee_id", ""); assigneeID != "" {
+		body["assignee_id"] = assigneeID
+		// Only send a type alongside an id; the API defaults a bare type to "agent",
+		// so emitting one unconditionally would mistype an unassigned subtask.
+		body["assignee_type"] = mcpsdk.ParseString(request, "assignee_type", "agent")
+	}
+	if dueDateStr := mcpsdk.ParseString(request, "due_date", ""); dueDateStr != "" {
+		if _, err := time.Parse(time.RFC3339, dueDateStr); err != nil {
+			return errResult("invalid due_date format: %v", err)
+		}
+		body["due_date"] = dueDateStr
+	}
+	if eh := mcpsdk.ParseFloat64(request, "estimated_hours", 0); eh > 0 {
+		body["estimated_hours"] = eh
+	}
+	if labels := parseStringSlice(request, "labels"); len(labels) > 0 {
+		body["labels"] = labels
+	}
+	if cfMap := mcpsdk.ParseStringMap(request, "custom_fields", nil); cfMap != nil {
+		body["custom_fields"] = cfMap
+	}
 
 	// Resolve status slug against the parent's project. Omitted → project default.
 	// Same gate reasoning as move_task: POST /tasks/:task_id/subtasks is workspace-gated,
