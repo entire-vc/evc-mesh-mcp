@@ -159,6 +159,11 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 			"filename": fileName,
 		})
 		if disposition == "" {
+			// Unreachable with the current call: FormatMediaType only returns "" when
+			// the media type or an attribute KEY is not a valid token, and all three
+			// ("form-data", "name", "filename") are literals here — no filename value,
+			// including invalid UTF-8, produces it. Kept because it fails safe rather
+			// than shipping a malformed part, but noted so nobody assumes it is tested.
 			return fmt.Errorf("cannot encode Content-Disposition for file name %q", fileName)
 		}
 		h := make(textproto.MIMEHeader)
