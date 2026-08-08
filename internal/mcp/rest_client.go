@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
+	"net/textproto"
 	"net/http"
 	"net/url"
 	"sort"
@@ -69,7 +71,7 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return fmt.Errorf("%s: %s", http.StatusText(resp.StatusCode), apiErrorMessage(errBody, resp.StatusCode))
+		return &APIError{StatusCode: resp.StatusCode, Message: apiErrorMessage(errBody, resp.StatusCode)}
 	}
 
 	if result != nil {
@@ -78,6 +80,20 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 		}
 	}
 	return nil
+}
+
+// APIError is a failed API response. It carries the HTTP status alongside the
+// server's message so callers can branch on the status — e.g. tell "this server
+// predates the route" (404) apart from "this server refused me" (403) — without
+// pattern-matching on error text. Error() renders exactly as before, so existing
+// callers and their error strings are unchanged.
+type APIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s: %s", http.StatusText(e.StatusCode), e.Message)
 }
 
 // apiErrorMessage builds a human-readable message from a Mesh API error body.
@@ -109,7 +125,7 @@ func apiErrorMessage(errBody map[string]any, statusCode int) string {
 }
 
 // doMultipart executes a multipart/form-data POST and decodes the JSON response into result.
-func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[string]string, fileField, fileName string, fileContent []byte, result any) error {
+func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[string]string, fileField, fileName, fileMime string, fileContent []byte, result any) error {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
@@ -120,8 +136,43 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 		}
 	}
 
-	// Write file content as a form file.
-	fw, err := mw.CreateFormFile(fileField, fileName)
+	// Write file content as a form file. When the caller supplies a MIME type we set
+	// it on the part header rather than letting CreateFormFile default to
+	// application/octet-stream: the API derives the stored MimeType from this header
+	// (inferMimeType(part Content-Type, filename)), so it is the only channel an
+	// explicit mime_type can travel through.
+	var (
+		fw  io.Writer
+		err error
+	)
+	if fileMime != "" {
+		// Build the Content-Disposition with mime.FormatMediaType rather than by hand.
+		// An earlier version formatted it with Sprintf and a locally-written quote
+		// escaper; that escaper copied two of the standard library's four
+		// replacements and dropped \r -> %0D and \n -> %0A, so a filename containing
+		// CRLF terminated the header early and injected arbitrary headers into the
+		// part — including a second Content-Type that Header.Get returns in
+		// preference to ours. FormatMediaType is the standard library's own encoder:
+		// it percent-encodes such values per RFC 2231 instead of interpolating them.
+		disposition := mime.FormatMediaType("form-data", map[string]string{
+			"name":     fileField,
+			"filename": fileName,
+		})
+		if disposition == "" {
+			// Unreachable with the current call: FormatMediaType only returns "" when
+			// the media type or an attribute KEY is not a valid token, and all three
+			// ("form-data", "name", "filename") are literals here — no filename value,
+			// including invalid UTF-8, produces it. Kept because it fails safe rather
+			// than shipping a malformed part, but noted so nobody assumes it is tested.
+			return fmt.Errorf("cannot encode Content-Disposition for file name %q", fileName)
+		}
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", disposition)
+		h.Set("Content-Type", fileMime)
+		fw, err = mw.CreatePart(h)
+	} else {
+		fw, err = mw.CreateFormFile(fileField, fileName)
+	}
 	if err != nil {
 		return fmt.Errorf("create form file: %w", err)
 	}
@@ -151,7 +202,7 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return fmt.Errorf("%s: %s", http.StatusText(resp.StatusCode), apiErrorMessage(errBody, resp.StatusCode))
+		return &APIError{StatusCode: resp.StatusCode, Message: apiErrorMessage(errBody, resp.StatusCode)}
 	}
 
 	if result != nil {
@@ -207,6 +258,21 @@ func (c *RESTClient) GetProject(ctx context.Context, projectID string) (map[stri
 func (c *RESTClient) GetProjectStatuses(ctx context.Context, projectID string) ([]map[string]any, error) {
 	var result []map[string]any
 	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/projects/"+projectID+"/statuses", nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetTaskStatuses returns the statuses of the project owning the given task.
+//
+// This route carries the same workspace gate as POST /tasks/:task_id/move, whereas
+// GET /projects/:proj_id/statuses is project-gated. Resolving a status slug is a
+// precondition of the move, so it must be read through the route whose gate matches
+// the move — otherwise a caller entitled to the transition is refused the lookup and
+// the 403 it gets back names the project rather than the move.
+func (c *RESTClient) GetTaskStatuses(ctx context.Context, taskID string) ([]map[string]any, error) {
+	var result []map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/tasks/"+taskID+"/statuses", nil, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -352,13 +418,23 @@ func (c *RESTClient) ListComments(ctx context.Context, taskID string, params map
 }
 
 // UploadArtifact uploads an artifact to a task using multipart form.
-func (c *RESTClient) UploadArtifact(ctx context.Context, taskID, name, artifactType, mimeType string, content []byte) (map[string]any, error) {
+// UploadArtifact uploads an artifact. metadata, when non-empty, must be a JSON object
+// string — the API reads it from the "metadata" form field and stores it verbatim.
+//
+// mimeType previously arrived as a parameter and was discarded: it was in the
+// signature but never written to the request, so callers setting it got the inferred
+// type regardless. It now travels on the file part's Content-Type header, which is
+// where the API looks for it.
+func (c *RESTClient) UploadArtifact(ctx context.Context, taskID, name, artifactType, mimeType, metadata string, content []byte) (map[string]any, error) {
 	fields := map[string]string{
 		"name":          name,
 		"artifact_type": artifactType,
 	}
+	if metadata != "" {
+		fields["metadata"] = metadata
+	}
 	var result map[string]any
-	if err := c.doMultipart(ctx, "/api/v1/tasks/"+taskID+"/artifacts", fields, "file", name, content, &result); err != nil {
+	if err := c.doMultipart(ctx, "/api/v1/tasks/"+taskID+"/artifacts", fields, "file", name, mimeType, content, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -463,9 +539,36 @@ func (c *RESTClient) GetTaskContext(ctx context.Context, taskID string) (map[str
 	return result, nil
 }
 
-// GetTaskComments returns comments for a task.
+// GetTaskComments returns the most recent DefaultPageSize comments for a
+// task, in chronological order (last element = newest).
+//
+// get_task(include_comments=true) is the call the READ-BEFORE-ACT gate tells
+// every agent to trust as "the whole thread, read to the end". For a task
+// with more than DefaultPageSize comments, the server's untouched default
+// (sort_dir=asc) makes "the end" mean the OLDEST comments — an agent reading
+// a long-running task's thread would see it stop at whenever the 50th
+// comment landed and never learn the thread kept going. Requesting
+// sort_dir=desc gets the newest page instead, then reversing it back to
+// chronological order preserves the reading experience while fixing which N
+// comments are shown. Ported from the same fix in entire-vc/evc-mesh
+// (internal/mcp/rest_client.go, task 4222c17d / D1) — this repo's
+// RESTClient hits the same evc-mesh REST API but is a separately maintained
+// copy, so the fix does not propagate on its own.
 func (c *RESTClient) GetTaskComments(ctx context.Context, taskID string) (map[string]any, error) {
-	return c.ListComments(ctx, taskID, map[string]string{"include_internal": "true"})
+	result, err := c.ListComments(ctx, taskID, map[string]string{
+		"include_internal": "true",
+		"sort_dir":         "desc",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if items, ok := result["items"].([]any); ok {
+		for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
+			items[i], items[j] = items[j], items[i]
+		}
+		result["items"] = items
+	}
+	return result, nil
 }
 
 // GetTaskArtifacts returns artifacts for a task.

@@ -10,7 +10,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 
@@ -300,6 +302,8 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithObject("custom_fields", mcpsdk.Description("Custom field values to update.")),
 		mcpsdk.WithString("due_date", mcpsdk.Description("Due date in RFC3339 format.")),
 		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours.")),
+		mcpsdk.WithString("delegation_level", mcpsdk.Description("Routing after work: auto, review, or supervised.")),
+		mcpsdk.WithBoolean("completion_signal", mcpsdk.Description("Mark agent-side work as finished.")),
 	), s.tracked("update_task", s.handleUpdateTask))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("move_task",
@@ -478,6 +482,16 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithString("description", mcpsdk.Description("Subtask description.")),
 		mcpsdk.WithString("priority", mcpsdk.Description("Priority: urgent, high, medium, low, none."), mcpsdk.DefaultString("medium")),
 		mcpsdk.WithString("status_slug", mcpsdk.Description("Status slug (e.g. 'todo'). Uses project default if omitted.")),
+		// The subtask REST endpoint accepts all of the following, and create_task
+		// already exposes them. Omitting them here made the two sibling tools diverge
+		// for no stated reason — and because MCP does not reject unknown arguments, a
+		// caller passing assignee_id got 201 back with the value silently discarded.
+		mcpsdk.WithString("assignee_id", mcpsdk.Description("Agent or user ID to assign the subtask to. Defaults to the creator if omitted.")),
+		mcpsdk.WithString("assignee_type", mcpsdk.Description("Assignee type: agent, user, or unassigned.")),
+		mcpsdk.WithArray("labels", mcpsdk.Description("Labels for the subtask.")),
+		mcpsdk.WithObject("custom_fields", mcpsdk.Description("Custom field values, keyed by field slug.")),
+		mcpsdk.WithString("due_date", mcpsdk.Description("Due date, RFC3339 (e.g. 2026-08-10T12:00:00Z).")),
+		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours.")),
 	), s.tracked("create_subtask", s.handleCreateSubtask))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("add_dependency",
@@ -792,11 +806,67 @@ func truncate(s string, maxLen int) string {
 
 // resolveStatusSlug looks up a status UUID from its slug by querying the REST API.
 // Returns the status ID, name, and category on success.
+//
+// This is the project-scoped form. Use it only when the write being served is itself
+// project-gated (e.g. create_task, which posts to /projects/:proj_id/tasks). For a
+// write on a task route, use resolveStatusSlugForTask — see the note there.
 func (s *Server) resolveStatusSlug(ctx context.Context, projectID, slug string) (statusID, statusName, statusCategory string, err error) {
 	statuses, err := s.getRESTClient(ctx).GetProjectStatuses(ctx, projectID)
 	if err != nil {
 		return "", "", "", fmt.Errorf("get statuses: %w", err)
 	}
+	return pickStatusBySlug(statuses, slug)
+}
+
+// resolveStatusSlugForTask looks up a status UUID from its slug for the project
+// owning taskID, reading it through the task-scoped status route.
+//
+// Why this exists rather than "get the task, then call resolveStatusSlug": the
+// project-scoped status route is project-gated, while the writes it serves here —
+// POST /tasks/:task_id/move and POST /tasks/:task_id/subtasks — are workspace-gated.
+// A read that a write cannot proceed without must never be gated more strictly than
+// that write. While it was, a caller who was entitled to move a task could not
+// discover which statuses it could move to, and the refusal named the project rather
+// than the move. The task-scoped route carries the move's own gate.
+//
+// It also saves a round trip: the task no longer has to be fetched just to learn its
+// project_id.
+//
+// The fallback fires on 404 only — that is, a server predating the task-scoped route.
+// Any other failure is returned as-is: "I could not look" must not be quietly
+// converted into "I looked through a different door", which would restore the old
+// 403 while reporting success at this layer.
+func (s *Server) resolveStatusSlugForTask(ctx context.Context, taskID, slug string) (statusID, statusName, statusCategory string, err error) {
+	client := s.getRESTClient(ctx)
+
+	statuses, err := client.GetTaskStatuses(ctx, taskID)
+	if err != nil {
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+			return "", "", "", fmt.Errorf("get statuses: %w", err)
+		}
+
+		// Either the server has no task-scoped status route, or the task does not
+		// exist. Resolving the task tells the two apart and produces the right error.
+		task, taskErr := client.GetTask(ctx, taskID)
+		if taskErr != nil {
+			return "", "", "", fmt.Errorf("get task: %w", taskErr)
+		}
+		projectID, _ := task["project_id"].(string)
+		if projectID == "" {
+			return "", "", "", fmt.Errorf("task has no project_id")
+		}
+		statuses, err = client.GetProjectStatuses(ctx, projectID)
+		if err != nil {
+			return "", "", "", fmt.Errorf("get statuses: %w", err)
+		}
+	}
+
+	return pickStatusBySlug(statuses, slug)
+}
+
+// pickStatusBySlug selects the status with the given slug from a status list.
+func pickStatusBySlug(statuses []map[string]any, slug string) (statusID, statusName, statusCategory string, err error) {
 	for _, st := range statuses {
 		stSlug, _ := st["slug"].(string)
 		if stSlug == slug {
