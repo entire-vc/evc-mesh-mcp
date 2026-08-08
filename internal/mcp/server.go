@@ -513,6 +513,12 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to release.")),
 	), s.tracked("release_task", s.handleReleaseTask))
 
+	s.mcpServer.AddTool(mcpsdk.NewTool("extend_checkout",
+		mcpsdk.WithDescription("Push the expiry of an existing checkout_task lock forward, for work that runs longer than the original ttl_minutes. Requires an active checkout in this session (the cached checkout_token from checkout_task) — fails if the lock was never acquired here, already released, or already expired. Server clamps ttl_minutes to [1, 240]."),
+		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID whose checkout to extend.")),
+		mcpsdk.WithNumber("ttl_minutes", mcpsdk.Description("New lock TTL in minutes from now (default 120, server clamps to [1, 240]).")),
+	), s.tracked("extend_checkout", s.handleExtendCheckout))
+
 	// --- Comments & Artifacts ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_comments",
 		mcpsdk.WithDescription("List comments on a task."),
