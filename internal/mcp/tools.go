@@ -190,10 +190,29 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		if err != nil {
 			return errResult("failed to list comments: %v", err)
 		}
+		var itemCount int
 		if items, ok := page["items"]; ok {
 			resp["comments"] = items
+			if arr, ok := items.([]any); ok {
+				itemCount = len(arr)
+			}
 		} else {
 			resp["comments"] = []any{}
+		}
+		// Propagate the truncation envelope REST already returns (total_count,
+		// has_more) — the old code discarded both, which is exactly what made
+		// a truncated response indistinguishable from a complete one. Ported
+		// from entire-vc/evc-mesh (task 4222c17d / D2) — see GetTaskComments
+		// above for why this repo needs its own copy of the fix.
+		totalCount, _ := page["total_count"].(float64)
+		hasMore, _ := page["has_more"].(bool)
+		resp["comments_total_count"] = int(totalCount)
+		resp["comments_has_more"] = hasMore
+		if hasMore {
+			resp["comments_truncated"] = true
+			resp["comments_note"] = fmt.Sprintf(
+				"showing the last %d of %d comments; call list_comments(task_id, page_size=200) or page through /comments for the rest",
+				itemCount, int(totalCount))
 		}
 	}
 
@@ -202,10 +221,28 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		if err != nil {
 			return errResult("failed to list artifacts: %v", err)
 		}
+		var itemCount int
 		if items, ok := page["items"]; ok {
 			resp["artifacts"] = items
+			if arr, ok := items.([]any); ok {
+				itemCount = len(arr)
+			}
 		} else {
 			resp["artifacts"] = []any{}
+		}
+		// Same envelope-stripping pattern as comments: artifacts already list
+		// newest-first by default, so the ordering half of the comments bug
+		// doesn't apply here, but a task with more artifacts than
+		// DefaultPageSize still silently lost the rest without this.
+		totalCount, _ := page["total_count"].(float64)
+		hasMore, _ := page["has_more"].(bool)
+		resp["artifacts_total_count"] = int(totalCount)
+		resp["artifacts_has_more"] = hasMore
+		if hasMore {
+			resp["artifacts_truncated"] = true
+			resp["artifacts_note"] = fmt.Sprintf(
+				"showing %d of %d artifacts; call list_artifacts(task_id, page_size=200) or page through /artifacts for the rest",
+				itemCount, int(totalCount))
 		}
 	}
 
