@@ -130,7 +130,7 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 
 | Tool | Description |
 |------|-------------|
-| `heartbeat` | Send heartbeat. Call at session start with status=online |
+| `heartbeat` | Send heartbeat. Call at session start with status=online. Response includes `mesh_version` (the running binary's build git-SHA, or `"dev"` for an unpinned local build) — cheap way to check whether a fix has actually reached the installed binary without shelling out to the host. |
 | `get_project_knowledge` | Get ALL permanent knowledge (decisions, conventions). ACP Step 2 |
 | `get_my_rules` | Get ALL governance rules (workflow + assignment). ACP Step 3 |
 | `get_context` | Get recent activity + project knowledge. ACP Step 4 |
@@ -164,6 +164,39 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 | `remember` | Save knowledge (UPSERT by key) |
 | `forget` | Delete a memory entry |
 
+#### What `recall` guarantees about its result
+
+**`limit` is a hard bound.** The response never contains more than `limit` items,
+and `total` always equals the number of items actually returned. Nothing is added
+to the page after it has been sized — not pinned rows, not graph-expanded
+neighbours.
+
+**Rows that fail `scope`/`tags`/`tags_any` are dropped, never returned unmarked.**
+This holds regardless of how a row reached the result: ordinary retrieval, pinning,
+or graph expansion. A pinned row is exempt from *ranking*, not from *eligibility* —
+"pinned" means "do not let ranking bury this", not "show this to a caller who asked
+for a different scope".
+
+**Graph neighbours are marked and bounded.** With `RECALL_GRAPH_ENABLED=true`,
+`recall` also runs a knowledge-graph expansion and folds in `hop > 0` neighbours,
+each carrying `graph_boost: true` and `provenance: via:graph`. They occupy at most
+`limit/4` of the page (at least 1 when `limit >= 2`, none when `limit < 2`) and take
+its **tail** slots, displacing the weakest retrieval hits rather than being appended
+on top. When expansion returns nothing usable, the page is exactly the base result —
+the reserve is a ceiling, not a quota. `graph_boost_count` reports how many slots
+were actually spent.
+
+The reserve exists because base hits carry `score` (RRF across the retrieval arms)
+and neighbours carry `composite_score` from a separate traversal — different fields
+on different scales. Sorting the union on a common key does not balance them; in
+practice every observed neighbour ranks below every base hit, so a naive merge-sort
+would silently disable graph boost. The reserve makes that trade explicit and
+tunable.
+
+**Presets never overrule you.** `recall` classifies the query and may apply a
+profile (e.g. multi-session widens the page). A profile only fills in parameters you
+did not supply; an explicit `limit` always wins.
+
 ### Utility
 
 | Tool | Description |
@@ -178,7 +211,7 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 | Tool | Description |
 |------|-------------|
 | `get_project` | Get project details with statuses and custom fields |
-| `create_subtask` | Create subtask under a parent |
+| `create_subtask` | Create subtask under a parent (`status_slug` optional; defaults to the project's default status, not the parent's) |
 | `add_dependency` | Add dependency between tasks |
 | `checkout_task` | Atomic task lock for multi-agent coordination |
 | `release_task` | Release atomic task lock |
@@ -280,6 +313,20 @@ ssh root@prod-host
 
 > evc-mesh-mcp does not run its own migrations — it relies on the evc-mesh API's
 > schema. The goose step above ensures the schema matches before the new binary serves traffic.
+
+## Local stdio binary — this repo also builds the tool your agent runs
+
+The checklist above is for the SSE/HTTP prod server. This repo also builds the
+binary a local `stdio` MCP client runs directly (no network deploy involved,
+e.g. Claude Code's `.mcp.json` pointing at `~/bin/mesh-mcp`). That path used to
+be entirely manual — a merged fix could sit uninstalled indefinitely, looking
+identical to "the feature doesn't exist" from inside an agent session (no
+error, just an outdated tool). Where the fleet builds this way, a poll-based
+watcher (not a GitHub-hosted runner — self-hosted CI runners on developer
+machines are a known supply-chain risk this fleet avoids) rebuilds and
+atomically installs the binary on `origin/main` changes, and the `heartbeat`
+tool's `mesh_version` field (see the tools table above) lets a session confirm
+which commit is actually installed without shelling out to the host.
 
 ## Related
 

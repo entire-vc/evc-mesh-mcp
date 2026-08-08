@@ -190,10 +190,29 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		if err != nil {
 			return errResult("failed to list comments: %v", err)
 		}
+		var itemCount int
 		if items, ok := page["items"]; ok {
 			resp["comments"] = items
+			if arr, ok := items.([]any); ok {
+				itemCount = len(arr)
+			}
 		} else {
 			resp["comments"] = []any{}
+		}
+		// Propagate the truncation envelope REST already returns (total_count,
+		// has_more) — the old code discarded both, which is exactly what made
+		// a truncated response indistinguishable from a complete one. Ported
+		// from entire-vc/evc-mesh (task 4222c17d / D2) — see GetTaskComments
+		// above for why this repo needs its own copy of the fix.
+		totalCount, _ := page["total_count"].(float64)
+		hasMore, _ := page["has_more"].(bool)
+		resp["comments_total_count"] = int(totalCount)
+		resp["comments_has_more"] = hasMore
+		if hasMore {
+			resp["comments_truncated"] = true
+			resp["comments_note"] = fmt.Sprintf(
+				"showing the last %d of %d comments; call list_comments(task_id, page_size=200) or page through /comments for the rest",
+				itemCount, int(totalCount))
 		}
 	}
 
@@ -202,10 +221,28 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		if err != nil {
 			return errResult("failed to list artifacts: %v", err)
 		}
+		var itemCount int
 		if items, ok := page["items"]; ok {
 			resp["artifacts"] = items
+			if arr, ok := items.([]any); ok {
+				itemCount = len(arr)
+			}
 		} else {
 			resp["artifacts"] = []any{}
+		}
+		// Same envelope-stripping pattern as comments: artifacts already list
+		// newest-first by default, so the ordering half of the comments bug
+		// doesn't apply here, but a task with more artifacts than
+		// DefaultPageSize still silently lost the rest without this.
+		totalCount, _ := page["total_count"].(float64)
+		hasMore, _ := page["has_more"].(bool)
+		resp["artifacts_total_count"] = int(totalCount)
+		resp["artifacts_has_more"] = hasMore
+		if hasMore {
+			resp["artifacts_truncated"] = true
+			resp["artifacts_note"] = fmt.Sprintf(
+				"showing %d of %d artifacts; call list_artifacts(task_id, page_size=200) or page through /artifacts for the rest",
+				itemCount, int(totalCount))
 		}
 	}
 
@@ -340,6 +377,16 @@ func (s *Server) handleUpdateTask(ctx context.Context, request mcpsdk.CallToolRe
 		eh := mcpsdk.ParseFloat64(request, "estimated_hours", 0)
 		body["estimated_hours"] = eh
 	}
+	// delegation_level is settable at creation but was unsettable afterwards — an
+	// asymmetry with no rationale, so a task's routing could never be corrected.
+	if dl := mcpsdk.ParseString(request, "delegation_level", ""); dl != "" {
+		body["delegation_level"] = dl
+	}
+	// completion_signal is documented in the domain as "set by an agent to indicate
+	// agent-side work is done" — agent-facing by design, and unreachable until now.
+	if _, ok := args["completion_signal"]; ok {
+		body["completion_signal"] = mcpsdk.ParseBoolean(request, "completion_signal", false)
+	}
 
 	if len(body) == 0 {
 		return errResult("no fields to update")
@@ -373,20 +420,12 @@ func (s *Server) handleMoveTask(ctx context.Context, request mcpsdk.CallToolRequ
 		return errResult("status_slug is required")
 	}
 
-	// We need the project_id to resolve the status slug.
-	// Get the task first to find its project_id.
-	task, err := s.getRESTClient(ctx).GetTask(ctx, taskID)
-	if err != nil {
-		return errResult("failed to get task: %v", err)
-	}
-
-	projectID, _ := task["project_id"].(string)
-	if projectID == "" {
-		return errResult("task has no project_id")
-	}
-
 	// Resolve slug to status ID (move_task to review is intentionally allowed).
-	stID, stName, _, err := s.resolveStatusSlug(ctx, projectID, statusSlug)
+	// Read through the task-scoped route: it carries the same workspace gate as the
+	// move itself, so a caller entitled to the transition is entitled to the lookup.
+	// The project-scoped route would refuse a workspace member who is not a member of
+	// the task's project, with a 403 naming the project rather than the move.
+	stID, stName, _, err := s.resolveStatusSlugForTask(ctx, taskID, statusSlug)
 	if err != nil {
 		return errResult("invalid status_slug: %v", err)
 	}
@@ -446,6 +485,44 @@ func (s *Server) handleCreateSubtask(ctx context.Context, request mcpsdk.CallToo
 	}
 	if desc := mcpsdk.ParseString(request, "description", ""); desc != "" {
 		body["description"] = desc
+	}
+	// Forward the rest of what POST /tasks/:task_id/subtasks accepts, mirroring
+	// handleCreateTask field for field. assignee_id matters most: our convention is that a
+	// subtask is owned by whoever will do the work, not by whoever split the parent
+	// task up — and until this was forwarded, following that convention produced the
+	// exact outcome it prevents, silently, because MCP ignores undeclared arguments.
+	if assigneeID := mcpsdk.ParseString(request, "assignee_id", ""); assigneeID != "" {
+		body["assignee_id"] = assigneeID
+		// Only send a type alongside an id; the API defaults a bare type to "agent",
+		// so emitting one unconditionally would mistype an unassigned subtask.
+		body["assignee_type"] = mcpsdk.ParseString(request, "assignee_type", "agent")
+	}
+	if dueDateStr := mcpsdk.ParseString(request, "due_date", ""); dueDateStr != "" {
+		if _, err := time.Parse(time.RFC3339, dueDateStr); err != nil {
+			return errResult("invalid due_date format: %v", err)
+		}
+		body["due_date"] = dueDateStr
+	}
+	if eh := mcpsdk.ParseFloat64(request, "estimated_hours", 0); eh > 0 {
+		body["estimated_hours"] = eh
+	}
+	if labels := parseStringSlice(request, "labels"); len(labels) > 0 {
+		body["labels"] = labels
+	}
+	if cfMap := mcpsdk.ParseStringMap(request, "custom_fields", nil); cfMap != nil {
+		body["custom_fields"] = cfMap
+	}
+
+	// Resolve status slug against the parent's project. Omitted → project default.
+	// Same gate reasoning as move_task: POST /tasks/:task_id/subtasks is workspace-gated,
+	// so the slug lookup it depends on is read through the task-scoped route too.
+	// Fixing only move_task would have left this second entry into the same dead end open.
+	if slug := mcpsdk.ParseString(request, "status_slug", ""); slug != "" {
+		stID, _, _, err := s.resolveStatusSlugForTask(ctx, parentTaskID, slug)
+		if err != nil {
+			return errResult("invalid status_slug: %v", err)
+		}
+		body["status_id"] = stID
 	}
 
 	result, err := s.getRESTClient(ctx).CreateSubtask(ctx, parentTaskID, body)
@@ -568,6 +645,86 @@ func (s *Server) handleAddComment(ctx context.Context, request mcpsdk.CallToolRe
 }
 
 // ============================================================================
+// 11a. add_vcs_link
+// ============================================================================
+
+func (s *Server) handleAddVCSLink(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	session := s.getSession(ctx)
+	if session == nil {
+		return errResult("not authenticated: no agent session")
+	}
+
+	taskID := mcpsdk.ParseString(request, "task_id", "")
+	if taskID == "" {
+		return errResult("task_id is required")
+	}
+
+	rawURL := mcpsdk.ParseString(request, "url", "")
+	if rawURL == "" {
+		return errResult("url is required")
+	}
+
+	// Everything below the URL is inferred unless the caller overrides it.
+	facts := parseVCSURL(rawURL)
+
+	provider := mcpsdk.ParseString(request, "provider", "")
+	if provider == "" {
+		provider = facts.Provider
+	}
+	if provider == "" {
+		provider = "github"
+	}
+
+	linkType := mcpsdk.ParseString(request, "link_type", "")
+	if linkType == "" {
+		linkType = facts.LinkType
+	}
+	if linkType == "" {
+		linkType = vcsLinkTypePR
+	}
+	linkType = normalizeVCSLinkType(linkType)
+
+	externalID := mcpsdk.ParseString(request, "external_id", "")
+	if externalID == "" {
+		externalID = facts.ExternalID
+	}
+	if externalID == "" {
+		return errResult(
+			"could not infer external_id from url %q — pass external_id explicitly "+
+				"(the PR number, commit SHA, or branch name)", rawURL)
+	}
+
+	reqBody := map[string]any{
+		"provider":    strings.ToLower(provider),
+		"link_type":   linkType,
+		"external_id": externalID,
+		"url":         rawURL,
+	}
+
+	if title := mcpsdk.ParseString(request, "title", ""); title != "" {
+		reqBody["title"] = title
+	}
+
+	// status has no inferred default here — a caller who does not state it
+	// gets whatever the API defaults to (open, for PR links). It exists so a
+	// PR that was already merged before this call links it can be recorded
+	// as such immediately: no GitHub webhook will ever arrive for a merge
+	// that predates the link, so without this the row is stuck unresolvable
+	// forever (#df734dd9) and the done-evidence gate blocks the task on it
+	// permanently.
+	if status := mcpsdk.ParseString(request, "status", ""); status != "" {
+		reqBody["status"] = normalizeVCSLinkStatus(status)
+	}
+
+	result, err := s.getRESTClient(ctx).AddVCSLink(ctx, taskID, reqBody)
+	if err != nil {
+		return errResult("failed to add VCS link: %v", err)
+	}
+
+	return jsonResult(result)
+}
+
+// ============================================================================
 // 12. list_comments
 // ============================================================================
 
@@ -628,7 +785,18 @@ func (s *Server) handleUploadArtifact(ctx context.Context, request mcpsdk.CallTo
 
 	artifactType := mcpsdk.ParseString(request, "artifact_type", "file")
 
-	result, err := s.getRESTClient(ctx).UploadArtifact(ctx, taskID, name, artifactType, mimeType, []byte(content))
+	// metadata was declared on this tool and never read — the schema promised a field
+	// the handler dropped. The API stores it verbatim from the "metadata" form field.
+	metadataJSON := ""
+	if md := mcpsdk.ParseStringMap(request, "metadata", nil); md != nil {
+		raw, err := json.Marshal(md)
+		if err != nil {
+			return errResult("invalid metadata: %v", err)
+		}
+		metadataJSON = string(raw)
+	}
+
+	result, err := s.getRESTClient(ctx).UploadArtifact(ctx, taskID, name, artifactType, mimeType, metadataJSON, []byte(content))
 	if err != nil {
 		return errResult("failed to upload artifact: %v", err)
 	}
@@ -827,6 +995,16 @@ func (s *Server) handleGetContext(ctx context.Context, request mcpsdk.CallToolRe
 		params["page_size"] = strconv.Itoa(limit)
 	}
 
+	// The schema advertises `since` as an RFC3339 lower bound and the handler used to
+	// drop it, so a caller narrowing the window silently got the default one instead.
+	// The API spells the same filter `date_from` (listEventsQuery.DateFrom).
+	if since := mcpsdk.ParseString(request, "since", ""); since != "" {
+		if _, err := time.Parse(time.RFC3339, since); err != nil {
+			return errResult("invalid since format, expected RFC3339: %v", err)
+		}
+		params["date_from"] = since
+	}
+
 	if eventTypes := parseStringSlice(request, "event_types"); len(eventTypes) > 0 {
 		params["event_type"] = eventTypes[0]
 	}
@@ -1002,9 +1180,10 @@ func (s *Server) handleHeartbeat(ctx context.Context, request mcpsdk.CallToolReq
 	}
 
 	return jsonResult(map[string]any{
-		"status":    "ok",
-		"agent_id":  session.AgentID.String(),
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"status":       "ok",
+		"agent_id":     session.AgentID.String(),
+		"timestamp":    time.Now().UTC().Format(time.RFC3339),
+		"mesh_version": BuildSHA,
 	})
 }
 
@@ -1698,7 +1877,12 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	if pp.OrderBy != "" {
 		orderBy = pp.OrderBy
 	}
-	if pp.Limit > 0 {
+	// A profile may widen the page only when the caller did not ask for a size.
+	// Overriding an explicit limit made the parameter unpredictable: the same
+	// recall(limit=6) returned 6 or 20 rows depending on whether the query text
+	// happened to trip a keyword in the multi-session classifier, and nothing in
+	// the response explained the difference.
+	if pp.Limit > 0 && !hasArgument(request, "limit") {
 		limit = pp.Limit
 	}
 
@@ -1736,9 +1920,15 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	// append any hop>0 items not already present in the base results.
 	if os.Getenv("RECALL_GRAPH_ENABLED") == "true" {
 		graphResult, graphErr := s.getRESTClient(ctx).RecallWithGraph(ctx, RecallWithGraphParams{
-			Query:           query,
-			WorkspaceID:     session.WorkspaceID.String(),
-			ProjectID:       projectID,
+			Query:       query,
+			WorkspaceID: session.WorkspaceID.String(),
+			ProjectID:   projectID,
+			// Reuse rp's already-parsed Scope/Tags/TagsAny rather than re-reading
+			// them from the request — a second parse is a second place for the
+			// two to silently disagree (task #37e9344c).
+			Scope:           rp.Scope,
+			Tags:            rp.Tags,
+			TagsAny:         rp.TagsAny,
 			Hops:            2,
 			WeightThreshold: 0.1, // wide traversal: at 0.3 hop>0 items don't survive importance filter
 			Limit:           50,  // request wider set so hop>0 neighbors are included
@@ -1752,11 +1942,39 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	return jsonResult(result)
 }
 
-// mergeGraphResults appends hop>0 graph-expanded items from graphResult that are
-// not already present in baseResult, marking them with graph_boost=true.
-// maxBoost caps how many graph items may be appended (prevents response explosion
-// when graph traversal returns hundreds of weakly-connected neighbors).
-func mergeGraphResults(base, graph map[string]any, maxBoost int) map[string]any {
+// graphBoostReserve returns how many of the caller's `limit` slots may be spent on
+// graph-expanded neighbours.
+//
+// Why a reserve rather than ranking the two sets together: base items carry `score`
+// (RRF over the two retrieval arms) and graph neighbours carry `composite_score`
+// from a separate traversal. They are different fields on different scales, and in
+// practice every observed neighbour scores below every base hit — so sorting the
+// union on a common key does not balance the two, it silently drops graph boost
+// entirely. A reserve makes the trade explicit and tunable instead of an accident
+// of score distributions.
+//
+// The reserve is a ceiling, not a quota: unused slots stay with the base results.
+func graphBoostReserve(limit int) int {
+	if limit < 2 {
+		return 0 // never spend the caller's only slot on a neighbour
+	}
+	reserve := limit / 4
+	if reserve < 1 {
+		reserve = 1
+	}
+	return reserve
+}
+
+// mergeGraphResults folds hop>0 graph-expanded items into the base result, marking
+// them with graph_boost=true.
+//
+// The merged result NEVER exceeds limit. Graph neighbours take the tail slots of
+// the page, displacing the weakest base hits; they are not appended on top of a
+// full page. Appending (as this did until #4c65d3e2) meant recall(limit=10) handed
+// back 20 rows while the response still echoed "limit": 10 — the caller could not
+// see that it had been overserved, and half of what arrived was not what it asked
+// for. Every agent's mandatory wake-up recall paid that cost on every spawn.
+func mergeGraphResults(base, graph map[string]any, limit int) map[string]any {
 	baseItems, _ := base["items"].([]any)
 
 	// Collect IDs already present in base result.
@@ -1769,11 +1987,14 @@ func mergeGraphResults(base, graph map[string]any, maxBoost int) map[string]any 
 		}
 	}
 
+	// Select eligible neighbours first, so the base page is only shortened by the
+	// number of neighbours actually available.
+	maxBoost := graphBoostReserve(limit)
 	graphItems, _ := graph["items"].([]any)
-	boosted := 0
+	picked := make([]any, 0, maxBoost)
 	for _, item := range graphItems {
-		if boosted >= maxBoost {
-			break // cap reached — discard remaining graph-only items
+		if len(picked) >= maxBoost {
+			break // reserve exhausted — discard remaining graph-only items
 		}
 		m, ok := item.(map[string]any)
 		if !ok {
@@ -1789,22 +2010,36 @@ func mergeGraphResults(base, graph map[string]any, maxBoost int) map[string]any 
 			continue
 		}
 		m["graph_boost"] = true
-		baseItems = append(baseItems, m)
+		picked = append(picked, m)
 		seenIDs[id] = true
-		boosted++
 	}
 
-	if boosted > 0 {
-		out := make(map[string]any, len(base))
-		for k, v := range base {
-			out[k] = v
-		}
-		out["items"] = baseItems
-		out["total"] = len(baseItems)
-		out["graph_boost_count"] = boosted
-		return out
+	if len(picked) == 0 {
+		return base
 	}
-	return base
+
+	// Make room for the neighbours rather than growing the page past the limit.
+	if keep := limit - len(picked); len(baseItems) > keep {
+		if keep < 0 {
+			keep = 0
+		}
+		baseItems = baseItems[:keep]
+	}
+	merged := append(baseItems, picked...)
+
+	// Belt and braces: whatever the arithmetic above, the caller's bound holds.
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+
+	out := make(map[string]any, len(base))
+	for k, v := range base {
+		out[k] = v
+	}
+	out["items"] = merged
+	out["total"] = len(merged)
+	out["graph_boost_count"] = len(picked)
+	return out
 }
 
 func (s *Server) handleRecallWithGraph(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
@@ -1860,7 +2095,16 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 	// Auto-populate project_id from the most recently checked-out task when the
 	// agent omits it. This fixes the Memory Eval E·P2 issue where 99% of episodic
 	// entries had project_id=NULL because agents didn't pass it explicitly.
-	if projectID == "" {
+	//
+	// Gated to scope=="project" only (task #2c0154db/F3): identity now follows
+	// declared scope (workspace -> (ws,key), project -> (ws,project,key)) since
+	// evc-mesh#444/memory_service.go:488 narrowed the server-side twin of this
+	// same auto-stamp the same way. Without this gate, a workspace-scope
+	// remember() from inside a checked-out task silently gets a project_id it
+	// never asked for, which is exactly the drift #4edf3fb5's collapse had to
+	// clean up once (582 rows) and started regressing again within 2h of that
+	// cleanup (2 rows) because only the server side had been fixed.
+	if projectID == "" && scope == "project" {
 		if stored, ok := s.activeProjects.Load(session.AgentID); ok {
 			if pid, ok2 := stored.(string); ok2 {
 				projectID = pid

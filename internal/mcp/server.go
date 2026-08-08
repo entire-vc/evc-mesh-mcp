@@ -10,7 +10,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 
@@ -21,7 +23,7 @@ import (
 
 // Profile constants for MCP server tool sets.
 const (
-	// ProfileCore registers only the 20 essential tools for lightweight agents.
+	// ProfileCore registers only the 25 essential tools for lightweight agents.
 	ProfileCore = "core"
 	// ProfileFull registers all tools (core + advanced). This is the default.
 	ProfileFull = "full"
@@ -134,7 +136,7 @@ type ServerConfig struct {
 	Session *AgentSession
 	// RESTClient is the HTTP client used to call the Mesh REST API.
 	RESTClient *RESTClient
-	// Profile controls which tools are registered: "core" (20 essential tools)
+	// Profile controls which tools are registered: "core" (25 essential tools)
 	// or "full" (all tools, default).
 	Profile string
 }
@@ -210,7 +212,7 @@ func (s *Server) MCPServer() *mcpserver.MCPServer {
 	return s.mcpServer
 }
 
-// registerCoreTools registers the 20 essential tools with optimized, directive descriptions.
+// registerCoreTools registers the 25 essential tools with optimized, directive descriptions.
 func (s *Server) registerCoreTools() {
 	// --- ACP / Session tools ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("heartbeat",
@@ -300,6 +302,8 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithObject("custom_fields", mcpsdk.Description("Custom field values to update.")),
 		mcpsdk.WithString("due_date", mcpsdk.Description("Due date in RFC3339 format.")),
 		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours.")),
+		mcpsdk.WithString("delegation_level", mcpsdk.Description("Routing after work: auto, review, or supervised.")),
+		mcpsdk.WithBoolean("completion_signal", mcpsdk.Description("Mark agent-side work as finished.")),
 	), s.tracked("update_task", s.handleUpdateTask))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("move_task",
@@ -334,6 +338,17 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithObject("metadata", mcpsdk.Description("Additional metadata as key-value pairs.")),
 	), s.tracked("add_comment", s.handleAddComment))
 
+	s.mcpServer.AddTool(mcpsdk.NewTool("add_vcs_link",
+		mcpsdk.WithDescription("Link a task to a pull request, commit, or branch. This is what makes the task↔PR join real: a task with no VCS link cannot be matched to the code that implements it, so PR-driven status automation and any 'what shipped for this task?' report simply will not see it. Call it as soon as the PR exists. Only task_id and url are needed — provider, link_type and external_id are inferred from a GitHub or GitLab URL. If the PR is ALREADY merged (or closed) by the time you call this — e.g. you finished, merged, and are linking retroactively — pass status='merged' (or 'closed'). Without it the link starts as 'open' and the done-evidence gate will block move→done on it forever: no GitHub webhook fires for a merge that happened before the link existed."),
+		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
+		mcpsdk.WithString("url", mcpsdk.Required(), mcpsdk.Description("Link URL, e.g. https://github.com/owner/repo/pull/123.")),
+		mcpsdk.WithString("provider", mcpsdk.Description("VCS provider: github, gitlab. Inferred from the URL host; defaults to github.")),
+		mcpsdk.WithString("link_type", mcpsdk.Description("What the URL points at: pr (alias: pull_request), commit, branch. Inferred from the URL path; defaults to pr.")),
+		mcpsdk.WithString("external_id", mcpsdk.Description("PR number, commit SHA, or branch name. Inferred from the URL; only needed when the URL is not a recognised PR/commit/branch link.")),
+		mcpsdk.WithString("title", mcpsdk.Description("Human-readable label, e.g. the PR title.")),
+		mcpsdk.WithString("status", mcpsdk.Description("PR status, if you already know it: open, merged, closed. Pass 'merged' when linking a PR that was merged before this call — that is the one case a webhook can never backfill. Omit it to let the link start as 'open' (the safe default when the PR is still active). Calling add_vcs_link again on the same PR with a status update is safe — it corrects the existing link rather than failing.")),
+	), s.tracked("add_vcs_link", s.handleAddVCSLink))
+
 	s.mcpServer.AddTool(mcpsdk.NewTool("publish_event",
 		mcpsdk.WithDescription("Publish an event to the event bus. For summaries, use event_type='summary'. Add memory={persist:true, key:'decision-name'} to also save as permanent memory. Replaces the deprecated publish_summary tool."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
@@ -363,7 +378,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("order_by", mcpsdk.Description("Sort order: created_at:desc (default), created_at:asc, relevance:desc, decayed_relevance:desc.")),
 		mcpsdk.WithBoolean("include_expired", mcpsdk.Description("Include expired memories (default false)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_archived", mcpsdk.Description("Include archived memories in results (default false)."), mcpsdk.DefaultBool(false)),
-		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 10, max 50).")),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 10, max 50). This is a hard bound: the response never contains more than limit items. When knowledge-graph boost is enabled, a share of the page (limit/4, at least 1 when limit>=2) may be filled with graph-expanded neighbours, marked graph_boost=true and provenance=via:graph — they take the tail slots instead of being added on top. Rows that fail scope/tags are dropped, never returned unmarked, whether they arrived by retrieval, by pinning, or by graph expansion.")),
 		mcpsdk.WithNumber("offset", mcpsdk.Description("Pagination offset (default 0).")),
 	), s.tracked("recall", s.handleRecall))
 
@@ -461,11 +476,22 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Task operations ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("create_subtask",
-		mcpsdk.WithDescription("Create a subtask under a parent task."),
+		mcpsdk.WithDescription("Create a subtask under a parent task. Set status_slug for initial status (defaults to the project's default status, NOT the parent's status)."),
 		mcpsdk.WithString("parent_task_id", mcpsdk.Required(), mcpsdk.Description("Parent task ID.")),
 		mcpsdk.WithString("title", mcpsdk.Required(), mcpsdk.Description("Subtask title.")),
 		mcpsdk.WithString("description", mcpsdk.Description("Subtask description.")),
 		mcpsdk.WithString("priority", mcpsdk.Description("Priority: urgent, high, medium, low, none."), mcpsdk.DefaultString("medium")),
+		mcpsdk.WithString("status_slug", mcpsdk.Description("Status slug (e.g. 'todo'). Uses project default if omitted.")),
+		// The subtask REST endpoint accepts all of the following, and create_task
+		// already exposes them. Omitting them here made the two sibling tools diverge
+		// for no stated reason — and because MCP does not reject unknown arguments, a
+		// caller passing assignee_id got 201 back with the value silently discarded.
+		mcpsdk.WithString("assignee_id", mcpsdk.Description("Agent or user ID to assign the subtask to. Defaults to the creator if omitted.")),
+		mcpsdk.WithString("assignee_type", mcpsdk.Description("Assignee type: agent, user, or unassigned.")),
+		mcpsdk.WithArray("labels", mcpsdk.Description("Labels for the subtask.")),
+		mcpsdk.WithObject("custom_fields", mcpsdk.Description("Custom field values, keyed by field slug.")),
+		mcpsdk.WithString("due_date", mcpsdk.Description("Due date, RFC3339 (e.g. 2026-08-10T12:00:00Z).")),
+		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours.")),
 	), s.tracked("create_subtask", s.handleCreateSubtask))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("add_dependency",
@@ -685,6 +711,21 @@ func errResult(format string, args ...any) (*mcpsdk.CallToolResult, error) {
 	return mcpsdk.NewToolResultError(fmt.Sprintf(format, args...)), nil
 }
 
+// hasArgument reports whether the caller supplied the given argument at all.
+//
+// mcpsdk's Parse* helpers collapse "absent" and "explicitly set to the default"
+// into the same value, which is fine for reading a value and wrong for deciding
+// whether a preset may overwrite one. Anything a profile is allowed to override
+// needs this distinction.
+func hasArgument(request mcpsdk.CallToolRequest, key string) bool {
+	args := request.GetArguments()
+	if args == nil {
+		return false
+	}
+	v, ok := args[key]
+	return ok && v != nil
+}
+
 // parseStringSlice extracts a string slice from request arguments.
 func parseStringSlice(request mcpsdk.CallToolRequest, key string) []string {
 	args := request.GetArguments()
@@ -765,11 +806,67 @@ func truncate(s string, maxLen int) string {
 
 // resolveStatusSlug looks up a status UUID from its slug by querying the REST API.
 // Returns the status ID, name, and category on success.
+//
+// This is the project-scoped form. Use it only when the write being served is itself
+// project-gated (e.g. create_task, which posts to /projects/:proj_id/tasks). For a
+// write on a task route, use resolveStatusSlugForTask — see the note there.
 func (s *Server) resolveStatusSlug(ctx context.Context, projectID, slug string) (statusID, statusName, statusCategory string, err error) {
 	statuses, err := s.getRESTClient(ctx).GetProjectStatuses(ctx, projectID)
 	if err != nil {
 		return "", "", "", fmt.Errorf("get statuses: %w", err)
 	}
+	return pickStatusBySlug(statuses, slug)
+}
+
+// resolveStatusSlugForTask looks up a status UUID from its slug for the project
+// owning taskID, reading it through the task-scoped status route.
+//
+// Why this exists rather than "get the task, then call resolveStatusSlug": the
+// project-scoped status route is project-gated, while the writes it serves here —
+// POST /tasks/:task_id/move and POST /tasks/:task_id/subtasks — are workspace-gated.
+// A read that a write cannot proceed without must never be gated more strictly than
+// that write. While it was, a caller who was entitled to move a task could not
+// discover which statuses it could move to, and the refusal named the project rather
+// than the move. The task-scoped route carries the move's own gate.
+//
+// It also saves a round trip: the task no longer has to be fetched just to learn its
+// project_id.
+//
+// The fallback fires on 404 only — that is, a server predating the task-scoped route.
+// Any other failure is returned as-is: "I could not look" must not be quietly
+// converted into "I looked through a different door", which would restore the old
+// 403 while reporting success at this layer.
+func (s *Server) resolveStatusSlugForTask(ctx context.Context, taskID, slug string) (statusID, statusName, statusCategory string, err error) {
+	client := s.getRESTClient(ctx)
+
+	statuses, err := client.GetTaskStatuses(ctx, taskID)
+	if err != nil {
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+			return "", "", "", fmt.Errorf("get statuses: %w", err)
+		}
+
+		// Either the server has no task-scoped status route, or the task does not
+		// exist. Resolving the task tells the two apart and produces the right error.
+		task, taskErr := client.GetTask(ctx, taskID)
+		if taskErr != nil {
+			return "", "", "", fmt.Errorf("get task: %w", taskErr)
+		}
+		projectID, _ := task["project_id"].(string)
+		if projectID == "" {
+			return "", "", "", fmt.Errorf("task has no project_id")
+		}
+		statuses, err = client.GetProjectStatuses(ctx, projectID)
+		if err != nil {
+			return "", "", "", fmt.Errorf("get statuses: %w", err)
+		}
+	}
+
+	return pickStatusBySlug(statuses, slug)
+}
+
+// pickStatusBySlug selects the status with the given slug from a status list.
+func pickStatusBySlug(statuses []map[string]any, slug string) (statusID, statusName, statusCategory string, err error) {
 	for _, st := range statuses {
 		stSlug, _ := st["slug"].(string)
 		if stSlug == slug {
