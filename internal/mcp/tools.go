@@ -190,10 +190,29 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		if err != nil {
 			return errResult("failed to list comments: %v", err)
 		}
+		var itemCount int
 		if items, ok := page["items"]; ok {
 			resp["comments"] = items
+			if arr, ok := items.([]any); ok {
+				itemCount = len(arr)
+			}
 		} else {
 			resp["comments"] = []any{}
+		}
+		// Propagate the truncation envelope REST already returns (total_count,
+		// has_more) — the old code discarded both, which is exactly what made
+		// a truncated response indistinguishable from a complete one. Ported
+		// from entire-vc/evc-mesh (task 4222c17d / D2) — see GetTaskComments
+		// above for why this repo needs its own copy of the fix.
+		totalCount, _ := page["total_count"].(float64)
+		hasMore, _ := page["has_more"].(bool)
+		resp["comments_total_count"] = int(totalCount)
+		resp["comments_has_more"] = hasMore
+		if hasMore {
+			resp["comments_truncated"] = true
+			resp["comments_note"] = fmt.Sprintf(
+				"showing the last %d of %d comments; call list_comments(task_id, page_size=200) or page through /comments for the rest",
+				itemCount, int(totalCount))
 		}
 	}
 
@@ -202,10 +221,28 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		if err != nil {
 			return errResult("failed to list artifacts: %v", err)
 		}
+		var itemCount int
 		if items, ok := page["items"]; ok {
 			resp["artifacts"] = items
+			if arr, ok := items.([]any); ok {
+				itemCount = len(arr)
+			}
 		} else {
 			resp["artifacts"] = []any{}
+		}
+		// Same envelope-stripping pattern as comments: artifacts already list
+		// newest-first by default, so the ordering half of the comments bug
+		// doesn't apply here, but a task with more artifacts than
+		// DefaultPageSize still silently lost the rest without this.
+		totalCount, _ := page["total_count"].(float64)
+		hasMore, _ := page["has_more"].(bool)
+		resp["artifacts_total_count"] = int(totalCount)
+		resp["artifacts_has_more"] = hasMore
+		if hasMore {
+			resp["artifacts_truncated"] = true
+			resp["artifacts_note"] = fmt.Sprintf(
+				"showing %d of %d artifacts; call list_artifacts(task_id, page_size=200) or page through /artifacts for the rest",
+				itemCount, int(totalCount))
 		}
 	}
 
@@ -340,6 +377,16 @@ func (s *Server) handleUpdateTask(ctx context.Context, request mcpsdk.CallToolRe
 		eh := mcpsdk.ParseFloat64(request, "estimated_hours", 0)
 		body["estimated_hours"] = eh
 	}
+	// delegation_level is settable at creation but was unsettable afterwards — an
+	// asymmetry with no rationale, so a task's routing could never be corrected.
+	if dl := mcpsdk.ParseString(request, "delegation_level", ""); dl != "" {
+		body["delegation_level"] = dl
+	}
+	// completion_signal is documented in the domain as "set by an agent to indicate
+	// agent-side work is done" — agent-facing by design, and unreachable until now.
+	if _, ok := args["completion_signal"]; ok {
+		body["completion_signal"] = mcpsdk.ParseBoolean(request, "completion_signal", false)
+	}
 
 	if len(body) == 0 {
 		return errResult("no fields to update")
@@ -373,20 +420,12 @@ func (s *Server) handleMoveTask(ctx context.Context, request mcpsdk.CallToolRequ
 		return errResult("status_slug is required")
 	}
 
-	// We need the project_id to resolve the status slug.
-	// Get the task first to find its project_id.
-	task, err := s.getRESTClient(ctx).GetTask(ctx, taskID)
-	if err != nil {
-		return errResult("failed to get task: %v", err)
-	}
-
-	projectID, _ := task["project_id"].(string)
-	if projectID == "" {
-		return errResult("task has no project_id")
-	}
-
 	// Resolve slug to status ID (move_task to review is intentionally allowed).
-	stID, stName, _, err := s.resolveStatusSlug(ctx, projectID, statusSlug)
+	// Read through the task-scoped route: it carries the same workspace gate as the
+	// move itself, so a caller entitled to the transition is entitled to the lookup.
+	// The project-scoped route would refuse a workspace member who is not a member of
+	// the task's project, with a 403 naming the project rather than the move.
+	stID, stName, _, err := s.resolveStatusSlugForTask(ctx, taskID, statusSlug)
 	if err != nil {
 		return errResult("invalid status_slug: %v", err)
 	}
@@ -447,18 +486,39 @@ func (s *Server) handleCreateSubtask(ctx context.Context, request mcpsdk.CallToo
 	if desc := mcpsdk.ParseString(request, "description", ""); desc != "" {
 		body["description"] = desc
 	}
+	// Forward the rest of what POST /tasks/:task_id/subtasks accepts, mirroring
+	// handleCreateTask field for field. assignee_id matters most: our convention is that a
+	// subtask is owned by whoever will do the work, not by whoever split the parent
+	// task up — and until this was forwarded, following that convention produced the
+	// exact outcome it prevents, silently, because MCP ignores undeclared arguments.
+	if assigneeID := mcpsdk.ParseString(request, "assignee_id", ""); assigneeID != "" {
+		body["assignee_id"] = assigneeID
+		// Only send a type alongside an id; the API defaults a bare type to "agent",
+		// so emitting one unconditionally would mistype an unassigned subtask.
+		body["assignee_type"] = mcpsdk.ParseString(request, "assignee_type", "agent")
+	}
+	if dueDateStr := mcpsdk.ParseString(request, "due_date", ""); dueDateStr != "" {
+		if _, err := time.Parse(time.RFC3339, dueDateStr); err != nil {
+			return errResult("invalid due_date format: %v", err)
+		}
+		body["due_date"] = dueDateStr
+	}
+	if eh := mcpsdk.ParseFloat64(request, "estimated_hours", 0); eh > 0 {
+		body["estimated_hours"] = eh
+	}
+	if labels := parseStringSlice(request, "labels"); len(labels) > 0 {
+		body["labels"] = labels
+	}
+	if cfMap := mcpsdk.ParseStringMap(request, "custom_fields", nil); cfMap != nil {
+		body["custom_fields"] = cfMap
+	}
 
 	// Resolve status slug against the parent's project. Omitted → project default.
+	// Same gate reasoning as move_task: POST /tasks/:task_id/subtasks is workspace-gated,
+	// so the slug lookup it depends on is read through the task-scoped route too.
+	// Fixing only move_task would have left this second entry into the same dead end open.
 	if slug := mcpsdk.ParseString(request, "status_slug", ""); slug != "" {
-		parent, err := s.getRESTClient(ctx).GetTask(ctx, parentTaskID)
-		if err != nil {
-			return errResult("failed to load parent task: %v", err)
-		}
-		projectID, _ := parent["project_id"].(string)
-		if projectID == "" {
-			return errResult("parent task has no project_id")
-		}
-		stID, _, _, err := s.resolveStatusSlug(ctx, projectID, slug)
+		stID, _, _, err := s.resolveStatusSlugForTask(ctx, parentTaskID, slug)
 		if err != nil {
 			return errResult("invalid status_slug: %v", err)
 		}
@@ -725,7 +785,18 @@ func (s *Server) handleUploadArtifact(ctx context.Context, request mcpsdk.CallTo
 
 	artifactType := mcpsdk.ParseString(request, "artifact_type", "file")
 
-	result, err := s.getRESTClient(ctx).UploadArtifact(ctx, taskID, name, artifactType, mimeType, []byte(content))
+	// metadata was declared on this tool and never read — the schema promised a field
+	// the handler dropped. The API stores it verbatim from the "metadata" form field.
+	metadataJSON := ""
+	if md := mcpsdk.ParseStringMap(request, "metadata", nil); md != nil {
+		raw, err := json.Marshal(md)
+		if err != nil {
+			return errResult("invalid metadata: %v", err)
+		}
+		metadataJSON = string(raw)
+	}
+
+	result, err := s.getRESTClient(ctx).UploadArtifact(ctx, taskID, name, artifactType, mimeType, metadataJSON, []byte(content))
 	if err != nil {
 		return errResult("failed to upload artifact: %v", err)
 	}
@@ -922,6 +993,16 @@ func (s *Server) handleGetContext(ctx context.Context, request mcpsdk.CallToolRe
 	limit := mcpsdk.ParseInt(request, "limit", 50)
 	if limit > 0 {
 		params["page_size"] = strconv.Itoa(limit)
+	}
+
+	// The schema advertises `since` as an RFC3339 lower bound and the handler used to
+	// drop it, so a caller narrowing the window silently got the default one instead.
+	// The API spells the same filter `date_from` (listEventsQuery.DateFrom).
+	if since := mcpsdk.ParseString(request, "since", ""); since != "" {
+		if _, err := time.Parse(time.RFC3339, since); err != nil {
+			return errResult("invalid since format, expected RFC3339: %v", err)
+		}
+		params["date_from"] = since
 	}
 
 	if eventTypes := parseStringSlice(request, "event_types"); len(eventTypes) > 0 {
