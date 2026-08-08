@@ -2328,6 +2328,30 @@ func (s *Server) handleReleaseTask(ctx context.Context, request mcpsdk.CallToolR
 	return jsonResult(map[string]any{"released": true, "task_id": taskID})
 }
 
+func (s *Server) handleExtendCheckout(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	taskID := mcpsdk.ParseString(request, "task_id", "")
+	if taskID == "" {
+		return errResult("task_id is required")
+	}
+	ttlMinutes := mcpsdk.ParseInt(request, "ttl_minutes", 120)
+	if ttlMinutes <= 0 {
+		ttlMinutes = 120
+	}
+
+	token, ok := s.checkouts.Load(taskID)
+	if !ok {
+		return errResult("extend_checkout: no checkout_token found for task %s — checkout may have been acquired in a different session, already released, or already expired", taskID)
+	}
+	checkoutToken, _ := token.(string)
+
+	result, err := s.getRESTClient(ctx).ExtendCheckout(ctx, taskID, checkoutToken, ttlMinutes)
+	if err != nil {
+		return errResult("extend_checkout failed: %v", err)
+	}
+
+	return jsonResult(result)
+}
+
 // ============================================================================
 // session_report
 // ============================================================================

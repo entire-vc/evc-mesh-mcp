@@ -1035,6 +1035,18 @@ func (c *RESTClient) ReleaseTask(ctx context.Context, taskID, checkoutToken stri
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/tasks/"+taskID+"/checkout", body, nil)
 }
 
+// ExtendCheckout pushes the checkout_expires deadline forward on a task lock
+// acquired via CheckoutTask. checkoutToken must match the token returned by
+// CheckoutTask; the API rejects extensions that do not present it.
+func (c *RESTClient) ExtendCheckout(ctx context.Context, taskID, checkoutToken string, ttlMinutes int) (map[string]any, error) {
+	body := map[string]any{"checkout_token": checkoutToken, "ttl_minutes": ttlMinutes}
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/v1/tasks/"+taskID+"/checkout", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // ExportWorkspaceConfig exports workspace configuration as YAML text.
 // reportSessionBody is the JSON body for POST /api/v1/agents/me/sessions/report.
 type reportSessionBody struct {
