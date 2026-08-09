@@ -119,6 +119,21 @@ func queryContainsEnvVar(query string) bool {
 	return false
 }
 
+// resolveProfileOrderBy applies a profile's `order_by` preset the way every
+// preset must be applied: it fills in what the caller left unsaid, and never
+// overrules what the caller said.
+//
+// It exists as a function rather than as two lines inside `handleRecall` so the
+// test can exercise the real resolution instead of a copy of it. The sibling
+// rule for `limit` is still mirrored in its test, and a mirror is only ever as
+// true as the day it was written.
+func resolveProfileOrderBy(profileOrderBy, callerOrderBy string) string {
+	if callerOrderBy != "" {
+		return callerOrderBy
+	}
+	return profileOrderBy
+}
+
 // GetProfileParams returns the ProfileParams for the given profile.
 func GetProfileParams(profile RecallProfile) ProfileParams {
 	switch profile {
