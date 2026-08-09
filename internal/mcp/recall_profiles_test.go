@@ -4,20 +4,22 @@ import (
 	"testing"
 )
 
-func TestClassifyQuery_Temporal(t *testing.T) {
+// A query being ABOUT time must not route into a preset of its own. These are
+// the exact strings the removed `temporal` profile claimed, including the
+// ISO-date pattern; each must now fall through to the default.
+func TestClassifyQuery_TimeFlavouredQueriesAreDefault(t *testing.T) {
 	cases := []string{
 		"what happened yesterday",
 		"show me entries from last week",
 		"what did we do recently",
-		"events before the migration",
-		"tasks completed after the deploy",
-		"what was the state ago",
 		"when was the PR merged",
+		"how many days ago did I attend the baking class",
+		"in what order did the three trips happen",
 		"incident on 2026-07-01",
 	}
 	for _, q := range cases {
-		if got := ClassifyQuery(q); got != ProfileTemporal {
-			t.Errorf("ClassifyQuery(%q) = %q, want %q", q, got, ProfileTemporal)
+		if got := ClassifyQuery(q); got != ProfileDefault {
+			t.Errorf("ClassifyQuery(%q) = %q, want %q", q, got, ProfileDefault)
 		}
 	}
 }
@@ -66,10 +68,10 @@ func TestClassifyQuery_Default(t *testing.T) {
 }
 
 func TestClassifyQuery_Priority(t *testing.T) {
-	// temporal beats multi-session: "recently" is temporal, "pattern" is multi-session
+	// multi-session is now the top priority: a time word no longer outranks it.
 	q := "pattern noticed recently in prod"
-	if got := ClassifyQuery(q); got != ProfileTemporal {
-		t.Errorf("ClassifyQuery(%q) = %q, want temporal (higher priority)", q, got)
+	if got := ClassifyQuery(q); got != ProfileMultiSession {
+		t.Errorf("ClassifyQuery(%q) = %q, want multi-session (highest priority)", q, got)
 	}
 
 	// multi-session beats factual: "trend" matches multi-session, query is short
@@ -79,19 +81,44 @@ func TestClassifyQuery_Priority(t *testing.T) {
 	}
 }
 
-func TestGetProfileParams_Temporal(t *testing.T) {
-	pp := GetProfileParams(ProfileTemporal)
-	if !pp.ApplyDecay {
-		t.Error("temporal profile: ApplyDecay should be true")
+// The property, not the absence of one identifier: NO profile may arm recency
+// decay. `handleRecall` reads `pp.ApplyDecay` one way — it can force decay ON
+// over the caller's explicit false, and can never force it OFF — so a preset
+// here is not a default, it is an override the caller cannot refuse.
+//
+// Since evc-mesh#540 an OrderBy of "decayed_relevance:desc" arms decay on the
+// server BY ITSELF, so that string is checked too: re-adding it would restore
+// decay silently, at the server's 30-day half-life rather than the 7 this
+// change measured as harmful.
+//
+// Mutation check (re-run after editing this file): put
+// `ApplyDecay: true, HalfLifeDays: 7, OrderBy: "decayed_relevance:desc"` back
+// on any case in GetProfileParams — this test must go red, and it is the only
+// thing standing between an intuition about time and a fleet-wide reranking.
+func TestNoProfileArmsRecencyDecay(t *testing.T) {
+	for _, p := range []RecallProfile{
+		ProfileMultiSession, ProfileFactual, ProfileDefault,
+		RecallProfile("temporal"), // the removed profile, and any unknown string
+	} {
+		pp := GetProfileParams(p)
+		if pp.ApplyDecay {
+			t.Errorf("profile %q: ApplyDecay must be false — a profile can force decay ON but never OFF", p)
+		}
+		if pp.HalfLifeDays != 0 {
+			t.Errorf("profile %q: HalfLifeDays = %d, want 0", p, pp.HalfLifeDays)
+		}
+		if pp.OrderBy == "decayed_relevance:desc" {
+			t.Errorf("profile %q: OrderBy %q arms decay server-side by itself (evc-mesh#540)", p, pp.OrderBy)
+		}
 	}
-	if pp.HalfLifeDays != 7 {
-		t.Errorf("temporal profile: HalfLifeDays = %d, want 7", pp.HalfLifeDays)
-	}
-	if pp.OrderBy != "decayed_relevance:desc" {
-		t.Errorf("temporal profile: OrderBy = %q, want decayed_relevance:desc", pp.OrderBy)
-	}
-	if pp.MinImportance != 0 {
-		t.Errorf("temporal profile: MinImportance should be 0 (no override), got %g", pp.MinImportance)
+}
+
+// An unknown or retired profile name must degrade to the default preset rather
+// than to a zero value that happens to look like one: `recall_profile=temporal`
+// is still a legal argument callers may pass.
+func TestGetProfileParams_RetiredTemporalFallsBackToDefault(t *testing.T) {
+	if got, want := GetProfileParams(RecallProfile("temporal")), GetProfileParams(ProfileDefault); got != want {
+		t.Errorf("GetProfileParams(\"temporal\") = %+v, want the default preset %+v", got, want)
 	}
 }
 
@@ -140,11 +167,12 @@ func TestGetProfileParams_Default(t *testing.T) {
 	}
 }
 
-func TestClassifyQuery_YearPattern(t *testing.T) {
-	// "2026-07" should classify as temporal
+func TestClassifyQuery_YearPatternIsNotSpecial(t *testing.T) {
+	// An ISO date in the query used to route to the temporal preset. It no
+	// longer routes anywhere: the date is a search term like any other.
 	q := "events in 2026-07 around deploy"
-	if got := ClassifyQuery(q); got != ProfileTemporal {
-		t.Errorf("ClassifyQuery(%q) = %q, want temporal", q, got)
+	if got := ClassifyQuery(q); got != ProfileDefault {
+		t.Errorf("ClassifyQuery(%q) = %q, want default", q, got)
 	}
 }
 

@@ -6,11 +6,32 @@ import "strings"
 type RecallProfile string
 
 const (
-	ProfileTemporal     RecallProfile = "temporal"
 	ProfileMultiSession RecallProfile = "multi-session"
 	ProfileFactual      RecallProfile = "factual"
 	ProfileDefault      RecallProfile = "default"
 )
+
+// There is deliberately no `temporal` profile. It existed until 2026-08-09 and
+// forced `apply_recency_decay=true` with a 7-day half-life on any query whose
+// text mentioned time — over the caller's explicit `false`, because
+// `handleRecall` lets a profile turn decay ON but never OFF.
+//
+// A query being ABOUT time does not make its answer RECENT: "how many days ago
+// did I attend the baking class" is answered by the oldest matching session,
+// and recency decay is precisely the ranking that buries it. Measured on
+// LongMemEval-S once evc-mesh#535 gave the bench realistically-aged fixtures
+// (same server, same corpus, only this file's binary differing across arms):
+// the one question this profile was operative on went from gold rank 32/33 —
+// far outside top-10, a miss in both runs — to rank 1 with the profile gone.
+// Softening the half-life to 30 days recovered it only to rank 9, one place
+// from falling out of the window again, while demoting a question that had
+// been rank 1 in every run without decay.
+//
+// Restoring a decay preset here therefore needs a MEASUREMENT, not an
+// intuition — and note that since evc-mesh#540 an `OrderBy` of
+// "decayed_relevance:desc" arms decay on the server BY ITSELF, so putting that
+// string back into any profile silently re-enables it at the server's default
+// 30-day half-life.
 
 // ProfileParams holds the parameter overrides applied by a recall profile.
 // Zero/nil values mean "no override — use the caller's value or server default".
@@ -23,50 +44,17 @@ type ProfileParams struct {
 	IncludeSuperseded bool // when true → sends exclude_superseded=false to include superseded entries
 }
 
-var temporalKeywords = []string{
-	// Point-in-time / recency (original set)
-	"when", "ago", "yesterday", "last week", "recently", "before", "after",
-	// Elapsed-time / date-math questions (LongMemEval-style)
-	"how many days", "how many weeks", "how many months", "how many years",
-	"days passed", "weeks passed", "months passed",
-	"days ago", "weeks ago", "months ago",
-	"how long", "time between", "time span", "time elapsed",
-	"passed between", "elapsed between", "how long ago",
-	// Ordering / sequence questions
-	"from first to last", "from last to first", "first to last", "last to first",
-	"in what order", "what order", "chronological",
-	"first mention", "last mention", "first time", "last time",
-	"consecutive", "in a row", "back to back",
-	"sequence", "timeline",
-	// Point-in-time variants
-	"what day", "what date", "before or after", "since then",
-}
-
 var multiSessionKeywords = []string{
 	"pattern", "trend", "history", "always", "recurring", "baseline",
 }
 
 // ClassifyQuery returns the RecallProfile best matching the query.
-// Priority: temporal > multi-session > factual > default.
+// Priority: multi-session > factual > default.
+//
+// Time-flavoured queries are NOT special-cased — see the note on the profile
+// constants above for the measurement that removed that branch.
 func ClassifyQuery(query string) RecallProfile {
 	lower := strings.ToLower(query)
-
-	for _, kw := range temporalKeywords {
-		if strings.Contains(lower, kw) {
-			return ProfileTemporal
-		}
-	}
-	// Modern date patterns like "2026-07" or "2025-01" — require word boundary before "20".
-	for i := 0; i <= len(lower)-5; i++ {
-		if lower[i] == '2' && lower[i+1] == '0' &&
-			lower[i+2] >= '0' && lower[i+2] <= '9' &&
-			lower[i+3] >= '0' && lower[i+3] <= '9' &&
-			lower[i+4] == '-' {
-			if i == 0 || !isAlphaNumByte(lower[i-1]) {
-				return ProfileTemporal
-			}
-		}
-	}
 
 	for _, kw := range multiSessionKeywords {
 		if strings.Contains(lower, kw) {
@@ -106,10 +94,6 @@ func isHexRun(s string, start, length int) bool {
 	return true
 }
 
-func isAlphaNumByte(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-}
-
 // queryContainsPath reports whether s looks like a file system path.
 func queryContainsPath(s string) bool {
 	return strings.HasPrefix(s, "/") || strings.HasPrefix(s, "~/") || strings.Contains(s, "//")
@@ -138,14 +122,6 @@ func queryContainsEnvVar(query string) bool {
 // GetProfileParams returns the ProfileParams for the given profile.
 func GetProfileParams(profile RecallProfile) ProfileParams {
 	switch profile {
-	case ProfileTemporal:
-		// Do NOT apply recency decay for temporal queries: questions about
-		// "how many days between X and Y" need old sessions as much as recent
-		// ones. Pure FTS relevance finds the right sessions better than a
-		// decay that penalises older conversations.
-		return ProfileParams{
-			OrderBy: "relevance:desc",
-		}
 	case ProfileMultiSession:
 		return ProfileParams{
 			MinImportance:     0.2,
