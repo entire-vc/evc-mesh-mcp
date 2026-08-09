@@ -1874,9 +1874,17 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	if pp.MinImportance > 0 {
 		minImportance = pp.MinImportance
 	}
-	if pp.OrderBy != "" {
-		orderBy = pp.OrderBy
-	}
+	// Same rule as the limit below, and for the same reason: a preset fills in
+	// what the caller left unsaid, it does not overrule what the caller said.
+	// This one was still an unconditional override — `factual` sets
+	// "relevance:desc", so a caller who explicitly asked for
+	// "decayed_relevance:desc" had it silently rewritten whenever the query
+	// happened to be short and contain a UUID, a path or an env-var name.
+	//
+	// Harmless until 2026-08-09: that order_by armed nothing on the recall path.
+	// evc-mesh#540 made "decayed_relevance:desc" arm time decay by itself, so
+	// from that day the rewrite silently drops decay the caller asked for.
+	orderBy = resolveProfileOrderBy(pp.OrderBy, orderBy)
 	// A profile may widen the page only when the caller did not ask for a size.
 	// Overriding an explicit limit made the parameter unpredictable: the same
 	// recall(limit=6) returned 6 or 20 rows depending on whether the query text
