@@ -200,3 +200,44 @@ func TestRecallWithGraph_OmitsEmptyScopeAndTags(t *testing.T) {
 		}
 	}
 }
+
+// TestGetTaskDependencies_DecodesOutgoingIncomingShape is the regression
+// test for #cf78d1f9: the /tasks/{id}/dependencies endpoint moved from a
+// bare JSON array to {"outgoing":[...],"incoming":[...]}, and the old
+// []map[string]any decode target failed on the new shape with "cannot
+// unmarshal object into Go value of type []map[string]interface {}".
+func TestGetTaskDependencies_DecodesOutgoingIncomingShape(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"outgoing": []map[string]any{
+				{"task_id": "t1", "depends_on_task_id": "blocker-1", "dependency_type": "blocks"},
+			},
+			"incoming": []map[string]any{
+				{"task_id": "downstream-1", "depends_on_task_id": "t1", "dependency_type": "blocks"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewRESTClient(srv.URL, "test-key")
+	deps, err := c.GetTaskDependencies(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("GetTaskDependencies returned error: %v", err)
+	}
+
+	if len(deps.Outgoing) != 1 || deps.Outgoing[0]["depends_on_task_id"] != "blocker-1" {
+		t.Errorf("Outgoing not decoded correctly: %+v", deps.Outgoing)
+	}
+	// Negative control: incoming edges must never leak into Outgoing — mixing
+	// them silently changes "this task's own blockers" into "blockers plus
+	// downstream work", which would wrongly gate on the wrong direction.
+	if len(deps.Incoming) != 1 || deps.Incoming[0]["task_id"] != "downstream-1" {
+		t.Errorf("Incoming not decoded correctly: %+v", deps.Incoming)
+	}
+	for _, edge := range deps.Outgoing {
+		if edge["task_id"] == "downstream-1" {
+			t.Errorf("incoming edge leaked into Outgoing: %+v", deps.Outgoing)
+		}
+	}
+}

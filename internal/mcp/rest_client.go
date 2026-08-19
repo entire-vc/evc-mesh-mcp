@@ -576,13 +576,21 @@ func (c *RESTClient) GetTaskArtifacts(ctx context.Context, taskID string) (map[s
 	return c.ListArtifacts(ctx, taskID)
 }
 
+// TaskDependencies holds the two directed edge sets the dependencies
+// endpoint returns: Outgoing is this task's own blockers (what it depends
+// on), Incoming is the reverse (other tasks that depend on this one).
+type TaskDependencies struct {
+	Outgoing []map[string]any `json:"outgoing"`
+	Incoming []map[string]any `json:"incoming"`
+}
+
 // GetTaskDependencies returns dependencies for a task.
-func (c *RESTClient) GetTaskDependencies(ctx context.Context, taskID string) ([]map[string]any, error) {
-	var result []map[string]any
+func (c *RESTClient) GetTaskDependencies(ctx context.Context, taskID string) (*TaskDependencies, error) {
+	var result TaskDependencies
 	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/tasks/"+taskID+"/dependencies", nil, &result); err != nil {
 		return nil, err
 	}
-	return result, nil
+	return &result, nil
 }
 
 // UpdateAgent updates the current agent.
