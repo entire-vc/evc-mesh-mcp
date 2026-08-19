@@ -251,7 +251,10 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		if err != nil {
 			return errResult("failed to list dependencies: %v", err)
 		}
-		resp["dependencies"] = deps
+		// dependencies = this task's own blockers (outgoing), matching the
+		// semantics callers historically got from the bare-array response.
+		resp["dependencies"] = deps.Outgoing
+		resp["dependencies_incoming"] = deps.Incoming
 	}
 
 	return jsonResult(resp)
