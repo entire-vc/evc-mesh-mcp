@@ -25,7 +25,16 @@ func main() {
 
 	// Parse CLI flags.
 	transportFlag := flag.String("transport", "", "Transport mode: stdio or sse (overrides MESH_MCP_TRANSPORT)")
+	versionFlag := flag.Bool("version", false, "Print the build git SHA and exit")
 	flag.Parse()
+
+	// Print version and exit before anything that requires network/env setup
+	// (MESH_AGENT_KEY, API connectivity) — origin of the installed binary must
+	// be checkable offline. See task #1c602063.
+	if *versionFlag {
+		fmt.Println(mcpserver.BuildSHA)
+		return
+	}
 
 	// 1. Determine transport mode from flag or env var.
 	transport := "stdio"
