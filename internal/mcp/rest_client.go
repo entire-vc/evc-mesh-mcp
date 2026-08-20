@@ -1118,3 +1118,69 @@ func (c *RESTClient) GetCanonicalUpdates(ctx context.Context, params map[string]
 	}
 	return result, nil
 }
+
+// ---------------------------------------------------------------------------
+// Documents
+//
+// Four reads, deliberately kept as four: the one that costs a body download and
+// the ones that do not are different calls, so a caller cannot pay for a page by
+// accident. See internal/mcp/docs.go for which tool argument reaches which.
+// ---------------------------------------------------------------------------
+
+// ListDocuments returns one page of a project's documents. The API populates a
+// document's body only on single-document reads, so the items here are metadata
+// and nothing else — which is what makes it safe to walk the whole tree.
+func (c *RESTClient) ListDocuments(ctx context.Context, projectID string, params map[string]string) (map[string]any, error) {
+	path := "/api/v1/projects/" + projectID + "/documents"
+	if len(params) > 0 {
+		q := url.Values{}
+		for k, v := range params {
+			if v != "" {
+				q.Set(k, v)
+			}
+		}
+		if enc := q.Encode(); enc != "" {
+			path += "?" + enc
+		}
+	}
+
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetDocument returns one document WITH its markdown body. This is the only one
+// of the four that ships a page over the wire; every other read exists to avoid
+// it.
+func (c *RESTClient) GetDocument(ctx context.Context, docID string) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/documents/"+docID, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetDocumentOutline returns a document's heading structure and version, without
+// the body.
+func (c *RESTClient) GetDocumentOutline(ctx context.Context, docID string) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/documents/"+docID+"/outline", nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetDocumentSection returns one heading of a document and the markdown under
+// it. The heading is a query parameter because it is free text; ref accepts
+// either an anchor from the outline or the heading text itself.
+func (c *RESTClient) GetDocumentSection(ctx context.Context, docID, ref string) (map[string]any, error) {
+	path := "/api/v1/documents/" + docID + "/section?heading=" + url.QueryEscape(ref)
+
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
