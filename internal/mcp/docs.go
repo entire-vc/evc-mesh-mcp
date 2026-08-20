@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -407,4 +409,152 @@ func (s *Server) handleGetDoc(ctx context.Context, request mcpsdk.CallToolReques
 	out["hint"] = hint
 
 	return jsonResult(out)
+}
+
+// ============================================================================
+// create_doc
+// ============================================================================
+
+func (s *Server) handleCreateDoc(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	projectID := mcpsdk.ParseString(request, "project_id", "")
+	if projectID == "" {
+		return errResult("project_id is required")
+	}
+	title := strings.TrimSpace(mcpsdk.ParseString(request, "title", ""))
+	if title == "" {
+		return errResult("title is required")
+	}
+
+	payload := map[string]any{
+		"title": title,
+		"body":  mcpsdk.ParseString(request, "body", ""),
+	}
+	if slug := mcpsdk.ParseString(request, "slug", ""); slug != "" {
+		payload["slug"] = slug
+	}
+	if parent := mcpsdk.ParseString(request, "parent_id", ""); parent != "" {
+		payload["parent_id"] = parent
+	}
+	if hasArgument(request, "position") {
+		payload["position"] = int(mcpsdk.ParseFloat64(request, "position", 0))
+	}
+
+	doc, err := s.getRESTClient(ctx).CreateDocument(ctx, projectID, payload)
+	if err != nil {
+		return errResult("failed to create document: %v", err)
+	}
+
+	// The body is dropped from the reply: the caller wrote it, so echoing it back
+	// spends context on text they already have. `version` is kept and is the
+	// point of the reply — it is what the next update_doc passes as base_version,
+	// so a create followed by an edit needs no read in between.
+	return jsonResult(stripKeys(doc, docListNoiseKeys))
+}
+
+// ============================================================================
+// update_doc
+// ============================================================================
+
+// conflictResult renders a 409 from a conditional write.
+//
+// Returned as an ERROR, because the single most important fact is that nothing
+// was written — a caller that reads this as success will believe an edit landed
+// that did not. The current version is lifted out of the server's payload rather
+// than scraped from its prose, and the retry is spelled out, because a conflict
+// an agent cannot act on becomes a loop of blind repeats.
+func conflictResult(apiErr *APIError) (*mcpsdk.CallToolResult, error) {
+	current := "unknown"
+	if apiErr.Body != nil {
+		if v, ok := asInt(apiErr.Body, "current_version"); ok {
+			current = strconv.Itoa(v)
+		}
+	}
+	return errResult("409 version conflict — NOTHING WAS WRITTEN. "+
+		"The document is now at version %s; somebody else wrote to it after you read it. "+
+		"Re-read it (get_doc, or get_doc version_only=true), re-apply your change on top of "+
+		"the current text, and retry with base_version=%s. "+
+		"Do not retry with the same base_version — it will conflict again. "+
+		"If you are only adding to the end, use append instead: it needs no base_version and cannot conflict.",
+		current, current)
+}
+
+func (s *Server) handleUpdateDoc(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	ref := mcpsdk.ParseString(request, "doc", "")
+	if ref == "" {
+		return errResult("doc is required (a document uuid, or a slug path with project_id)")
+	}
+	projectID := mcpsdk.ParseString(request, "project_id", "")
+
+	hasAppend := hasArgument(request, "append")
+	hasBody := hasArgument(request, "body")
+	hasBase := hasArgument(request, "base_version")
+
+	// Replace and append are different intentions, and guessing which one was
+	// meant is how the wrong text ends up in a document. The server refuses this
+	// too; refusing here saves the round trip and can say it more usefully.
+	if hasAppend && hasBody {
+		return errResult("send either body (replace the whole document) or append (add to the end), not both")
+	}
+
+	payload := map[string]any{}
+	if hasBody {
+		payload["body"] = mcpsdk.ParseString(request, "body", "")
+	}
+	if hasAppend {
+		payload["append_body"] = mcpsdk.ParseString(request, "append", "")
+	}
+	if hasArgument(request, "title") {
+		payload["title"] = mcpsdk.ParseString(request, "title", "")
+	}
+	if hasArgument(request, "parent_id") {
+		payload["parent_id"] = mcpsdk.ParseString(request, "parent_id", "")
+	}
+	if hasArgument(request, "position") {
+		payload["position"] = int(mcpsdk.ParseFloat64(request, "position", 0))
+	}
+
+	if len(payload) == 0 {
+		return errResult("nothing to write: pass body, append, title, parent_id or position")
+	}
+
+	// The gate this tool exists to hold.
+	//
+	// The API accepts a PATCH with no base_version and writes unconditionally —
+	// deliberately, because the existing editor sends exactly that and predates
+	// the version column. That leniency is right for a human typing in a browser
+	// and wrong for an agent: it means one forgetful call silently overwrites
+	// somebody else's edit, which is the accident this whole feature was built
+	// after. So the requirement lives here, where the agent-facing surface is,
+	// and the server keeps its compatibility.
+	//
+	// An append is exempt because it cannot destroy an edit it never read: two
+	// appends both land. Requiring a version there would force a caller to read a
+	// whole document just to add a line to the end.
+	if !hasBase && !hasAppend {
+		return errResult("base_version is required: an unconditional write can silently overwrite " +
+			"somebody else's edit. Read the document first (get_doc, or get_doc version_only=true for " +
+			"just the number) and pass the version you saw. To add to the end without reading, use " +
+			"append instead — it needs no base_version.")
+	}
+	if hasBase {
+		// Passed through even alongside append: an append normally retries through
+		// a conflict, and sending a version is how a caller says "tell me instead".
+		payload["base_version"] = int(mcpsdk.ParseFloat64(request, "base_version", 0))
+	}
+
+	docID, err := s.resolveDocRef(ctx, ref, projectID)
+	if err != nil {
+		return errResult("%v", err)
+	}
+
+	doc, err := s.getRESTClient(ctx).UpdateDocument(ctx, docID, payload)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+			return conflictResult(apiErr)
+		}
+		return errResult("failed to update document: %v", err)
+	}
+
+	return jsonResult(stripKeys(doc, docListNoiseKeys))
 }
