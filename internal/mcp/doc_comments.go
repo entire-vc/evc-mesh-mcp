@@ -145,6 +145,14 @@ func (s *Server) handleCommentDoc(ctx context.Context, request mcpsdk.CallToolRe
 		return errResult("quote_context only means anything alongside quote — it is the surrounding " +
 			"passage used to tell several occurrences of the quote apart.")
 	}
+	// A quote that was SENT but is blank once trimmed is a mistake, not a request
+	// for a whole-document comment. Treating it as one would answer 201 to a caller
+	// who asked to point at a passage and quietly give them a comment that points
+	// at nothing — the difference is invisible in the reply.
+	if quote == "" && hasArgument(request, "quote") {
+		return errResult("quote is empty. To comment on a passage, quote it exactly as the document " +
+			"reads; to comment on the document as a whole, omit quote entirely.")
+	}
 
 	docID, err := s.resolveDocRef(ctx, ref, projectID)
 	if err != nil {

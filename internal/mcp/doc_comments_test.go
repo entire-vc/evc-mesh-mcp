@@ -695,3 +695,22 @@ func newTestServerTools(t *testing.T) []mcpsdk.Tool {
 	})
 	return testToolsOnce.tools
 }
+
+// A blank quote is a mistake, not a request for a whole-document comment.
+// Treating it as one would answer success to a caller who asked to point at a
+// passage and quietly hand them a comment that points at nothing.
+func TestCommentDoc_BlankQuoteIsRefusedNotDowngraded(t *testing.T) {
+	st := newCommentStore(t, cyrillicDoc)
+
+	text, isErr := callTool(t, st.newServer().handleCommentDoc, map[string]any{
+		"doc": st.docID, "body": "к чему-то", "quote": "   ",
+	})
+	if !isErr {
+		t.Fatalf("a blank quote was silently downgraded to a whole-document comment: %s", text)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if len(st.comments) != 0 {
+		t.Fatal("an unanchored comment was created for a caller who asked for an anchored one")
+	}
+}
