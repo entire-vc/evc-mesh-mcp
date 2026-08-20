@@ -511,6 +511,32 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithNumber("position", mcpsdk.Description("New sort position among siblings.")),
 	), s.tracked("update_doc", s.handleUpdateDoc))
 
+	// --- Document comments ---
+	//
+	// Two tools, and neither takes a byte offset. An agent points at text by
+	// quoting it and the SERVER computes the position, because an agent computing
+	// it gets it wrong on Cyrillic and the mistake is silent — see doc_comments.go.
+	//
+	// There is no resolve, unresolve or delete here on purpose: closing a
+	// discussion is a claim about what people agreed, and it is absent from the
+	// surface rather than refused at runtime.
+	s.mcpServer.AddTool(mcpsdk.NewTool("comment_doc",
+		mcpsdk.WithDescription("Comment on a document. To comment on a specific passage, pass quote with the text exactly as the document reads it — the server finds it and anchors the comment there, so you never compute a position yourself (there is no offset parameter, and a position you calculated would silently point at the wrong sentence). Without quote the comment is on the whole document. Your comment appears in the same thread humans see in the document UI."),
+		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description("Document UUID, or a slug path like 'architecture/adr/adr-004' (a path also needs project_id).")),
+		mcpsdk.WithString("body", mcpsdk.Required(), mcpsdk.Description("The comment text. Markdown; @slug mentions notify that person or agent.")),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Project UUID. Required only when doc is a slug path.")),
+		mcpsdk.WithString("quote", mcpsdk.Description("The passage being commented on, copied from the document exactly. One sentence is plenty. Omit to comment on the document as a whole.")),
+		mcpsdk.WithString("quote_context", mcpsdk.Description("A longer passage containing the quote exactly once — send this when the quote occurs several times in the document and you were told it was ambiguous.")),
+		mcpsdk.WithString("reply_to", mcpsdk.Description("UUID of the comment being answered. A reply inherits that thread's anchor, so it takes no quote of its own.")),
+	), s.tracked("comment_doc", s.handleCommentDoc))
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("list_doc_comments",
+		mcpsdk.WithDescription("Read the comments on a document as threads — each top-level comment with its replies nested under it, the quoted passage it is anchored to, and who wrote it. Resolved threads are hidden unless include_resolved=true. A comment whose quoted text no longer exists in the document is marked orphaned=true in its anchor: it is still shown, and it is not pointing anywhere."),
+		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description("Document UUID, or a slug path like 'architecture/adr/adr-004' (a path also needs project_id).")),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Project UUID. Required only when doc is a slug path.")),
+		mcpsdk.WithBoolean("include_resolved", mcpsdk.Description("Include threads somebody marked resolved."), mcpsdk.DefaultBool(false)),
+	), s.tracked("list_doc_comments", s.handleListDocComments))
+
 	// --- Projects ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_project",
 		mcpsdk.WithDescription("Get project details with statuses and custom fields."),

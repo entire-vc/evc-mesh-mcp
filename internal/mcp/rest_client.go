@@ -1214,6 +1214,61 @@ func (c *RESTClient) CreateDocument(ctx context.Context, projectID string, body 
 	return result, nil
 }
 
+// ---------------------------------------------------------------------------
+// Document comments
+//
+// Three calls, and the ORDER of the first two is the whole design: the anchor is
+// resolved by the server and then handed straight back to it. The agent-facing
+// tool never sees a byte offset, so it cannot get one wrong.
+// ---------------------------------------------------------------------------
+
+// ResolveDocumentAnchor turns a quotation into a comment anchor, server-side.
+//
+// A POST that writes nothing — it has to be, because a quote is prose and does
+// not survive a query string. Failures arrive as *APIError: 400 with Body["code"]
+// == "ambiguous_quote" and Body["matches"] when the quote occurs more than once,
+// 400 otherwise when it occurs not at all.
+func (c *RESTClient) ResolveDocumentAnchor(ctx context.Context, docID string, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/documents/"+docID+"/resolve-anchor", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// CreateDocumentComment posts a comment on a document. The anchor in body, when
+// present, is the one ResolveDocumentAnchor just returned.
+func (c *RESTClient) CreateDocumentComment(ctx context.Context, docID string, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/documents/"+docID+"/comments", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// ListDocumentComments returns one page of a document's comments. Resolved
+// threads are excluded unless params carries include_resolved=true.
+func (c *RESTClient) ListDocumentComments(ctx context.Context, docID string, params map[string]string) (map[string]any, error) {
+	path := "/api/v1/documents/" + docID + "/comments"
+	if len(params) > 0 {
+		q := url.Values{}
+		for k, v := range params {
+			if v != "" {
+				q.Set(k, v)
+			}
+		}
+		if enc := q.Encode(); enc != "" {
+			path += "?" + enc
+		}
+	}
+
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // UpdateDocument patches a document. A base_version in the body makes the write
 // conditional: when it no longer matches, the caller gets an *APIError with
 // StatusCode 409 and the document's current version in Body.
