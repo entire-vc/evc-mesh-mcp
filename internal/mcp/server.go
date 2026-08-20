@@ -489,6 +489,28 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithString("outline_depth", mcpsdk.Description("Limit the outline to headings at this level or shallower (e.g. '2' for chapters, not every subsection). Default: all levels.")),
 	), s.tracked("get_doc", s.handleGetDoc))
 
+	s.mcpServer.AddTool(mcpsdk.NewTool("create_doc",
+		mcpsdk.WithDescription("Create a document in a project. Returns its metadata and version — the version is what update_doc takes as base_version, so a create followed by an edit needs no read in between. The body you sent is not echoed back."),
+		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project UUID.")),
+		mcpsdk.WithString("title", mcpsdk.Required(), mcpsdk.Description("Document title.")),
+		mcpsdk.WithString("body", mcpsdk.Description("Markdown body.")),
+		mcpsdk.WithString("slug", mcpsdk.Description("URL slug. Derived from the title if omitted.")),
+		mcpsdk.WithString("parent_id", mcpsdk.Description("Parent document UUID, to nest this one under it.")),
+		mcpsdk.WithNumber("position", mcpsdk.Description("Sort position among siblings.")),
+	), s.tracked("create_doc", s.handleCreateDoc))
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("update_doc",
+		mcpsdk.WithDescription("Edit a document. Replacing the body REQUIRES base_version — the version you got from get_doc — and the write is refused with a 409 if anyone changed the document since, so you can never silently overwrite someone else's edit. To add to the end, pass append instead: it needs no base_version, cannot conflict, and does not make you read the document first. Prefer append for reports, decisions and logs."),
+		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description("Document UUID, or a slug path like 'architecture/adr/adr-004' (a path also needs project_id).")),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Project UUID. Required only when doc is a slug path.")),
+		mcpsdk.WithString("append", mcpsdk.Description("Text to add to the END of the document. No base_version needed. Cannot be combined with body.")),
+		mcpsdk.WithString("body", mcpsdk.Description("Replacement markdown for the WHOLE document. Requires base_version.")),
+		mcpsdk.WithNumber("base_version", mcpsdk.Description("The version you read from get_doc. Required for any write other than append.")),
+		mcpsdk.WithString("title", mcpsdk.Description("New title.")),
+		mcpsdk.WithString("parent_id", mcpsdk.Description("New parent document UUID.")),
+		mcpsdk.WithNumber("position", mcpsdk.Description("New sort position among siblings.")),
+	), s.tracked("update_doc", s.handleUpdateDoc))
+
 	// --- Projects ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_project",
 		mcpsdk.WithDescription("Get project details with statuses and custom fields."),

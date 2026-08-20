@@ -8,8 +8,8 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
-	"net/textproto"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"sort"
 	"strings"
@@ -71,7 +71,11 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return &APIError{StatusCode: resp.StatusCode, Message: apiErrorMessage(errBody, resp.StatusCode)}
+		return &APIError{
+			StatusCode: resp.StatusCode,
+			Message:    apiErrorMessage(errBody, resp.StatusCode),
+			Body:       errBody,
+		}
 	}
 
 	if result != nil {
@@ -90,6 +94,18 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 type APIError struct {
 	StatusCode int
 	Message    string
+
+	// Body is the server's decoded error payload, kept whole.
+	//
+	// Message is prose for a human; some errors also carry a field the caller
+	// must ACT on, and flattening those into a sentence forces the caller to
+	// parse the sentence back out. The document version conflict is the case in
+	// hand: it answers with current_version, and a caller that cannot read that
+	// number has nothing to retry with except a blind guess.
+	//
+	// nil when the response body was not JSON. Error() is unchanged, so existing
+	// callers and their error strings are unaffected.
+	Body map[string]any
 }
 
 func (e *APIError) Error() string {
@@ -202,7 +218,11 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return &APIError{StatusCode: resp.StatusCode, Message: apiErrorMessage(errBody, resp.StatusCode)}
+		return &APIError{
+			StatusCode: resp.StatusCode,
+			Message:    apiErrorMessage(errBody, resp.StatusCode),
+			Body:       errBody,
+		}
 	}
 
 	if result != nil {
@@ -1180,6 +1200,26 @@ func (c *RESTClient) GetDocumentSection(ctx context.Context, docID, ref string) 
 
 	var result map[string]any
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// CreateDocument creates a document in a project.
+func (c *RESTClient) CreateDocument(ctx context.Context, projectID string, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/projects/"+projectID+"/documents", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// UpdateDocument patches a document. A base_version in the body makes the write
+// conditional: when it no longer matches, the caller gets an *APIError with
+// StatusCode 409 and the document's current version in Body.
+func (c *RESTClient) UpdateDocument(ctx context.Context, docID string, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/v1/documents/"+docID, body, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
