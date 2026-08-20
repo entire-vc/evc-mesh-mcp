@@ -468,6 +468,27 @@ func (s *Server) registerCoreTools() {
 // registerAdvancedTools registers tools beyond the core set.
 // These are available in the full profile only.
 func (s *Server) registerAdvancedTools() {
+	// --- Documents ---
+	//
+	// Two tools, not six. Every tool description sits in every agent's system
+	// context permanently, so the surface is narrow by construction: read the
+	// map, then read the part you need.
+	s.mcpServer.AddTool(mcpsdk.NewTool("list_docs",
+		mcpsdk.WithDescription("List a project's documents — id, title, slug path, version, who touched them last. Carries NO document bodies, so it is safe to call on a whole project: use it as the map, then get_doc for one page. Returns path and has_children for navigating the tree."),
+		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project UUID.")),
+		mcpsdk.WithBoolean("include_archived", mcpsdk.Description("Include archived documents."), mcpsdk.DefaultBool(false)),
+	), s.tracked("list_docs", s.handleListDocs))
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("get_doc",
+		mcpsdk.WithDescription("Read a document. By DEFAULT returns metadata plus the outline (headings) and NOT the body — a document is far larger than a task, and a body you read stays in your context for the rest of the session. Read the outline first, then pass section=\"<heading>\" for just that part; body=true returns the whole page and should be the exception. The returned version is what update_doc takes as base_version."),
+		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description("Document UUID, or a slug path like 'architecture/adr/adr-004' (a path also needs project_id).")),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Project UUID. Required only when doc is a slug path.")),
+		mcpsdk.WithString("section", mcpsdk.Description("Return only this section: a heading's text, or its anchor from the outline.")),
+		mcpsdk.WithBoolean("body", mcpsdk.Description("Return the full markdown body. Prefer section= when you need one part."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("version_only", mcpsdk.Description("Return just the version — the cheap 'has this changed since I read it?' check before a write."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithString("outline_depth", mcpsdk.Description("Limit the outline to headings at this level or shallower (e.g. '2' for chapters, not every subsection). Default: all levels.")),
+	), s.tracked("get_doc", s.handleGetDoc))
+
 	// --- Projects ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_project",
 		mcpsdk.WithDescription("Get project details with statuses and custom fields."),
