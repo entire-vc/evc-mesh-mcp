@@ -406,6 +406,8 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("source_task_id", mcpsdk.Description("UUID of the Mesh task that produced this memory. Auto-populated from the fiddler side-channel (FIDDLER_STATE_FILE) or active checkout. Enables Amendment 2/3 KG edge hooks.")),
 		mcpsdk.WithString("thread_id", mcpsdk.Description("Thread identifier for same-session memory grouping. Auto-populated from the fiddler side-channel when omitted.")),
 		mcpsdk.WithBoolean("attach_context", mcpsdk.Description("When false, disables auto-injection of thread_id and source_task_id. Use for cross-cutting records not tied to the active task."), mcpsdk.DefaultBool(true)),
+		mcpsdk.WithString("reason", mcpsdk.Description("Why this memory is worth writing — what a future thread should be able to do with it, or what changed if you are correcting an existing key. Recorded on the revision alongside the content, so a later reader can judge whether the entry still applies instead of guessing from the text alone. Optional today and about to become required; write it now.")),
+		mcpsdk.WithNumber("expected_version", mcpsdk.Description("Make the write conditional: it succeeds only if the stored version still matches this number, and is REFUSED with both version numbers if someone else wrote to the key in between. Pass the version returned by your previous remember/recall of this key. Omit for last-write-wins.")),
 	), s.tracked("remember", s.handleRemember))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("forget",

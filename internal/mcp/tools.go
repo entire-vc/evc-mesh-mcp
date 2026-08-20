@@ -2102,6 +2102,11 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 	sourceTaskID := mcpsdk.ParseString(request, "source_task_id", "")
 	threadID := mcpsdk.ParseString(request, "thread_id", "")
 	attachContext := mcpsdk.ParseBoolean(request, "attach_context", true)
+	reason := mcpsdk.ParseString(request, "reason", "")
+	// 0 means "not supplied": versions start at 1, so no real expectation can
+	// be zero, and treating 0 as an expectation would turn an omitted argument
+	// into a conditional write that always conflicts.
+	expectedVersion := int(mcpsdk.ParseFloat64(request, "expected_version", 0))
 
 	// Auto-populate project_id from the most recently checked-out task when the
 	// agent omits it. This fixes the Memory Eval E·P2 issue where 99% of episodic
@@ -2166,6 +2171,12 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 	}
 	if threadID != "" {
 		body["thread_id"] = threadID
+	}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	if expectedVersion > 0 {
+		body["expected_version"] = expectedVersion
 	}
 
 	result, err := s.getRESTClient(ctx).Remember(ctx, body)
