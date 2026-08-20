@@ -392,7 +392,9 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("recall_with_graph", s.handleRecallWithGraph))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("remember",
-		mcpsdk.WithDescription("Save knowledge to persistent memory. Use for decisions, conventions, preferences. UPSERT by key — calling with same key updates the existing entry."),
+		mcpsdk.WithDescription("Save knowledge to persistent memory. Use for decisions, conventions, preferences. UPSERT by key — calling with same key updates the existing entry. "+
+			"Content is screened on write and REFUSED with a named reason (never silently stripped or stored) if it contains invisible/bidi characters, an LLM role tag, an instruction to ignore previous/system instructions, a PEM private key, a prefixed API token (sk-/ghp_/xox*/AKIA), or a literal assignment to a *_PASSWORD/_SECRET/_TOKEN/_API_KEY name. "+
+			"LIMITATION — this screen is partial and must not be relied on as a secret filter: it CANNOT see a secret that has no recognisable prefix and no field name next to it (a bare value pasted on its own line), nor names it does not know. Do not paste credentials here on the assumption they will be caught; record where a secret lives, never its value."),
 		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Slug key for UPSERT (e.g. 'api-convention', 'license-decision').")),
 		mcpsdk.WithString("content", mcpsdk.Required(), mcpsdk.Description("What to remember (markdown).")),
 		mcpsdk.WithString("scope", mcpsdk.Description("workspace | project | agent (default: project).")),
