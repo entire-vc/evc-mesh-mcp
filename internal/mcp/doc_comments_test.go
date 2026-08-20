@@ -14,8 +14,8 @@ import (
 )
 
 // commentStore is a fake Mesh API implementing the half of the document-comment
-// contract these tools depend on: resolve-anchor really searches the body and
-// really counts BYTES, create really refuses the shapes the service refuses, and
+// contract these tools depend on: create really searches the body for the quote
+// and really counts BYTES, it really refuses the shapes the service refuses, and
 // the listing really paginates.
 //
 // It resolves quotes for itself rather than returning canned offsets, because the
@@ -25,12 +25,23 @@ import (
 // thing under test. The server's own resolver is proved separately, against the
 // live API; what is proved here is that the tool asks it and carries the answer
 // through untouched.
+//
+// It serves NO /resolve-anchor route, deliberately. The endpoint still exists on
+// the real server for the editor, but comment_doc must no longer reach for it,
+// and a fake that still answered would let a regression back to two calls pass
+// every assertion in this file. Here it 404s, loudly, in addition to being
+// counted by requests below.
 type commentStore struct {
 	mu       sync.Mutex
 	body     string
 	docID    string
 	comments []map[string]any
 	server   *httptest.Server
+
+	// requests logs every "METHOD path" the tool sent, so "one call" can be
+	// asserted as a fact about the wire rather than inferred from the result
+	// looking right. A two-call implementation returns the identical comment.
+	requests []string
 
 	// pageSizeSeen records what the tool asked for, so the pagination walk can be
 	// asserted on rather than assumed.
@@ -50,9 +61,11 @@ func newCommentStore(t *testing.T, body string) *commentStore {
 	st.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
+		st.mu.Lock()
+		st.requests = append(st.requests, r.Method+" "+r.URL.Path)
+		st.mu.Unlock()
+
 		switch {
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/resolve-anchor"):
-			st.handleResolveAnchor(w, r)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
 			st.handleCreate(w, r)
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
@@ -66,15 +79,13 @@ func newCommentStore(t *testing.T, body string) *commentStore {
 	return st
 }
 
-// handleResolveAnchor is a byte-honest model of pkg/mdoc.ResolveQuote: literal
+// resolveQuote is a byte-honest model of pkg/mdoc.ResolveQuote: literal
 // occurrences, narrowed by prefix/suffix, refused when several survive.
-func (st *commentStore) handleResolveAnchor(w http.ResponseWriter, r *http.Request) {
-	var req map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	quote, _ := req["quote"].(string)
-	prefix, _ := req["prefix"].(string)
-	suffix, _ := req["suffix"].(string)
-
+//
+// It lives inside the create path now because that is where the real server does
+// it — the whole point of the change under test is that the body is read once, in
+// the same request that writes the comment.
+func (st *commentStore) resolveQuote(quote, prefix, suffix string) (start int, matches int) {
 	st.mu.Lock()
 	body := st.body
 	st.mu.Unlock()
@@ -101,30 +112,51 @@ func (st *commentStore) handleResolveAnchor(w http.ResponseWriter, r *http.Reque
 		starts = narrowed
 	}
 
-	switch len(starts) {
-	case 0:
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"code": 400, "message": "No such quote in this document",
-		})
-	case 1:
-		start := starts[0]
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"exact": quote, "prefix": prefix, "suffix": suffix,
-			"start": start, "end": start + len(quote),
-		})
-	default:
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"code": "ambiguous_quote", "matches": len(starts),
-			"message": "this quote occurs several times in the document",
-		})
+	if len(starts) != 1 {
+		return 0, len(starts)
 	}
+	return starts[0], 1
 }
 
 func (st *commentStore) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var req map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	// The quote arrives as text on this request, exactly as it does at the real
+	// endpoint since evc-mesh#637, and the refusals are the ones the service
+	// makes: {code: ambiguous_quote, matches: N} when several occurrences survive,
+	// a plain 400 when none do. Nothing is written in either case, which is what
+	// the tests slice the store for.
+	var anchor map[string]any
+	if quote, _ := req["quote"].(string); quote != "" {
+		prefix, _ := req["quote_prefix"].(string)
+		suffix, _ := req["quote_suffix"].(string)
+		start, matches := st.resolveQuote(quote, prefix, suffix)
+		switch matches {
+		case 0:
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 400, "message": "No such quote in this document",
+			})
+			return
+		case 1:
+			// float64, because the offsets a real server hands back have been
+			// through JSON and every number in JSON decodes to float64. An int here
+			// would give the tests a shape the wire cannot produce, and the
+			// assertions that read the anchor would be testing the fake.
+			anchor = map[string]any{
+				"exact": quote, "prefix": prefix, "suffix": suffix,
+				"start": float64(start), "end": float64(start + len(quote)),
+			}
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": "ambiguous_quote", "matches": matches,
+				"message": "this quote occurs several times in the document",
+			})
+			return
+		}
+	}
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -139,7 +171,12 @@ func (st *commentStore) handleCreate(w http.ResponseWriter, r *http.Request) {
 		"resolved_at":       nil,
 		"anchor":            nil,
 	}
-	if anchor, ok := req["anchor"].(map[string]any); ok {
+	if anchor == nil {
+		// An anchor sent as offsets by a measuring client (the editor) still works;
+		// comment_doc is simply not such a client and never sends one.
+		anchor, _ = req["anchor"].(map[string]any)
+	}
+	if anchor != nil {
 		anchor["orphaned"] = anchor["start"] == nil
 		comment["anchor"] = anchor
 	}
@@ -215,6 +252,13 @@ func (st *commentStore) newServer() *Server {
 	}
 }
 
+// sentRequests returns the wire log: every request the tool actually made.
+func (st *commentStore) sentRequests() []string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return append([]string(nil), st.requests...)
+}
+
 // stored returns the anchor the server ended up holding for the nth comment.
 func (st *commentStore) storedAnchor(n int) map[string]any {
 	st.mu.Lock()
@@ -281,6 +325,71 @@ func TestCommentDoc_CyrillicQuoteAnchorsToTheRightBytes(t *testing.T) {
 		t.Fatalf("fixture is not stressing the units: byte offset %d equals character offset %d, "+
 			"so this test would pass with either. Use text with multi-byte characters before the quote",
 			start, charStart)
+	}
+}
+
+// AC1: one comment is one HTTP request, asserted on the wire log rather than on
+// the result.
+//
+// The result is the wrong place to look: a two-call implementation returns the
+// identical comment, anchored to the identical bytes, and every other test in
+// this file passes under both. What the collapse buys is the disappearance of the
+// window between resolving a quote and writing it down — an anchor names no
+// revision, so an edit landing in that window moved the text and left the offsets
+// looking fine. Only the request count can tell the two implementations apart, so
+// only the request count proves the window is gone.
+func TestCommentDoc_QuotedCommentIsOneRequest(t *testing.T) {
+	st := newCommentStore(t, cyrillicDoc)
+
+	text, isErr := callTool(t, st.newServer().handleCommentDoc, map[string]any{
+		"doc":   st.docID,
+		"body":  "один вызов",
+		"quote": "фразу про якорь комментария",
+	})
+	if isErr {
+		t.Fatalf("comment_doc failed: %s", text)
+	}
+
+	sent := st.sentRequests()
+	if len(sent) != 1 {
+		t.Fatalf("a quoted comment took %d requests, not one: %v", len(sent), sent)
+	}
+	if !strings.HasSuffix(sent[0], "/comments") {
+		t.Fatalf("the one request was not the create call: %q", sent[0])
+	}
+	for _, req := range sent {
+		if strings.Contains(req, "resolve-anchor") {
+			t.Fatalf("the tool still resolves the anchor in a separate call: %v", sent)
+		}
+	}
+
+	// The saved call is the whole point only if the comment still lands correctly,
+	// so the anchor is checked here too rather than left to the test above: a tool
+	// that sent one request and anchored nothing would satisfy the count alone.
+	anchor := st.storedAnchor(0)
+	if anchor == nil {
+		t.Fatal("one request, and no anchor — the quote was dropped rather than resolved")
+	}
+	start, end := int(anchor["start"].(float64)), int(anchor["end"].(float64))
+	if got := cyrillicDoc[start:end]; got != "фразу про якорь комментария" {
+		t.Fatalf("the single call anchored to the wrong bytes [%d,%d): %q", start, end, got)
+	}
+}
+
+// A quote_context comment is also one request: the split into prefix and suffix
+// happens locally and travels on the same create call.
+func TestCommentDoc_QuoteContextIsStillOneRequest(t *testing.T) {
+	st := newCommentStore(t, cyrillicDoc)
+
+	text, isErr := callTool(t, st.newServer().handleCommentDoc, map[string]any{
+		"doc": st.docID, "body": "про четвёртый абзац", "quote": "повторяющаяся фраза",
+		"quote_context": "Четвёртый абзац: повторяющаяся фраза.\n",
+	})
+	if isErr {
+		t.Fatalf("comment_doc failed: %s", text)
+	}
+	if sent := st.sentRequests(); len(sent) != 1 {
+		t.Fatalf("a disambiguated comment took %d requests, not one: %v", len(sent), sent)
 	}
 }
 

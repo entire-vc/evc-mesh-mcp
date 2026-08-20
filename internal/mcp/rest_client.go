@@ -1217,27 +1217,22 @@ func (c *RESTClient) CreateDocument(ctx context.Context, projectID string, body 
 // ---------------------------------------------------------------------------
 // Document comments
 //
-// Three calls, and the ORDER of the first two is the whole design: the anchor is
-// resolved by the server and then handed straight back to it. The agent-facing
-// tool never sees a byte offset, so it cannot get one wrong.
+// Two calls, and the create carries the quote as TEXT. There is no client-side
+// anchor step: the offsets are computed by the server inside the same request
+// that writes the row, so this package never holds a byte offset and cannot hold
+// a stale one. The wrapper for POST /documents/:id/resolve-anchor was deleted
+// with that step — the endpoint is still served for the browser editor, which
+// measures a real selection, but nothing in this client calls it and a second
+// way to reach it is a second way to reintroduce the two-step race.
 // ---------------------------------------------------------------------------
 
-// ResolveDocumentAnchor turns a quotation into a comment anchor, server-side.
+// CreateDocumentComment posts a comment on a document.
 //
-// A POST that writes nothing — it has to be, because a quote is prose and does
-// not survive a query string. Failures arrive as *APIError: 400 with Body["code"]
-// == "ambiguous_quote" and Body["matches"] when the quote occurs more than once,
-// 400 otherwise when it occurs not at all.
-func (c *RESTClient) ResolveDocumentAnchor(ctx context.Context, docID string, body map[string]any) (map[string]any, error) {
-	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/documents/"+docID+"/resolve-anchor", body, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// CreateDocumentComment posts a comment on a document. The anchor in body, when
-// present, is the one ResolveDocumentAnchor just returned.
+// A quote in body asks the server to find that text and anchor the comment to it;
+// quote_prefix/quote_suffix narrow a quote that occurs more than once. Failures
+// arrive as *APIError: 400 with Body["code"] == "ambiguous_quote" and
+// Body["matches"] when the quote occurs several times, 400 otherwise when it
+// occurs not at all. Nothing is written in either case.
 func (c *RESTClient) CreateDocumentComment(ctx context.Context, docID string, body map[string]any) (map[string]any, error) {
 	var result map[string]any
 	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/documents/"+docID+"/comments", body, &result); err != nil {
