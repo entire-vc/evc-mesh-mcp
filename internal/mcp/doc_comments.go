@@ -22,10 +22,23 @@ import (
 // somebody else's sentence, and the comment reads as normal work forever after.
 // A parameter that does not exist cannot be passed wrongly.
 //
-// So comment_doc resolves the quote through the server (POST resolve-anchor,
-// pkg/mdoc.ResolveQuote — the same rules the browser editor uses, so an agent's
-// comment and a human's on the same sentence land in the same place) and hands the
-// result straight back to the create call.
+// So comment_doc sends the quote itself, on the create call, and the server
+// locates it (pkg/mdoc.ResolveQuote — the same rules the browser editor uses, so
+// an agent's comment and a human's on the same sentence land in the same place).
+//
+// One call, not two, and that is a correctness property rather than a saving. The
+// tool used to resolve the quote through POST resolve-anchor and hand the offsets
+// back on a second request. Nothing in an anchor names the revision it was
+// measured against, so an edit landing between the two requests moved the text out
+// from under offsets that stayed valid-looking, and the comment was written at the
+// old position with no error anywhere — the silent mis-anchor this file exists to
+// prevent, arriving through a different door. With one call the body is read once
+// and the offsets are born in the same read they are written from: there is no
+// intermediate state that could go stale.
+//
+// resolve-anchor is still there and still supported; the editor measures a real
+// selection and has nothing to gain from re-finding it. It is simply not on this
+// tool's path any more.
 //
 // ## What is deliberately absent
 //
@@ -94,12 +107,20 @@ func splitQuoteContext(quoteContext, quote string) (prefix, suffix string, err e
 	return quoteContext[:at], quoteContext[at+len(quote):], nil
 }
 
-// anchorErrResult renders a failed quote resolution.
+// commentErrResult renders a failed comment_doc call.
+//
+// Every branch says that nothing was written, and since the collapse to a single
+// request that is no longer a claim needing care: the create either happened or it
+// did not, and an error means it did not. When there were two calls this sentence
+// was true of the first one and had to be reasoned about for the second.
 //
 // The ambiguous case carries the match count out of the server's JSON body rather
 // than out of its prose, because that number is the only thing that tells the
-// caller what to do next: add context, or quote something else entirely.
-func anchorErrResult(err error) (*mcpsdk.CallToolResult, error) {
+// caller what to do next: add context, or quote something else entirely. It is
+// read from the same {code, matches} body the resolve endpoint returns — one
+// mapping in the service (anchorResolveError), so the shape did not move when the
+// path did.
+func commentErrResult(err error) (*mcpsdk.CallToolResult, error) {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Body != nil {
 		if code, _ := apiErr.Body["code"].(string); code == "ambiguous_quote" {
@@ -113,7 +134,7 @@ func anchorErrResult(err error) (*mcpsdk.CallToolResult, error) {
 				"place it. Do not retry the same quote unchanged — it will be ambiguous again.", matches)
 		}
 	}
-	return errResult("could not place the quote — NOTHING WAS POSTED. %v", err)
+	return errResult("could not post the comment — NOTHING WAS POSTED. %v", err)
 }
 
 // handleCommentDoc implements comment_doc.
@@ -170,23 +191,24 @@ func (s *Server) handleCommentDoc(ctx context.Context, request mcpsdk.CallToolRe
 			return errResult("%v", splitErr)
 		}
 
-		// The server locates the quote and computes the offsets; they are passed
-		// straight back to it on the next call. This is the only place in the tool
-		// where an offset exists at all, and it was never in the caller's hands.
-		anchor, resolveErr := s.getRESTClient(ctx).ResolveDocumentAnchor(ctx, docID, map[string]any{
-			"quote":  quote,
-			"prefix": prefix,
-			"suffix": suffix,
-		})
-		if resolveErr != nil {
-			return anchorErrResult(resolveErr)
+		// The quote travels as text and the server does the measuring. No offset is
+		// computed here, carried here, or held between two requests — there is no
+		// moment at which this tool knows a position at all.
+		payload["quote"] = quote
+		// Empty is omitted rather than sent as "": the server reads a present
+		// prefix as a narrowing instruction, and an empty one would be an
+		// instruction that narrows nothing while looking like one that does.
+		if prefix != "" {
+			payload["quote_prefix"] = prefix
 		}
-		payload["anchor"] = anchor
+		if suffix != "" {
+			payload["quote_suffix"] = suffix
+		}
 	}
 
 	comment, err := s.getRESTClient(ctx).CreateDocumentComment(ctx, docID, payload)
 	if err != nil {
-		return errResult("failed to post the comment: %v", err)
+		return commentErrResult(err)
 	}
 
 	return jsonResult(stripKeys(comment, docCommentNoiseKeys))
