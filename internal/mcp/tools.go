@@ -812,7 +812,24 @@ func (s *Server) handleUploadArtifact(ctx context.Context, request mcpsdk.CallTo
 		metadataJSON = string(raw)
 	}
 
-	result, err := s.getRESTClient(ctx).UploadArtifact(ctx, taskID, name, artifactType, mimeType, metadataJSON, []byte(content))
+	// Decode before anything else looks at the bytes: everything below reasons
+	// about file content, not about the wire encoding it arrived in.
+	data, err := decodeArtifactContent(content, mcpsdk.ParseString(request, "encoding", encodingText))
+	if err != nil {
+		return errResult("%v", err)
+	}
+
+	if err = verifyArtifactChecksum(mcpsdk.ParseString(request, "sha256", ""), data); err != nil {
+		return errResult("%v", err)
+	}
+
+	// Refuse rather than store content that contradicts its declared type. The
+	// bug this guards was invisible precisely because the upload succeeded.
+	if err = validateArtifactMagic(mimeType, data); err != nil {
+		return errResult("%v", err)
+	}
+
+	result, err := s.getRESTClient(ctx).UploadArtifact(ctx, taskID, name, artifactType, mimeType, metadataJSON, data)
 	if err != nil {
 		return errResult("failed to upload artifact: %v", err)
 	}

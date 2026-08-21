@@ -157,6 +157,10 @@ func TestUpdateTask_OmittedFieldsAreNotSent(t *testing.T) {
 type uploadCapture struct {
 	fields   map[string]string
 	filePart textproto0
+	// fileBytes is what the server actually received as the file body. Asserting
+	// on it is the only way to tell a decoded PNG from the base64 text of one —
+	// the tool result is identical either way.
+	fileBytes []byte
 }
 
 // textproto0 is the small slice of the file part we care about.
@@ -185,7 +189,7 @@ func captureUpload(t *testing.T, args map[string]any) uploadCapture {
 				}
 				if p.FileName() != "" {
 					cap.filePart = textproto0{contentType: p.Header.Get("Content-Type"), filename: p.FileName()}
-					_, _ = io.ReadAll(p)
+					cap.fileBytes, _ = io.ReadAll(p)
 					continue
 				}
 				b, _ := io.ReadAll(p)
@@ -210,6 +214,54 @@ func captureUpload(t *testing.T, args map[string]any) uploadCapture {
 		t.Fatalf("handleUploadArtifact returned an error result: %+v", result.Content)
 	}
 	return cap
+}
+
+// captureUploadResult is captureUpload without the success assertion: it returns
+// the tool result so a caller can assert that an upload was REFUSED and that
+// nothing reached the server.
+func captureUploadResult(t *testing.T, args map[string]any) (uploadCapture, *mcpsdk.CallToolResult) {
+	t.Helper()
+	cap := uploadCapture{fields: map[string]string{}}
+	reached := false
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if !strings.HasSuffix(r.URL.Path, "/artifacts") || r.Method != http.MethodPost {
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+			return
+		}
+		reached = true
+		_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err == nil {
+			mr := multipart.NewReader(r.Body, params["boundary"])
+			for {
+				p, perr := mr.NextPart()
+				if perr != nil {
+					break
+				}
+				if p.FileName() != "" {
+					cap.filePart = textproto0{contentType: p.Header.Get("Content-Type"), filename: p.FileName()}
+					cap.fileBytes, _ = io.ReadAll(p)
+					continue
+				}
+				b, _ := io.ReadAll(p)
+				cap.fields[p.FormName()] = string(b)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": uuid.New().String()})
+	}))
+	t.Cleanup(srv.Close)
+
+	server := &Server{restClient: NewRESTClient(srv.URL, "k"), tracker: NewSessionTracker()}
+	req := mcpsdk.CallToolRequest{}
+	req.Params.Arguments = args
+	ctx := withTestSession(context.Background(), server, uuid.New())
+	result, err := server.handleUploadArtifact(ctx, req)
+	if err != nil {
+		t.Fatalf("handleUploadArtifact: %v", err)
+	}
+	cap.fields["__reached"] = map[bool]string{true: "yes", false: "no"}[reached]
+	return cap, result
 }
 
 // TestUploadArtifact_ForwardsMetadata — the tool declared `metadata` and the handler
