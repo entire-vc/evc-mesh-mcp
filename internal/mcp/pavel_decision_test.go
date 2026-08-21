@@ -272,6 +272,260 @@ func TestHandlePavelDecision_DeduplicatesViaSameKey(t *testing.T) {
 	}
 }
 
+// ── handlePavelDecision + task_id (human_gate linkage) ─────────────────────
+
+// buildPavelDecisionRequestWithTask is buildPavelDecisionRequest plus an
+// optional task_id argument.
+func buildPavelDecisionRequestWithTask(text, summary string, propagateTo []string, scope, privacy, taskID string) mcpsdk.CallToolRequest {
+	req := buildPavelDecisionRequest(text, summary, propagateTo, scope, privacy)
+	if taskID != "" {
+		req.Params.Arguments.(map[string]any)["task_id"] = taskID
+	}
+	return req
+}
+
+// pavelTeamDirectoryPayload is a minimal team directory response carrying one
+// human with username=="pavel", matching what resolvePavelUserID looks for.
+func pavelTeamDirectoryPayload(pavelID string) map[string]any {
+	return map[string]any{
+		"humans": []any{
+			map[string]any{"id": pavelID, "username": "pavel", "role": "owner"},
+		},
+		"agents": []any{},
+	}
+}
+
+func TestHandlePavelDecision_TaskID_LinksAndReleasesGate(t *testing.T) {
+	pavelID := uuid.New().String()
+	taskID := uuid.New().String()
+	var capturedDecisionBody map[string]any
+	var capturedDecisionPath string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/memories":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"memory":  map[string]any{"id": uuid.New().String(), "created_at": time.Now().UTC().Format(time.RFC3339)},
+				"outcome": "created",
+			})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/team"):
+			_ = json.NewEncoder(w).Encode(pavelTeamDirectoryPayload(pavelID))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/tasks/"+taskID+"/human-gate-decisions":
+			capturedDecisionPath = r.URL.Path
+			_ = json.NewDecoder(r.Body).Decode(&capturedDecisionBody)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":            uuid.New().String(),
+				"task_id":       taskID,
+				"canonical_key": capturedDecisionBody["canonical_key"],
+				"decided_by":    capturedDecisionBody["decided_by"],
+				"provenance":    capturedDecisionBody["provenance"],
+				"channel":       capturedDecisionBody["channel"],
+				"quote":         capturedDecisionBody["quote"],
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	rc := NewRESTClient(srv.URL, "test-key")
+	wsID := uuid.New()
+	server := &Server{restClient: rc, tracker: NewSessionTracker()}
+	ctx := withTestSession(context.Background(), server, wsID)
+
+	req := buildPavelDecisionRequestWithTask(
+		"Free tier stays unlimited on Pavel's own account.",
+		"TR free tier Pavel account unlimited",
+		nil, "", "public", taskID,
+	)
+	result, err := server.handlePavelDecision(ctx, req)
+	if err != nil {
+		t.Fatalf("handlePavelDecision returned error: %v", err)
+	}
+	out := decodeToolResultJSON(t, result)
+
+	if capturedDecisionPath == "" {
+		t.Fatal("POST .../human-gate-decisions was never called")
+	}
+	if errMsg, ok := out["human_gate_decision_error"]; ok {
+		t.Fatalf("unexpected human_gate_decision_error: %v", errMsg)
+	}
+	decision, ok := out["human_gate_decision"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected human_gate_decision object in response, got %v", out["human_gate_decision"])
+	}
+
+	// AC1: canonical_key on the decision is non-empty and equal to the
+	// canonical record's own key — the backlink resolves both ways.
+	wantKey, _ := out["key"].(string)
+	if wantKey == "" {
+		t.Fatal("canonical key missing from response")
+	}
+	if decision["canonical_key"] != wantKey {
+		t.Errorf("decision canonical_key = %v, want %v", decision["canonical_key"], wantKey)
+	}
+
+	if capturedDecisionBody["decided_by"] != pavelID {
+		t.Errorf("decided_by = %v, want %v", capturedDecisionBody["decided_by"], pavelID)
+	}
+	if capturedDecisionBody["provenance"] != "attested" {
+		t.Errorf("provenance = %v, want attested", capturedDecisionBody["provenance"])
+	}
+	if capturedDecisionBody["channel"] != "telegram" {
+		t.Errorf("channel = %v, want telegram", capturedDecisionBody["channel"])
+	}
+	if capturedDecisionBody["quote"] != "Free tier stays unlimited on Pavel's own account." {
+		t.Errorf("quote = %v, want verbatim text", capturedDecisionBody["quote"])
+	}
+}
+
+// TestHandlePavelDecision_NoTaskID_Unchanged is the regression control for
+// AC2: omitting task_id must not call the human-gate-decisions or team
+// endpoints at all, and the response must carry no human_gate_decision* keys.
+func TestHandlePavelDecision_NoTaskID_Unchanged(t *testing.T) {
+	var otherCalls []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/memories" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"memory":  map[string]any{"id": uuid.New().String(), "created_at": time.Now().UTC().Format(time.RFC3339)},
+				"outcome": "created",
+			})
+			return
+		}
+		otherCalls = append(otherCalls, r.Method+" "+r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	rc := NewRESTClient(srv.URL, "test-key")
+	wsID := uuid.New()
+	server := &Server{restClient: rc, tracker: NewSessionTracker()}
+	ctx := withTestSession(context.Background(), server, wsID)
+
+	req := buildPavelDecisionRequest("Plain decision, no task.", "Plain decision", nil, "", "public")
+	result, err := server.handlePavelDecision(ctx, req)
+	if err != nil {
+		t.Fatalf("handlePavelDecision returned error: %v", err)
+	}
+	out := decodeToolResultJSON(t, result)
+
+	if len(otherCalls) != 0 {
+		t.Errorf("expected no calls beyond /api/v1/memories, got: %v", otherCalls)
+	}
+	if _, ok := out["human_gate_decision"]; ok {
+		t.Errorf("unexpected human_gate_decision in response: %v", out["human_gate_decision"])
+	}
+	if _, ok := out["human_gate_decision_error"]; ok {
+		t.Errorf("unexpected human_gate_decision_error in response: %v", out["human_gate_decision_error"])
+	}
+}
+
+// TestHandlePavelDecision_TaskID_UngatedTask_NoErrorSurfaced is AC3: a task_id
+// pointing at a task with no live gate still records the decision server-side
+// (the server no-ops the release, per contract) and the tool call surfaces no
+// error — canon was written either way.
+func TestHandlePavelDecision_TaskID_UngatedTask_NoErrorSurfaced(t *testing.T) {
+	pavelID := uuid.New().String()
+	taskID := uuid.New().String()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/memories":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"memory":  map[string]any{"id": uuid.New().String(), "created_at": time.Now().UTC().Format(time.RFC3339)},
+				"outcome": "created",
+			})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/team"):
+			_ = json.NewEncoder(w).Encode(pavelTeamDirectoryPayload(pavelID))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/tasks/"+taskID+"/human-gate-decisions":
+			// Server records the row and, because the task has no live gate,
+			// returns 201 without touching human_gate — no distinct signal in
+			// the response body, matching RecordHumanGateDecision's contract.
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":            uuid.New().String(),
+				"task_id":       taskID,
+				"canonical_key": body["canonical_key"],
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	rc := NewRESTClient(srv.URL, "test-key")
+	wsID := uuid.New()
+	server := &Server{restClient: rc, tracker: NewSessionTracker()}
+	ctx := withTestSession(context.Background(), server, wsID)
+
+	req := buildPavelDecisionRequestWithTask("Ungated task decision.", "Ungated task decision", nil, "", "public", taskID)
+	result, err := server.handlePavelDecision(ctx, req)
+	if err != nil {
+		t.Fatalf("handlePavelDecision returned error: %v", err)
+	}
+	out := decodeToolResultJSON(t, result)
+
+	if errMsg, ok := out["human_gate_decision_error"]; ok {
+		t.Fatalf("unexpected human_gate_decision_error on an ungated task: %v", errMsg)
+	}
+	if _, ok := out["human_gate_decision"].(map[string]any); !ok {
+		t.Fatalf("expected human_gate_decision object even on an ungated task, got %v", out["human_gate_decision"])
+	}
+}
+
+// TestHandlePavelDecision_TaskID_PavelUnresolvable_SurfacesError covers the
+// failure path: the canonical write still succeeds (its own assertions are
+// covered by the other tests), and a team-directory lookup failure is
+// reported via human_gate_decision_error rather than failing the whole call.
+func TestHandlePavelDecision_TaskID_PavelUnresolvable_SurfacesError(t *testing.T) {
+	taskID := uuid.New().String()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/memories":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"memory":  map[string]any{"id": uuid.New().String(), "created_at": time.Now().UTC().Format(time.RFC3339)},
+				"outcome": "created",
+			})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/team"):
+			// No "pavel" username and no "owner" role — unresolvable.
+			_ = json.NewEncoder(w).Encode(map[string]any{"humans": []any{}, "agents": []any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	rc := NewRESTClient(srv.URL, "test-key")
+	wsID := uuid.New()
+	server := &Server{restClient: rc, tracker: NewSessionTracker()}
+	ctx := withTestSession(context.Background(), server, wsID)
+
+	req := buildPavelDecisionRequestWithTask("Some decision.", "Some decision", nil, "", "public", taskID)
+	result, err := server.handlePavelDecision(ctx, req)
+	if err != nil {
+		t.Fatalf("handlePavelDecision returned error: %v", err)
+	}
+	out := decodeToolResultJSON(t, result)
+
+	if out["key"] == "" || out["key"] == nil {
+		t.Error("canonical write must still have succeeded (key present) despite the linkage failure")
+	}
+	if _, ok := out["human_gate_decision_error"]; !ok {
+		t.Error("expected human_gate_decision_error to be surfaced")
+	}
+	if _, ok := out["human_gate_decision"]; ok {
+		t.Error("human_gate_decision must be absent when linkage failed")
+	}
+}
+
 // ── handleGetCanonicalUpdates ────────────────────────────────────────────────
 
 func TestHandleGetCanonicalUpdates_ForwardsParams(t *testing.T) {
