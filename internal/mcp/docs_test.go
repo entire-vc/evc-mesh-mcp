@@ -35,6 +35,24 @@ func newDocsFixture(t *testing.T, projID string, docs []map[string]any, bodies m
 		w.Header().Set("Content-Type", "application/json")
 
 		switch {
+		case r.URL.Path == "/api/v1/projects/"+projID+"/documents/search":
+			// A minimal but real implementation of title-or-body substring
+			// matching, so a test exercises actual match/no-match behavior
+			// instead of a canned response wired to the query it expects.
+			q := strings.ToLower(r.URL.Query().Get("q"))
+			hits := []map[string]any{}
+			for _, d := range f.docs {
+				id, _ := d["id"].(string)
+				title, _ := d["title"].(string)
+				if q != "" && (strings.Contains(strings.ToLower(title), q) || strings.Contains(strings.ToLower(f.bodies[id]), q)) {
+					hits = append(hits, map[string]any{
+						"id": id, "project_id": projID, "title": title, "slug": d["slug"],
+						"snippet": "...match...", "snippet_is_match": true, "rank": 0.5,
+					})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": hits})
+
 		case r.URL.Path == "/api/v1/projects/"+projID+"/documents":
 			// Metadata only — matching the real API, where a document's body is
 			// populated for single-document reads and never for a list.

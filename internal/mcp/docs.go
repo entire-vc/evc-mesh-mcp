@@ -195,6 +195,69 @@ func (s *Server) fetchProjectDocuments(ctx context.Context, projectID string, in
 }
 
 // ============================================================================
+// search_docs
+// ============================================================================
+
+func (s *Server) handleSearchDocs(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	projectID := mcpsdk.ParseString(request, "project_id", "")
+	if projectID == "" {
+		return errResult("project_id is required")
+	}
+	query := mcpsdk.ParseString(request, "query", "")
+	if query == "" {
+		return errResult("query is required")
+	}
+	limit := mcpsdk.ParseInt(request, "limit", 0)
+
+	resp, err := s.getRESTClient(ctx).SearchDocuments(ctx, projectID, query, limit)
+	if err != nil {
+		return errResult("search_docs failed: %v", err)
+	}
+	hits := asMapSlice(resp["items"])
+
+	// A hit carries no parent_id (it is a search result, not a tree node), so
+	// resolving each one's path means walking the same tree list_docs walks.
+	// includeArchived=true: search itself does not exclude archived documents,
+	// and a hit with no path would be unusable with get_doc.
+	docs, truncated, err := s.fetchProjectDocuments(ctx, projectID, true)
+	if err != nil {
+		return errResult("search_docs: failed to resolve result paths: %v", err)
+	}
+	paths := documentPaths(docs)
+
+	items := make([]map[string]any, 0, len(hits))
+	for _, h := range hits {
+		item := make(map[string]any, len(h)+1)
+		for k, v := range h {
+			item[k] = v
+		}
+		id := asString(h, "id")
+		if p, ok := paths[id]; ok && p != "" {
+			item["path"] = p
+		} else {
+			// The project listing didn't cover this id — either it was cut off
+			// by the page cap (see truncated below), or, less likely, a race
+			// between the search and the listing. Fall back to the bare slug
+			// rather than leaving path silently absent: get_doc resolves a bare
+			// slug when it is unambiguous.
+			item["path"] = asString(h, "slug")
+		}
+		items = append(items, item)
+	}
+
+	out := map[string]any{
+		"items": items,
+		"count": len(items),
+	}
+	if truncated {
+		out["path_resolution_truncated"] = true
+		out["note"] = "the project's document tree is larger than the page cap used to resolve paths; some result paths above may be a bare slug instead of the full path"
+	}
+
+	return jsonResult(out)
+}
+
+// ============================================================================
 // list_docs
 // ============================================================================
 
