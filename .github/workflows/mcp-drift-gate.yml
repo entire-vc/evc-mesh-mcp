@@ -29,10 +29,12 @@ on:
     branches: [main]
     paths:
       - 'internal/mcp/**'
+      - '.github/workflows/mcp-drift-gate.yml'
   push:
     branches: [main]
     paths:
       - 'internal/mcp/**'
+      - '.github/workflows/mcp-drift-gate.yml'
 
 permissions:
   contents: read
