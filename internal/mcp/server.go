@@ -945,6 +945,22 @@ func (s *Server) resolveStatusSlugForTask(ctx context.Context, taskID, slug stri
 	return pickStatusBySlug(statuses, slug)
 }
 
+// statusSlugNotFoundError marks the ONE failure inside resolveStatusSlugForTask
+// (and resolveStatusSlug) that is actually about the slug argument: the status
+// list was fetched fine, but no entry in it matches the requested slug. Every
+// other failure in that chain (bad/missing/forbidden task_id, no project_id,
+// a transport error fetching the list) happens before a status list even
+// exists to search — those are task/project resolution failures, not a bad
+// slug, and callers use errors.As against this type to tell the two apart
+// instead of blaming status_slug for all of them (see handleMoveTask).
+type statusSlugNotFoundError struct {
+	slug string
+}
+
+func (e *statusSlugNotFoundError) Error() string {
+	return fmt.Sprintf("status '%s' not found in project", e.slug)
+}
+
 // pickStatusBySlug selects the status with the given slug from a status list.
 func pickStatusBySlug(statuses []map[string]any, slug string) (statusID, statusName, statusCategory string, err error) {
 	for _, st := range statuses {
@@ -956,5 +972,5 @@ func pickStatusBySlug(statuses []map[string]any, slug string) (statusID, statusN
 			return stID, stName, stCat, nil
 		}
 	}
-	return "", "", "", fmt.Errorf("status '%s' not found in project", slug)
+	return "", "", "", &statusSlugNotFoundError{slug: slug}
 }
