@@ -12,6 +12,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -1174,6 +1175,23 @@ func (c *RESTClient) ListDocuments(ctx context.Context, projectID string, params
 		if enc := q.Encode(); enc != "" {
 			path += "?" + enc
 		}
+	}
+
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// SearchDocuments full-text-searches one project's documents by title and body.
+// Scope is per-project — the API joins on project_id, not workspace_id — so a
+// caller wanting a different project makes a separate call; there is no
+// cross-project search endpoint to fall back to.
+func (c *RESTClient) SearchDocuments(ctx context.Context, projectID, query string, limit int) (map[string]any, error) {
+	path := "/api/v1/projects/" + projectID + "/documents/search?q=" + url.QueryEscape(query)
+	if limit > 0 {
+		path += "&limit=" + strconv.Itoa(limit)
 	}
 
 	var result map[string]any

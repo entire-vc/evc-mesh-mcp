@@ -475,9 +475,9 @@ func (s *Server) registerCoreTools() {
 func (s *Server) registerAdvancedTools() {
 	// --- Documents ---
 	//
-	// Two tools, not six. Every tool description sits in every agent's system
-	// context permanently, so the surface is narrow by construction: read the
-	// map, then read the part you need.
+	// Every tool description sits in every agent's system context permanently,
+	// so the surface is narrow by construction: read the map (list_docs), find a
+	// page by content (search_docs), then read the part you need (get_doc).
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_docs",
 		mcpsdk.WithDescription("List a project's documents — id, title, slug path, version, who touched them last. Carries NO document bodies, so it is safe to call on a whole project: use it as the map, then get_doc for one page. Returns path and has_children for navigating the tree."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project UUID.")),
@@ -493,6 +493,13 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithBoolean("version_only", mcpsdk.Description("Return just the version — the cheap 'has this changed since I read it?' check before a write."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithString("outline_depth", mcpsdk.Description("Limit the outline to headings at this level or shallower (e.g. '2' for chapters, not every subsection). Default: all levels.")),
 	), s.tracked("get_doc", s.handleGetDoc))
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("search_docs",
+		mcpsdk.WithDescription("Full-text search a project's documents by title and body. Returns matching documents with a snippet and a path usable directly with get_doc — this is how you find a document when you don't already know its path; list_docs is the map, this is the index. SCOPE IS PER-PROJECT ONLY: results never cross project_id, and this is not a substitute for recall (which searches memory, not documents) or for a cross-project doc search (none exists yet). A query that matches nothing returns an empty items list, not an error. Documents saved before full-text search shipped (2026-08-20) are matched by title only until their next edit."),
+		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project UUID. Search is scoped to this one project — call it once per project you need to check.")),
+		mcpsdk.WithString("query", mcpsdk.Required(), mcpsdk.Description("Search text. Matched against title and body.")),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 20, server max 50).")),
+	), s.tracked("search_docs", s.handleSearchDocs))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("create_doc",
 		mcpsdk.WithDescription("Create a document in a project. Returns its metadata and version — the version is what update_doc takes as base_version, so a create followed by an edit needs no read in between. The body you sent is not echoed back."),
