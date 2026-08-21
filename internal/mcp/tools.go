@@ -2519,13 +2519,79 @@ func (s *Server) handlePavelDecision(ctx context.Context, request mcpsdk.CallToo
 		}
 	}
 
-	return jsonResult(map[string]any{
+	resp := map[string]any{
 		"id":          id,
 		"recorded_at": recordedAt,
 		"affects":     propagateTo,
 		"privacy":     privacy,
 		"key":         key,
-	})
+	}
+
+	// Optional: link this decision to a gated task (docs/human-gate-decision-recorded.md
+	// in evc-mesh). Best-effort — the canonical write above already succeeded, so a
+	// failure here is reported alongside it rather than discarding the canon record.
+	// Omitting task_id leaves behavior identical to before this field existed.
+	if taskID := mcpsdk.ParseString(request, "task_id", ""); taskID != "" {
+		decidedBy, pavelErr := s.resolvePavelUserID(ctx)
+		if pavelErr != nil {
+			resp["human_gate_decision_error"] = fmt.Sprintf("could not resolve Pavel's user id: %v", pavelErr)
+		} else {
+			decision, hgdErr := s.getRESTClient(ctx).CreateHumanGateDecision(ctx, taskID, map[string]any{
+				"canonical_key": key,
+				"decided_by":    decidedBy,
+				"provenance":    "attested",
+				"channel":       "telegram",
+				"quote":         text,
+			})
+			if hgdErr != nil {
+				resp["human_gate_decision_error"] = hgdErr.Error()
+			} else {
+				resp["human_gate_decision"] = decision
+			}
+		}
+	}
+
+	return jsonResult(resp)
+}
+
+// resolvePavelUserID finds Pavel's user UUID from the workspace team
+// directory, for decided_by on a human_gate decision record (contract
+// docs/human-gate-decision-recorded.md §3 in evc-mesh: "decided_by — человек,
+// принявший решение, сегодня — user-id Pavel'я"). Prefers username=="pavel";
+// falls back to role=="owner" if the username ever changes.
+func (s *Server) resolvePavelUserID(ctx context.Context) (string, error) {
+	session := s.getSession(ctx)
+	if session == nil {
+		return "", fmt.Errorf("not authenticated: no agent session")
+	}
+	dir, err := s.getRESTClient(ctx).GetTeamDirectory(ctx, session.WorkspaceID.String())
+	if err != nil {
+		return "", err
+	}
+	humans, _ := dir["humans"].([]any)
+	var ownerID string
+	for _, h := range humans {
+		hm, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := hm["id"].(string)
+		if id == "" {
+			continue
+		}
+		if username, _ := hm["username"].(string); username == "pavel" {
+			return id, nil
+		}
+		if ownerID == "" {
+			if role, _ := hm["role"].(string); role == "owner" {
+				ownerID = id
+			}
+		}
+	}
+	if ownerID != "" {
+		return ownerID, nil
+	}
+	return "", fmt.Errorf("no user with username=pavel or role=owner found in team directory")
 }
 
 func (s *Server) handleGetCanonicalUpdates(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {

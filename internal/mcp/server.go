@@ -429,12 +429,13 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("set_project_knowledge", s.handleSetProjectKnowledge))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("pavel_decision",
-		mcpsdk.WithDescription("Record a Pavel directive as a canonical decision in project_knowledge. Broadcasts to specified agents via propagate_to tags. privacy:private records are stored but EXCLUDED from get_canonical_updates. Auto-flags private if text contains secrets."),
+		mcpsdk.WithDescription("Record a Pavel directive as a canonical decision in project_knowledge. Broadcasts to specified agents via propagate_to tags. privacy:private records are stored but EXCLUDED from get_canonical_updates. Auto-flags private if text contains secrets. If task_id is given, also records this as a human_gate decision on that task (docs/human-gate-decision-recorded.md in evc-mesh) — releases the gate as a consequence if it's currently live, and links back via canonical_key. Best-effort: a failure here is reported in the result but does not undo the canonical write."),
 		mcpsdk.WithString("text", mcpsdk.Required(), mcpsdk.Description("Full text of the decision/directive.")),
 		mcpsdk.WithString("summary", mcpsdk.Required(), mcpsdk.Description("One-line summary used as UPSERT key (dedupes same decision on same day).")),
 		mcpsdk.WithArray("propagate_to", mcpsdk.Description("Agent slugs to propagate to, e.g. ['linus','bill']. Use ['all'] for workspace-wide broadcast."), mcpsdk.WithStringItems()),
 		mcpsdk.WithString("scope", mcpsdk.Description("Optional project_id UUID. Omit for workspace-level decisions.")),
 		mcpsdk.WithString("privacy", mcpsdk.Description("'public' (default, visible in change-feed) or 'private' (recorded but hidden)."), mcpsdk.DefaultString("public")),
+		mcpsdk.WithString("task_id", mcpsdk.Description("Optional task UUID this decision answers. When set, also records a human_gate decision on that task (provenance=attested, channel=telegram, quote=text) — releasing a live human_gate as a consequence. Omit for a plain canonical-only record (unchanged behavior).")),
 	), s.tracked("pavel_decision", s.handlePavelDecision))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_canonical_updates",

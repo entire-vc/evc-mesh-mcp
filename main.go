@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -18,6 +19,68 @@ import (
 	sdkserver "github.com/mark3labs/mcp-go/server"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// authRetryAttempts is the number of GetAgentMe attempts on startup before
+// giving up. authRetryBackoff is the delay before the first retry, doubling
+// each subsequent attempt (1s, 2s for 3 attempts). authRetryBackoff is a
+// var, not a const, so tests can shrink it instead of eating the real delay.
+const authRetryAttempts = 3
+
+var authRetryBackoff = time.Second
+
+// authenticateWithRetry calls GetAgentMe, retrying only on transient
+// failures (gateway 502/503/504, or a network error before any response
+// came back). A one-shot 502 from the Mesh API gateway used to be
+// indistinguishable from a bad credential: log.Fatalf killed the process
+// before a single MCP tool was registered, leaving the whole session
+// without Mesh tools until a manual restart (task #8afc7aba). A 401/403/404
+// is a real auth/config problem and returns immediately — retrying those
+// would just mask the failure behind a few seconds of pointless waiting.
+func authenticateWithRetry(ctx context.Context, restClient *mcpserver.RESTClient) (map[string]any, error) {
+	backoff := authRetryBackoff
+
+	var lastErr error
+	for attempt := 1; attempt <= authRetryAttempts; attempt++ {
+		agentInfo, err := restClient.GetAgentMe(ctx)
+		if err == nil {
+			return agentInfo, nil
+		}
+		lastErr = err
+
+		if !isTransientAuthError(err) || attempt == authRetryAttempts {
+			return nil, err
+		}
+
+		log.Printf("Agent authentication attempt %d/%d failed (%v), retrying in %s...", attempt, authRetryAttempts, err, backoff)
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		backoff *= 2
+	}
+	return nil, lastErr
+}
+
+// isTransientAuthError reports whether err is worth retrying: a 502/503/504
+// from the gateway, or a network-level error that happened before the
+// server ever responded (connection refused/reset, DNS failure, timeout —
+// none of these come back as an *mcpserver.APIError, since that type only
+// wraps a response the server actually sent). Any other APIError status
+// (401/403/404/...) is a real, non-transient failure and must not be
+// retried.
+func isTransientAuthError(err error) bool {
+	var apiErr *mcpserver.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.StatusCode {
+		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 func main() {
 	// All logging goes to stderr so that stdout is reserved for MCP JSON-RPC.
@@ -68,7 +131,7 @@ func main() {
 
 		// Verify connectivity and get agent info.
 		log.Printf("Connecting to Mesh API at %s...", apiURL)
-		agentInfo, err := restClient.GetAgentMe(context.Background())
+		agentInfo, err := authenticateWithRetry(context.Background(), restClient)
 		if err != nil {
 			log.Fatalf("Agent authentication failed: %v", err)
 		}

@@ -402,6 +402,18 @@ func (c *RESTClient) AddDependency(ctx context.Context, taskID string, body map[
 	return result, nil
 }
 
+// CreateHumanGateDecision records a human_gate decision on a task — the
+// third human_gate exit (docs/human-gate-decision-recorded.md in evc-mesh).
+// If the task's gate is currently live, the server releases it as a
+// consequence of this write.
+func (c *RESTClient) CreateHumanGateDecision(ctx context.Context, taskID string, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/human-gate-decisions", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // AddComment adds a comment to a task.
 func (c *RESTClient) AddComment(ctx context.Context, taskID string, body map[string]any) (map[string]any, error) {
 	var result map[string]any
