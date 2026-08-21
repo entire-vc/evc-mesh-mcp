@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -428,9 +429,21 @@ func (s *Server) handleMoveTask(ctx context.Context, request mcpsdk.CallToolRequ
 	// move itself, so a caller entitled to the transition is entitled to the lookup.
 	// The project-scoped route would refuse a workspace member who is not a member of
 	// the task's project, with a 403 naming the project rather than the move.
+	//
+	// resolveStatusSlugForTask fails for two very different reasons, and the message
+	// must name whichever field actually caused it (measured live 2026-08-20: an
+	// invalid task_id produced "invalid status_slug: get statuses: ... invalid
+	// task_id", blaming the one argument that was fine). A statusSlugNotFoundError
+	// means the status list was fetched fine and the slug just isn't in it — that
+	// really is a status_slug problem. Anything else failed before a status list
+	// existed to search, which only happens when task_id couldn't be resolved.
 	stID, stName, _, err := s.resolveStatusSlugForTask(ctx, taskID, statusSlug)
 	if err != nil {
-		return errResult("invalid status_slug: %v", err)
+		var notFound *statusSlugNotFoundError
+		if errors.As(err, &notFound) {
+			return errResult("invalid status_slug: %v", err)
+		}
+		return errResult("invalid task_id: %v", err)
 	}
 
 	moveBody := map[string]any{
