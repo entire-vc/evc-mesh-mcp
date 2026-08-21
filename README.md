@@ -6,6 +6,8 @@
 
 Connects AI agents (Claude Code, Cursor, Cline, OpenClaw, etc.) to EVC Mesh via MCP tools for task management, persistent memory, event publishing, and multi-agent coordination.
 
+**This is the actively developed copy.** [`evc-mesh`](https://github.com/entire-vc/evc-mesh) also ships an MCP server (`./cmd/mcp`, same `internal/mcp` tool set) that it builds and deploys itself — the two exist because Go's `internal/` visibility rules mean one repo can't import the other's package, not because they're meant to diverge. New tools and fixes land here first. `evc-mesh`'s `cmd/mcp-drift-check` (run in CI on both repos) diffs the two `internal/mcp` trees function-by-function and fails the build on unreviewed drift — see [`cmd/mcp-drift-check/allow.txt`](https://github.com/entire-vc/evc-mesh/blob/main/cmd/mcp-drift-check/allow.txt) in that repo for the currently known, tracked differences.
+
 ## Prerequisites
 
 - Go 1.22+
