@@ -1,0 +1,79 @@
+name: MCP drift gate
+
+# internal/mcp exists TWICE — here, feeding ~/bin/mesh-mcp (the stdio binary
+# every agent workspace actually runs), and again in entire-vc/evc-mesh's
+# internal/mcp (feeding cmd/mcp, built by deploy-backend.yml and deployed to
+# mesh-vm's mesh-mcp.service, the public SSE surface behind Caddy). Go's
+# internal/ visibility forbids one importing the other across modules, so
+# they are hand-maintained copies of the same tool implementation. That
+# already bit us once silently: Mesh #9855f866 / #4222c17d — a fix merged
+# clean in evc-mesh, CI green, deployed — and the fleet kept serving the old
+# broken behavior because THIS repo builds the binary agents actually run.
+#
+# This job diffs every function/method common to both trees (gofmt-
+# normalized, comments stripped) via evc-mesh's cmd/mcp-drift-check tool
+# (checked out here as the counterpart repo — the tool lives in one place,
+# not duplicated), and fails if any differ outside the reviewed allowlist at
+# evc-mesh's cmd/mcp-drift-check/allow.txt. See that file for the current
+# baseline and evc-mesh #46233e08 / #3bc9f59d for how it got there and where
+# it's headed.
+#
+# This is one half of the gate — it only fires when a PR HERE touches
+# internal/mcp. A matching job lives in evc-mesh's own CI (checking THIS repo
+# out as the counterpart) to catch drift introduced from that side. Neither
+# alone is sufficient; both exist because a PR against either repo needs to
+# see the OTHER repo's current main to detect drift.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/mcp/**'
+  push:
+    branches: [main]
+    paths:
+      - 'internal/mcp/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-drift-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mcp-drift-gate:
+    name: MCP drift gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out evc-mesh-mcp
+        uses: actions/checkout@v7
+        with:
+          path: evc-mesh-mcp
+
+      - name: Check out evc-mesh
+        uses: actions/checkout@v7
+        with:
+          repository: entire-vc/evc-mesh
+          # Same cross-repo pattern evc-mesh's own memory-bench.yml already
+          # uses in the other direction — the default GITHUB_TOKEN has read
+          # access to sibling repos in this org.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: evc-mesh
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: evc-mesh/go.mod
+          cache: true
+          cache-dependency-path: evc-mesh/go.sum
+
+      - name: Run mcp-drift-check
+        working-directory: evc-mesh
+        run: |
+          go run ./cmd/mcp-drift-check \
+            -a ../evc-mesh-mcp/internal/mcp \
+            -b internal/mcp \
+            -label-a evc-mesh-mcp \
+            -label-b evc-mesh \
+            -allow cmd/mcp-drift-check/allow.txt
