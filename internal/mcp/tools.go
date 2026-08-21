@@ -128,6 +128,9 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 	if limit > 0 {
 		params["page_size"] = strconv.Itoa(limit)
 	}
+	if listRevision := mcpsdk.ParseInt64(request, "list_revision", 0); listRevision != 0 {
+		params["list_revision"] = strconv.FormatInt(listRevision, 10)
+	}
 
 	// workspace_id path: global search across all projects.
 	if workspaceID != "" {
