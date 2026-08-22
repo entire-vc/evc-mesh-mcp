@@ -120,13 +120,22 @@ scp scripts/mesh-mcp-remote-deploy.sh scripts/mesh-mcp-deploy-drill.sh mesh-vm:/
 ssh mesh-vm 'bash /tmp/mesh-mcp-deploy-drill.sh /tmp/mesh-mcp-remote-deploy.sh'
 ```
 
-17 assertions: dry-run inertness, refusal of a corrupt upload before the swap,
-anchor ordering under six same-second deploys, prune bounds, rollback landing on
-the immediately previous binary, evc-mesh's anchors left alone, a loud failure
-when there is nothing to roll back to, and a drill refusing to run against the
-production directory.
+22 assertions: dry-run inertness, refusal of a corrupt upload before the swap,
+anchor ordering under six same-second deploys, prune bounds, `rollback` landing
+on the immediately previous binary, evc-mesh's anchors left alone, a loud
+failure when there is nothing to roll back to, a failing smoke restoring the
+previous release by itself, and a drill refusing to run against the production
+directory.
 
-CI runs it on every build together with a negative control that reverts the
-anchor-ordering rule and requires the drill to go red — a suite that cannot fail
+The two rollback paths are asserted separately and the distinction is easy to
+lose: case 4 covers the **manual** `rollback` command, case 7 covers the
+**automatic** restore when a deploy's own smoke fails. Case 7 exists because an
+independent review deleted the entire automatic-restore block and the suite
+stayed green at 17/17 — the stubbed smoke could not fail, so that path was
+unreachable. `DRILL_SMOKE_FAIL=1` makes it reachable; the same deletion is now
+caught by exactly one assertion.
+
+CI runs the drill on every build together with a negative control that reverts
+the anchor-ordering rule and requires it to go red — a suite that cannot fail
 proves nothing. Three genuine ordering defects were found this way before a
 single deploy ran; they are described in the comment above `new_anchor_name`.

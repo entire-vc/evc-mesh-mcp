@@ -22,7 +22,7 @@ check() { # check <label> <want> <got>
   else printf '  FAIL %-58s want=%s got=%s\n' "$1" "$2" "$3"; FAIL=$((FAIL + 1)); fi
 }
 
-run() { DRILL=1 BIN_DIR="$WORK" SERVICE=mesh-mcp-DRILL KEEP_ANCHORS="${KEEP:-3}" EXPECTED_SHA=drillsha bash "$SCRIPT" "$@"; }
+run() { DRILL=1 DRILL_SMOKE_FAIL="${SMOKE_FAIL:-0}" BIN_DIR="$WORK" SERVICE=mesh-mcp-DRILL KEEP_ANCHORS="${KEEP:-3}" EXPECTED_SHA=drillsha bash "$SCRIPT" "$@"; }
 stage() { printf '%s\n' "$1" > "$WORK/mesh-mcp.new"; sha256sum "$WORK/mesh-mcp.new" | cut -d' ' -f1 > "$WORK/mesh-mcp.new.sha256"; }
 live() { cat "$WORK/mesh-mcp" 2>/dev/null; }
 own_anchors() { ls -1 "$WORK"/mesh-mcp.rollback-*-mcprepo 2>/dev/null | sort; }
@@ -80,7 +80,22 @@ fresh
 run rollback >/dev/null 2>&1; rc=$?
 check "rollback exit code with no anchor" 1 "$rc"
 
-echo "--- 7. a drill may not run against the production directory"
+echo "--- 7. a failing smoke rolls the deploy back on its own"
+# The path this exists for: a deploy that installs and restarts fine, then
+# fails its own health check. Without this case the whole restore-on-failure
+# block is unreachable from the drill — an independent review deleted it
+# outright and the suite stayed green at 17/17.
+fresh
+stage v-good; run deploy >/dev/null 2>&1
+check "good deploy landed" "v-good" "$(live)"
+anchors_before=$(own_anchors | wc -l | tr -d ' ')
+stage v-bad; SMOKE_FAIL=1 run deploy >/dev/null 2>&1; rc=$?
+check "deploy exit code when the smoke fails" 1 "$rc"
+check "live binary restored to the previous release" "v-good" "$(live)"
+check "the failed deploy left its anchor behind" "$((anchors_before + 1))" "$(own_anchors | wc -l | tr -d ' ')"
+check "newest anchor holds what was live before the failed deploy" "v-good" "$(cat "$(own_anchors | tail -1)")"
+
+echo "--- 8. a drill may not run against the production directory"
 DRILL=1 BIN_DIR=/opt/evc-mesh/bin bash "$SCRIPT" status >/dev/null 2>&1; rc=$?
 check "DRILL against prod BIN_DIR refused" 1 "$rc"
 

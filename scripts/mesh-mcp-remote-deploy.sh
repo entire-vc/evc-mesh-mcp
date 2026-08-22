@@ -23,6 +23,11 @@
 #   DRILL         1 = file operations real, systemctl/HTTP replaced by no-ops.
 #                 Refused when BIN_DIR is the production directory, so a drill
 #                 can never silently "pass" against prod.
+#   DRILL_SMOKE_FAIL  under DRILL only: make the smoke fail, so the drill can
+#                 exercise the automatic rollback. Without it the stubbed smoke
+#                 always succeeds and the entire restore-on-failure block is
+#                 unreachable from the drill — deleting that block outright left
+#                 the suite at 17/17 green, which is how this knob came to exist.
 set -uo pipefail
 
 BIN_DIR="${BIN_DIR:-/opt/evc-mesh/bin}"
@@ -31,6 +36,7 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8081}"
 KEEP_ANCHORS="${KEEP_ANCHORS:-10}"
 EXPECTED_SHA="${EXPECTED_SHA:-}"
 DRILL="${DRILL:-0}"
+DRILL_SMOKE_FAIL="${DRILL_SMOKE_FAIL:-0}"
 
 PROD_BIN_DIR=/opt/evc-mesh/bin
 LIVE="$BIN_DIR/mesh-mcp"
@@ -80,7 +86,14 @@ http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$HEALTH_URL$1
 smoke() {
   local want_sha="$1" i rc
 
-  if [ "$DRILL" = "1" ]; then note "[drill] would: smoke $SERVICE at $HEALTH_URL"; return 0; fi
+  if [ "$DRILL" = "1" ]; then
+    if [ "$DRILL_SMOKE_FAIL" = "1" ]; then
+      echo "SMOKE FAIL: forced by DRILL_SMOKE_FAIL" >&2
+      return 1
+    fi
+    note "[drill] would: smoke $SERVICE at $HEALTH_URL"
+    return 0
+  fi
 
   local live_sha
   live_sha=""
