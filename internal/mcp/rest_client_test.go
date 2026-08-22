@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAPIErrorMessage(t *testing.T) {
@@ -239,5 +241,54 @@ func TestGetTaskDependencies_DecodesOutgoingIncomingShape(t *testing.T) {
 		if edge["task_id"] == "downstream-1" {
 			t.Errorf("incoming edge leaked into Outgoing: %+v", deps.Outgoing)
 		}
+	}
+}
+
+func TestHTTPTimeoutFromEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string // "" means unset, not merely empty
+		want time.Duration
+	}{
+		{name: "unset falls back to default", env: "", want: defaultHTTPTimeout},
+		{name: "valid override", env: "120", want: 120 * time.Second},
+		{name: "lower bound accepted", env: "1", want: 1 * time.Second},
+		{name: "upper bound accepted", env: "600", want: 600 * time.Second},
+		{name: "zero rejected — falls back", env: "0", want: defaultHTTPTimeout},
+		{name: "negative rejected — falls back", env: "-5", want: defaultHTTPTimeout},
+		{name: "over the cap rejected — falls back", env: "601", want: defaultHTTPTimeout},
+		{name: "non-numeric rejected — falls back", env: "thirty", want: defaultHTTPTimeout},
+		{name: "whitespace-padded value accepted", env: "  45 ", want: 45 * time.Second},
+		{name: "empty string (var set but blank) falls back", env: "   ", want: defaultHTTPTimeout},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "unset falls back to default" {
+				// t.Setenv cannot express "unset" — it only sets/restores a
+				// value — so this one case unsets directly and restores by hand.
+				prev, had := os.LookupEnv("MESH_MCP_HTTP_TIMEOUT_SECS")
+				os.Unsetenv("MESH_MCP_HTTP_TIMEOUT_SECS")
+				t.Cleanup(func() {
+					if had {
+						os.Setenv("MESH_MCP_HTTP_TIMEOUT_SECS", prev)
+					}
+				})
+			} else {
+				t.Setenv("MESH_MCP_HTTP_TIMEOUT_SECS", tt.env)
+			}
+			got := httpTimeoutFromEnv()
+			if got != tt.want {
+				t.Errorf("httpTimeoutFromEnv() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewRESTClient_UsesEnvTimeout(t *testing.T) {
+	t.Setenv("MESH_MCP_HTTP_TIMEOUT_SECS", "90")
+	c := NewRESTClient("http://example.invalid", "key")
+	if c.httpClient.Timeout != 90*time.Second {
+		t.Errorf("NewRESTClient did not apply env timeout: got %v, want 90s", c.httpClient.Timeout)
 	}
 }
