@@ -12,6 +12,7 @@ import (
 	"time"
 
 	mcpserver "github.com/entire-vc/evc-mesh-mcp/internal/mcp"
+	sdkserver "github.com/mark3labs/mcp-go/server"
 )
 
 // TestVersionFlag_PrintsBuildSHA builds the binary with an injected BuildSHA
@@ -147,5 +148,135 @@ func TestIsTransientAuthError(t *testing.T) {
 				t.Errorf("isTransientAuthError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// advertiseOptions — which endpoint URL the SSE handshake hands the client
+// (task #3bc9f59d / #2a0ec14c — dual-profile SSE + MESH_MCP_PUBLIC_URL wiring)
+// ---------------------------------------------------------------------------
+
+// newTestSSEServer builds an SSE server the way main() does, so the assertions
+// below are about the real handshake behaviour rather than a stand-in.
+func newTestSSEServer(t *testing.T, publicURL, basePath string) *sdkserver.SSEServer {
+	t.Helper()
+	srv := mcpserver.NewServer(mcpserver.ServerConfig{
+		RESTClient: mcpserver.NewRESTClient("http://localhost:8005", ""),
+		Profile:    mcpserver.ProfileCore,
+	})
+	return sdkserver.NewSSEServer(srv.MCPServer(), advertiseOptions(publicURL, basePath)...)
+}
+
+// A client that connects over a published container port or a reverse proxy has
+// to be told where to POST its messages. The listen address must never be the
+// answer: 0.0.0.0 is a wildcard bind, not somewhere a client can dial.
+func TestAdvertiseOptions_NoPublicURL_AdvertisesRelativePath(t *testing.T) {
+	sse := newTestSSEServer(t, "", "")
+
+	req := httptest.NewRequest(http.MethodGet, "/sse", http.NoBody)
+	endpoint := sse.GetMessageEndpointForClient(req, "sid-1")
+
+	if want := "/message?sessionId=sid-1"; endpoint != want {
+		t.Errorf("endpoint = %q, want %q", endpoint, want)
+	}
+	if strings.Contains(endpoint, "0.0.0.0") {
+		t.Errorf("endpoint %q leaks the wildcard bind address", endpoint)
+	}
+}
+
+func TestAdvertiseOptions_NoPublicURL_CoreProfileKeepsItsBasePath(t *testing.T) {
+	sse := newTestSSEServer(t, "", coreBasePath)
+
+	req := httptest.NewRequest(http.MethodGet, "/core/sse", http.NoBody)
+	endpoint := sse.GetMessageEndpointForClient(req, "sid-2")
+
+	if want := "/core/message?sessionId=sid-2"; endpoint != want {
+		t.Errorf("endpoint = %q, want %q", endpoint, want)
+	}
+}
+
+func TestAdvertiseOptions_PublicURL_AdvertisesAbsoluteURL(t *testing.T) {
+	sse := newTestSSEServer(t, "https://mesh.example.com/mcp", "")
+
+	req := httptest.NewRequest(http.MethodGet, "/sse", http.NoBody)
+	endpoint := sse.GetMessageEndpointForClient(req, "sid-3")
+
+	if want := "https://mesh.example.com/mcp/message?sessionId=sid-3"; endpoint != want {
+		t.Errorf("endpoint = %q, want %q", endpoint, want)
+	}
+}
+
+func TestAdvertiseOptions_PublicURL_CoreProfileIsNestedUnderIt(t *testing.T) {
+	sse := newTestSSEServer(t, "https://mesh.example.com/mcp", coreBasePath)
+
+	req := httptest.NewRequest(http.MethodGet, "/core/sse", http.NoBody)
+	endpoint := sse.GetMessageEndpointForClient(req, "sid-4")
+
+	if want := "https://mesh.example.com/mcp/core/message?sessionId=sid-4"; endpoint != want {
+		t.Errorf("endpoint = %q, want %q", endpoint, want)
+	}
+}
+
+func TestAdvertiseOptions_PublicURL_TrailingSlashDoesNotDoubleUp(t *testing.T) {
+	sse := newTestSSEServer(t, "https://mesh.example.com/mcp/", "")
+
+	req := httptest.NewRequest(http.MethodGet, "/sse", http.NoBody)
+	endpoint := sse.GetMessageEndpointForClient(req, "sid-5")
+
+	if want := "https://mesh.example.com/mcp/message?sessionId=sid-5"; endpoint != want {
+		t.Errorf("endpoint = %q, want %q", endpoint, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// dialableURL — the URL printed in the startup log
+// ---------------------------------------------------------------------------
+
+func TestDialableURL(t *testing.T) {
+	cases := []struct {
+		name      string
+		publicURL string
+		host      string
+		port      string
+		want      string
+	}{
+		{"wildcard host is reported as localhost", "", "0.0.0.0", "8081", "http://localhost:8081"},
+		{"ipv6 wildcard too", "", "::", "8081", "http://localhost:8081"},
+		{"explicit host is kept", "", "127.0.0.1", "9000", "http://127.0.0.1:9000"},
+		{"public URL wins", "https://mesh.example.com/mcp", "0.0.0.0", "8081", "https://mesh.example.com/mcp"},
+		{"public URL loses its trailing slash", "https://mesh.example.com/mcp/", "0.0.0.0", "8081", "https://mesh.example.com/mcp"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dialableURL(tc.publicURL, tc.host, tc.port); got != tc.want {
+				t.Errorf("dialableURL(%q, %q, %q) = %q, want %q", tc.publicURL, tc.host, tc.port, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Dual-profile server: core must register strictly fewer tools than full —
+// this is the property the whole point of having two profiles rests on. A
+// bare 200/OK from both SSE endpoints would hide a profile that silently
+// didn't apply; this asserts on the actual registered tool count instead.
+// ---------------------------------------------------------------------------
+
+func TestDualProfileServers_CoreHasFewerToolsThanFull(t *testing.T) {
+	restClient := mcpserver.NewRESTClient("http://localhost:8005", "")
+	fullSrv := mcpserver.NewServer(mcpserver.ServerConfig{RESTClient: restClient, Profile: mcpserver.ProfileFull})
+	coreSrv := mcpserver.NewServer(mcpserver.ServerConfig{RESTClient: restClient, Profile: mcpserver.ProfileCore})
+
+	fullTools := fullSrv.MCPServer().ListTools()
+	coreTools := coreSrv.MCPServer().ListTools()
+
+	if len(coreTools) == 0 {
+		t.Fatal("core profile registered zero tools — profile likely not wired at all")
+	}
+	if len(fullTools) == 0 {
+		t.Fatal("full profile registered zero tools — regression unrelated to this change")
+	}
+	if len(coreTools) >= len(fullTools) {
+		t.Errorf("core profile has %d tools, full has %d — core must be strictly smaller, otherwise routing a client to /core/sse silently gives them the full surface", len(coreTools), len(fullTools))
 	}
 }
