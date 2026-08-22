@@ -214,7 +214,11 @@ cmd_dry_run() {
   note "own anchors present: $(ls -1 "$BIN_DIR"/$ANCHOR_GLOB 2>/dev/null | wc -l | tr -d ' ') (keep $KEEP_ANCHORS)"
   unlink "$INCOMING"
   unlink "$INCOMING_SHA"
-  note "uploaded artifact removed — the host is byte-for-byte as it was."
+  # Precise on purpose. The dry run leaves the live binary, the service and the
+  # anchors untouched — but the workflow does upload THIS script before calling
+  # it, so "nothing was written" would be false. Say which.
+  note "uploaded artifact removed — live binary, service and anchors untouched."
+  note "(this script itself was uploaded by the workflow; that is the only new file)"
 }
 
 cmd_deploy() {
