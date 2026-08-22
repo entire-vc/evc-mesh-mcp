@@ -11,11 +11,18 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// defaultHTTPTimeout is the Timeout applied to every REST call this client
+// makes, unless overridden by MESH_MCP_HTTP_TIMEOUT_SECS. Unchanged from the
+// long-standing default — this exists to make the value overridable, not to
+// change it.
+const defaultHTTPTimeout = 30 * time.Second
 
 // RESTClient wraps HTTP calls to the Mesh REST API on behalf of an agent.
 type RESTClient struct {
@@ -25,14 +32,44 @@ type RESTClient struct {
 }
 
 // NewRESTClient creates a new RESTClient for the given API base URL and agent key.
+//
+// The HTTP timeout defaults to 30s, matching every deployed instance today.
+// MESH_MCP_HTTP_TIMEOUT_SECS overrides it — for a caller whose own workload can
+// legitimately make the server side take longer than 30s to answer, not as a
+// general "make it more patient" knob. The memory-bench CI recall gate is
+// exactly that caller: it writes ~45 sessions immediately before searching,
+// and recall's query-embed call queues behind those same-request async
+// embeds on the server's shared embedSem (memory_service.go's
+// RecallWithStats) — a slow CI-only CPU embedder can make that queue alone
+// exceed 30s before the response headers ever arrive, which used to fail the
+// whole recall call as "could not run" although nothing was actually broken.
+// An invalid or out-of-range value is ignored and falls back to the default
+// silently — a malformed env var must never turn into a REST client with no
+// timeout at all.
 func NewRESTClient(baseURL, agentKey string) *RESTClient {
 	return &RESTClient{
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		agentKey: agentKey,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: httpTimeoutFromEnv(),
 		},
 	}
+}
+
+// httpTimeoutFromEnv resolves MESH_MCP_HTTP_TIMEOUT_SECS to a Duration,
+// falling back to defaultHTTPTimeout when the variable is unset, not a
+// positive integer, or outside [1, 600] seconds — a value that large would
+// itself indicate a misconfiguration, not a legitimate slow caller.
+func httpTimeoutFromEnv() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("MESH_MCP_HTTP_TIMEOUT_SECS"))
+	if raw == "" {
+		return defaultHTTPTimeout
+	}
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs < 1 || secs > 600 {
+		return defaultHTTPTimeout
+	}
+	return time.Duration(secs) * time.Second
 }
 
 // do executes an HTTP request with the agent key auth header.
