@@ -61,8 +61,9 @@ refuses to swap if that copy cannot be written. The ten most recent are kept.
 
 Pruning is scoped to the `-mcprepo` suffix: evc-mesh's pipeline writes
 `-ci-auto` anchors into the same directory and this script never deletes them.
-(Those are worth a separate look — there were 102 of them, 1.3 GB, when this was
-written. `deploy-backend.yml` creates them and prunes nothing.)
+(Those are worth a separate look — 99 `-ci-auto` anchors plus 3 older hand-made
+ones, 1.3 GB in that directory, when this was written. `deploy-backend.yml`
+creates them and prunes nothing.)
 
 A failed smoke test rolls back on its own and *then* fails the job. To roll back
 by hand:
