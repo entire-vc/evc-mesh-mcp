@@ -1,0 +1,156 @@
+name: Deploy MCP server to mesh VM (via hel01)
+
+# Delivery path for THIS repository's binary to the public MCP endpoint
+# (https://mesh.entire.host/mcp), replacing the second copy of the same server
+# that evc-mesh/cmd/mcp maintains today. Background: Mesh task #3bc9f59d.
+#
+# ─── No push trigger, on purpose ────────────────────────────────────────────
+# Until the cutover (subtask #2bfbff4c) mesh-mcp.service is still deployed by
+# evc-mesh's deploy-backend.yml on every backend merge. Two repositories
+# writing the same binary on their own triggers would fight, and GitHub's
+# `concurrency` groups are per-repository, so no group can serialise them.
+# So this workflow is dispatch-only and its default is a dry run. Adding
+#
+#     push:
+#       branches: [main]
+#
+# here is the one-line change that completes the cutover — do it in the same
+# change that removes the mesh-mcp build/swap steps from evc-mesh's
+# deploy-backend.yml (subtask #e85e4e05), not before.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run (verify + print plan, changes nothing) | deploy | rollback'
+        type: choice
+        options: [dry-run, deploy, rollback]
+        default: dry-run
+      force:
+        description: 'Skip the burst-deploy guard'
+        type: boolean
+        default: false
+
+# Serialises this workflow against itself. It cannot serialise against
+# evc-mesh's deploy-backend.yml — see the cross-repo guard step below, which
+# is what covers that gap while both pipelines exist.
+concurrency:
+  group: mesh-mcp-deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to mesh-vm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # ci.yml gates every merge, but a workflow_dispatch can name any ref,
+      # including one whose CI never ran. Re-running the suite here keeps the
+      # deploy fail-closed rather than trusting the ref's history.
+      - name: Test (fail-closed gate)
+        if: inputs.mode != 'rollback'
+        run: go test ./... -race
+
+      - name: Build (linux/amd64)
+        if: inputs.mode != 'rollback'
+        run: |
+          GOOS=linux GOARCH=amd64 go build \
+            -ldflags "-s -w -X github.com/entire-vc/evc-mesh-mcp/internal/mcp.BuildSHA=${{ github.sha }}" \
+            -o mesh-mcp .
+          sha256sum mesh-mcp | cut -d' ' -f1 > mesh-mcp.sha256
+          echo "built $(cat mesh-mcp.sha256)"
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      # CI runners reach the mesh VM (private 10.10.10.10) only through the
+      # hel01 forwarding-only jump user `ghdeploy`. This repository has its own
+      # key (`ghdeploy-mesh-mcp@hel01-20260823`), not a copy of evc-mesh's:
+      # revoking one must not break the other. On hel01 it is pinned to
+      # permitopen="10.10.10.10:22"; on mesh-vm it carries `restrict`.
+      - name: Configure hel01 jump
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H 66.151.34.194 >> ~/.ssh/known_hosts 2>/dev/null || true
+          {
+            echo "Host mesh-vm"
+            echo "  HostName 10.10.10.10"
+            echo "  User root"
+            echo "  ProxyJump hel01-jump"
+            echo "  StrictHostKeyChecking accept-new"
+            echo "Host hel01-jump"
+            echo "  HostName 66.151.34.194"
+            echo "  User ghdeploy"
+            echo "  StrictHostKeyChecking accept-new"
+          } >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      # While evc-mesh still deploys mesh-mcp too, its run and ours can collide
+      # on the same binary. evc-mesh is a public repository, so its run list is
+      # readable without a token. Fail-closed: an unreadable API answer holds
+      # the deploy rather than assuming the coast is clear.
+      - name: Refuse to race evc-mesh's backend deploy
+        if: inputs.mode != 'dry-run'
+        run: |
+          RESP=$(curl -sf --max-time 20 \
+            "https://api.github.com/repos/entire-vc/evc-mesh/actions/workflows/deploy-backend.yml/runs?status=in_progress&per_page=1") || {
+              echo "::error::could not read evc-mesh's deploy runs — holding (fail-closed)"; exit 1; }
+          COUNT=$(echo "$RESP" | python3 -c 'import sys,json; print(json.load(sys.stdin)["total_count"])') || {
+              echo "::error::unparseable answer from the runs API — holding (fail-closed)"; exit 1; }
+          if [ "$COUNT" != "0" ]; then
+            echo "::error::evc-mesh deploy-backend.yml has $COUNT run(s) in flight — it deploys mesh-mcp too. Wait for it, then re-dispatch."
+            exit 1
+          fi
+          echo "no evc-mesh backend deploy in flight"
+
+      - name: Burst-deploy guard
+        if: inputs.mode == 'deploy' && !inputs.force
+        run: |
+          LAST=$(ssh mesh-vm 'cat /opt/evc-mesh/.last-mesh-mcp-deploy 2>/dev/null || echo 0')
+          DIFF=$(( $(date +%s) - LAST ))
+          if [ "$DIFF" -lt 300 ]; then
+            echo "::error::Burst-deploy guard: last mesh-mcp deploy was ${DIFF}s ago (< 5 min). Re-dispatch with force=true to override."
+            exit 1
+          fi
+
+      # Re-uploaded every run so the code executing on prod is the code in this
+      # commit — a host-side copy cannot drift from the reviewed one.
+      - name: Upload remote deploy script
+        run: |
+          rsync -avz --checksum scripts/mesh-mcp-remote-deploy.sh mesh-vm:/opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh
+          ssh mesh-vm 'chmod +x /opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh'
+
+      - name: Upload binary
+        if: inputs.mode != 'rollback'
+        run: |
+          rsync -avz --checksum mesh-mcp mesh-vm:/opt/evc-mesh/bin/mesh-mcp.new
+          rsync -avz mesh-mcp.sha256 mesh-vm:/opt/evc-mesh/bin/mesh-mcp.new.sha256
+
+      - name: Run ${{ inputs.mode }}
+        env:
+          MODE: ${{ inputs.mode }}
+          SHA: ${{ github.sha }}
+        run: |
+          ssh mesh-vm "EXPECTED_SHA=$SHA /opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh $MODE"
+
+      - name: Status after
+        if: always()
+        run: ssh mesh-vm '/opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh status' || true
+
+      # Written only after the swap, restart and smoke all came back clean —
+      # this is what the burst guard reads, so it must mean "a verified deploy
+      # happened", not "an upload finished".
+      - name: Record deploy timestamp
+        if: inputs.mode == 'deploy'
+        run: ssh mesh-vm 'date +%s > /opt/evc-mesh/.last-mesh-mcp-deploy'
