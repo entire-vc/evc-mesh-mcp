@@ -40,3 +40,29 @@ jobs:
           cache: true
       - name: Build
         run: go build -o /tmp/evc-mesh-mcp .
+
+  deploy-drill:
+    name: Deploy drill (rollback anchor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Exercises scripts/mesh-mcp-remote-deploy.sh against a scratch directory
+      # with systemctl and the HTTP probes stubbed out. It is the only thing
+      # standing between the rollback anchor and a defect nobody notices until
+      # the day a rollback is actually needed — three real ordering bugs in the
+      # anchor naming were caught this way before the first deploy ever ran.
+      - name: Run the drill
+        run: bash scripts/mesh-mcp-deploy-drill.sh scripts/mesh-mcp-remote-deploy.sh
+      # A suite that cannot fail proves nothing. This re-runs it against a
+      # deliberately broken copy and requires it to go red.
+      - name: Negative control — the drill must fail on a broken script
+        run: |
+          sed 's/\[ "\$seq" -ge "\$n" \]/[ "$seq" -eq "$n" ]/' \
+            scripts/mesh-mcp-remote-deploy.sh > /tmp/mutant.sh
+          if bash scripts/mesh-mcp-deploy-drill.sh /tmp/mutant.sh > /tmp/mutant.log 2>&1; then
+            echo "::error::the drill passed a script with the anchor-ordering rule reverted — it is not asserting anything"
+            cat /tmp/mutant.log
+            exit 1
+          fi
+          echo "negative control OK — the drill goes red on the reverted ordering rule:"
+          grep FAIL /tmp/mutant.log
