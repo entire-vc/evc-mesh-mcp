@@ -203,12 +203,25 @@ func main() {
 		// Simplification: use a single shared server with a per-request REST client
 		// stored in context. Add a restClientKey to context for SSE mode.
 
-		// Create a shared server with a dummy REST client (overridden per request).
+		// Create a shared REST client (unused directly for tool calls — per-agent
+		// clients are injected via context above; NewServer just needs one to
+		// build a valid ServerConfig).
 		sharedRestClient := mcpserver.NewRESTClient(apiURL, "")
-		sharedCfg := mcpserver.ServerConfig{
+
+		// Two servers, two profiles: full (default, backward compatible — every
+		// existing client connects here) and core (a lighter tool set for
+		// lightweight/embedded agents). This mirrors evc-mesh/cmd/mcp's
+		// already-deployed dual-profile SSE setup, so mesh-vm can run this
+		// binary instead of maintaining a second copy of the same MCP tools
+		// (task #3bc9f59d).
+		fullSrv := mcpserver.NewServer(mcpserver.ServerConfig{
 			RESTClient: sharedRestClient,
-		}
-		srv := mcpserver.NewServer(sharedCfg)
+			Profile:    mcpserver.ProfileFull,
+		})
+		coreSrv := mcpserver.NewServer(mcpserver.ServerConfig{
+			RESTClient: sharedRestClient,
+			Profile:    mcpserver.ProfileCore,
+		})
 
 		host := os.Getenv("MESH_MCP_HOST")
 		if host == "" {
@@ -219,49 +232,69 @@ func main() {
 			port = "8081"
 		}
 		addr := host + ":" + port
-		baseURL := fmt.Sprintf("http://%s:%s", host, port)
+		publicURL := strings.TrimSpace(os.Getenv("MESH_MCP_PUBLIC_URL"))
 
-		sseServer := sdkserver.NewSSEServer(
-			srv.MCPServer(),
-			sdkserver.WithBaseURL(baseURL),
-			sdkserver.WithKeepAlive(true),
-			// Inject the authenticated agent session into the context for each
-			// JSON-RPC message request.
-			sdkserver.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-				key := extractAgentKeyFromRequest(r)
-				if key == "" {
-					log.Printf("SSE request without agent key from %s", r.RemoteAddr)
-					return ctx
-				}
-
-				session, err := sessionCache.GetOrAuthenticate(ctx, key)
-				if err != nil {
-					log.Printf("SSE auth failed for key %s...: %v", safeKeyPrefix(key), err)
-					return ctx
-				}
-
-				// Inject per-agent REST client and session into context.
-				perAgentClient := srvRegistry.GetClient(key)
-				ctx = mcpserver.ContextWithSession(ctx, session)
-				ctx = mcpserver.ContextWithRESTClient(ctx, perAgentClient)
+		// Shared SSE context function: injects the authenticated agent session
+		// and per-agent REST client. Used by both profile servers — which
+		// profile a connection lands on is decided by which mux route it hit,
+		// not by anything in this function.
+		sseContextFunc := func(ctx context.Context, r *http.Request) context.Context {
+			key := extractAgentKeyFromRequest(r)
+			if key == "" {
+				log.Printf("SSE request without agent key from %s", r.RemoteAddr)
 				return ctx
-			}),
-		)
+			}
+
+			session, err := sessionCache.GetOrAuthenticate(ctx, key)
+			if err != nil {
+				log.Printf("SSE auth failed for key %s...: %v", safeKeyPrefix(key), err)
+				return ctx
+			}
+
+			// Inject per-agent REST client and session into context.
+			perAgentClient := srvRegistry.GetClient(key)
+			ctx = mcpserver.ContextWithSession(ctx, session)
+			ctx = mcpserver.ContextWithRESTClient(ctx, perAgentClient)
+			return ctx
+		}
+
+		// sseOpts builds the option list for one profile's SSE server.
+		// advertiseOptions decides which URL/path the `endpoint` event hands
+		// back to the client — see its doc comment for why that is not simply
+		// derived from the listen address. A fresh slice per call: appending to
+		// one shared slice would let the two servers share a backing array.
+		sseOpts := func(basePath string) []sdkserver.SSEOption {
+			opts := []sdkserver.SSEOption{
+				sdkserver.WithKeepAlive(true),
+				sdkserver.WithSSEContextFunc(sseContextFunc),
+			}
+			return append(opts, advertiseOptions(publicURL, basePath)...)
+		}
+
+		fullSSE := sdkserver.NewSSEServer(fullSrv.MCPServer(), sseOpts("")...)
+		coreSSE := sdkserver.NewSSEServer(coreSrv.MCPServer(), sseOpts(coreBasePath)...)
 
 		// Start periodic flush of read-counter to disk (every 5 minutes).
+		// Tracked on the full-profile server only: it is the backward-compatible
+		// default every existing client already connects to, so this preserves
+		// today's counter semantics unchanged. The core profile is a brand-new
+		// endpoint on this binary and does not feed the same counter file —
+		// giving it independent accounting (or merging the two) is follow-up
+		// work, not something this change claims to have done.
 		counterFile := readCounterFilePath()
 		go func() {
 			ticker := time.NewTicker(5 * time.Minute)
 			defer ticker.Stop()
 			for range ticker.C {
-				if err := srv.ReadCounter.WriteFile(counterFile); err != nil {
+				if err := fullSrv.ReadCounter.WriteFile(counterFile); err != nil {
 					log.Printf("read-counter flush error: %v", err)
 				}
 			}
 		}()
 
-		// Wrap the SSE endpoint handler to validate agent key at connection time.
 		mux := http.NewServeMux()
+
+		// Full profile (default, backward compatible): /sse and /message.
 		mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
 			key := extractAgentKeyFromRequest(r)
 			if key == "" {
@@ -278,13 +311,33 @@ func main() {
 			}
 
 			// Proxy to the real SSE handler.
-			sseServer.SSEHandler().ServeHTTP(w, r)
+			fullSSE.SSEHandler().ServeHTTP(w, r)
 		})
-		mux.Handle("/message", sseServer.MessageHandler())
+		mux.Handle("/message", fullSSE.MessageHandler())
+
+		// Core profile (lightweight tool set): /core/sse and /core/message.
+		mux.HandleFunc(coreBasePath+"/sse", func(w http.ResponseWriter, r *http.Request) {
+			key := extractAgentKeyFromRequest(r)
+			if key == "" {
+				http.Error(w, "Missing agent key: provide Authorization: Bearer agk_..., X-Agent-Key header, or ?agent_key query param", http.StatusUnauthorized)
+				return
+			}
+
+			// Validate the key at connection time to fail fast.
+			_, err := sessionCache.GetOrAuthenticate(r.Context(), key)
+			if err != nil {
+				log.Printf("SSE core connection auth failed for key %s...: %v", safeKeyPrefix(key), err)
+				http.Error(w, fmt.Sprintf("Authentication failed: %v", err), http.StatusForbidden)
+				return
+			}
+
+			coreSSE.SSEHandler().ServeHTTP(w, r)
+		})
+		mux.Handle(coreBasePath+"/message", coreSSE.MessageHandler())
 
 		// /read-counter — unauthenticated JSON snapshot for nightly cron / Grafana scrape.
 		mux.HandleFunc("/read-counter", func(w http.ResponseWriter, r *http.Request) {
-			snap := srv.ReadCounter.Snapshot()
+			snap := fullSrv.ReadCounter.Snapshot()
 			data, err := json.Marshal(snap)
 			if err != nil {
 				http.Error(w, "marshal error", http.StatusInternalServerError)
@@ -298,10 +351,16 @@ func main() {
 		mux.Handle("/metrics", promhttp.Handler())
 
 		log.Printf("Starting MCP SSE server on %s (multi-agent mode)", addr)
-		log.Printf("  SSE endpoint:     %s/sse", baseURL)
-		log.Printf("  Message endpoint: %s/message", baseURL)
-		log.Printf("  Read counter:     %s/read-counter", baseURL)
-		log.Printf("  Metrics:          %s/metrics", baseURL)
+		log.Printf("  Full profile SSE endpoint: %s/sse", dialableURL(publicURL, host, port))
+		log.Printf("  Core profile SSE endpoint: %s%s/sse", dialableURL(publicURL, host, port), coreBasePath)
+		if publicURL == "" {
+			log.Printf("  Message endpoint is advertised relative to the URL each client connects to.")
+			log.Printf("  Set MESH_MCP_PUBLIC_URL if your clients require an absolute endpoint URL.")
+		} else {
+			log.Printf("  Message endpoint is advertised under MESH_MCP_PUBLIC_URL=%s", publicURL)
+		}
+		log.Printf("  Read counter:     %s/read-counter", dialableURL(publicURL, host, port))
+		log.Printf("  Metrics:          %s/metrics", dialableURL(publicURL, host, port))
 		log.Printf("  Counter file:     %s", counterFile)
 		log.Printf("  Auth: Authorization: Bearer agk_..., X-Agent-Key, or ?agent_key=agk_...")
 
@@ -313,6 +372,55 @@ func main() {
 			log.Fatalf("MCP SSE server error: %v", err)
 		}
 	}
+}
+
+// coreBasePath is the path prefix the lightweight (core-profile) SSE endpoints
+// are mounted at. It has to be known to both the mux and the URL the server
+// advertises to clients, so it lives in one place.
+const coreBasePath = "/core"
+
+// advertiseOptions configures which URL the SSE server hands a client in its
+// `endpoint` event — the address the client will POST every subsequent JSON-RPC
+// message to.
+//
+// This is deliberately not derived from the listen address. The server listens
+// on 0.0.0.0 so that a published container port works at all, but 0.0.0.0 is a
+// wildcard bind, not a destination: a client told to POST to
+// http://0.0.0.0:8081/message has been handed an address it cannot dial. That
+// is what made a correctly published MCP port look unreachable from outside the
+// host while working fine from inside it.
+//
+// With MESH_MCP_PUBLIC_URL unset we advertise a relative path ("/message?...").
+// Every MCP client resolves it against the URL it connected to, so the answer is
+// automatically correct for localhost, for a published container port, and for
+// any reverse proxy — none of which the server can guess on its own.
+//
+// Set MESH_MCP_PUBLIC_URL (e.g. https://mesh.example.com/mcp) to advertise
+// absolute URLs instead, for clients that reject relative endpoints or for a
+// proxy that rewrites the path.
+func advertiseOptions(publicURL, basePath string) []sdkserver.SSEOption {
+	var opts []sdkserver.SSEOption
+	if basePath != "" {
+		opts = append(opts, sdkserver.WithStaticBasePath(basePath))
+	}
+	if publicURL == "" {
+		return append(opts, sdkserver.WithUseFullURLForMessageEndpoint(false))
+	}
+	return append(opts, sdkserver.WithBaseURL(strings.TrimSuffix(publicURL, "/")))
+}
+
+// dialableURL returns a URL an operator can paste into a client, for logging
+// only. A wildcard listen host is reported as localhost, because that is the
+// address that actually works from the machine reading the log.
+func dialableURL(publicURL, host, port string) string {
+	if publicURL != "" {
+		return strings.TrimSuffix(publicURL, "/")
+	}
+	switch host {
+	case "0.0.0.0", "::", "[::]", "":
+		host = "localhost"
+	}
+	return fmt.Sprintf("http://%s:%s", host, port)
 }
 
 // readCounterFilePath returns the path for the read-counter JSON file.
