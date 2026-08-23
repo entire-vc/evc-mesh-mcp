@@ -1,0 +1,122 @@
+# CI for the GitLab canon (git.entire.host/entire-vc/evc-mesh-mcp).
+#
+# Same rollout as entire-vc/evc-mesh (#11421131) — this repo had ZERO
+# .gitlab-ci.yml and zero pipelines since the GitLab move (§0z), even though
+# `~/bin/mesh-mcp` built from it is what every agent lane in the fleet
+# actually runs. Part of the fan-out at #f226e5f0.
+#
+# Ported from .github/workflows/ci.yml, not copied from evc-mesh: this repo
+# has no lint step on GitHub (no golangci-lint config in the repo — go vet +
+# go test is the whole check), no DB/services (no migrations package here),
+# and carries a repo-specific job GitHub also runs: the deploy-drill, which
+# exercises scripts/mesh-mcp-remote-deploy.sh's rollback-anchor ordering
+# against a stubbed systemctl/HTTP, with its own negative control (a
+# deliberately-mutated copy of the script that must fail the drill).
+#
+# `only_allow_merge_if_pipeline_succeeds` is out of scope here too — #11421131,
+# needs Maintainer.
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+stages: [gate, test, build]
+
+variables:
+  GOFLAGS: "-buildvcs=false"
+
+default:
+  tags: [docker]
+  interruptible: true
+
+# ── gate ────────────────────────────────────────────────────────────────────
+hold-gate:
+  stage: gate
+  image: alpine:latest
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - |
+      set -eu
+      LABELS_FILE=.github/hold-labels.txt
+      test -f "$LABELS_FILE" || { echo "REFUSING: $LABELS_FILE missing — cannot know what 'held' means"; exit 1; }
+      HOLD=$(grep -vE '^\s*(#|$)' "$LABELS_FILE" | tr 'A-Z' 'a-z' | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -c . || true)
+      test "$HOLD" -gt 0 || { echo "REFUSING: $LABELS_FILE parsed to zero labels — a gate that knows no hold label passes everything"; exit 1; }
+      echo "hold labels known: $HOLD"
+      echo "labels on this merge request: '${CI_MERGE_REQUEST_LABELS:-}'"
+      FOUND=""
+      OLDIFS=$IFS; IFS=','
+      for L in ${CI_MERGE_REQUEST_LABELS:-}; do
+        L=$(printf '%s' "$L" | tr 'A-Z' 'a-z' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [ -n "$L" ] || continue
+        if grep -vE '^\s*(#|$)' "$LABELS_FILE" | tr 'A-Z' 'a-z' | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -qxF "$L"; then
+          FOUND="$FOUND $L"
+        fi
+      done
+      IFS=$OLDIFS
+      if [ -n "$FOUND" ]; then
+        echo "REFUSING to let this merge request through: it carries a hold label —$FOUND"
+        echo "Remove the label when the work is ready; this job re-runs on the next pipeline."
+        exit 1
+      fi
+      echo "no hold label present ✓"
+
+# ── test ────────────────────────────────────────────────────────────────────
+test:
+  stage: test
+  image: golang:1.25-alpine
+  timeout: 15m
+  cache:
+    key: go-mod-$CI_COMMIT_REF_SLUG
+    paths: [.gocache/, .gomodcache/]
+  variables:
+    GOCACHE: $CI_PROJECT_DIR/.gocache
+    GOMODCACHE: $CI_PROJECT_DIR/.gomodcache
+  before_script:
+    # build-base for cgo — `go test -race` needs a C toolchain, alpine has none
+    # by default (same gotcha as evc-mesh's lint/test jobs).
+    - apk add --no-cache git build-base bash
+  script:
+    - go vet ./...
+    - go test ./... -race
+
+# ── build ───────────────────────────────────────────────────────────────────
+build:
+  stage: build
+  image: golang:1.25-alpine
+  timeout: 10m
+  cache:
+    key: go-mod-$CI_COMMIT_REF_SLUG
+    paths: [.gocache/, .gomodcache/]
+    policy: pull
+  variables:
+    GOCACHE: $CI_PROJECT_DIR/.gocache
+    GOMODCACHE: $CI_PROJECT_DIR/.gomodcache
+  before_script:
+    - apk add --no-cache git build-base
+  script:
+    - go build -o /tmp/evc-mesh-mcp .
+
+deploy-drill:
+  stage: build
+  image: golang:1.25-alpine
+  timeout: 10m
+  before_script:
+    - apk add --no-cache bash
+  script:
+    - bash scripts/mesh-mcp-deploy-drill.sh scripts/mesh-mcp-remote-deploy.sh
+    # Negative control — the drill must fail on a broken script, or it proves
+    # nothing (§0x: a check that cannot go red is worse than no check).
+    - |
+      sed 's/\[ "\$seq" -ge "\$n" \]/[ "$seq" -eq "$n" ]/' \
+        scripts/mesh-mcp-remote-deploy.sh > /tmp/mutant.sh
+      if bash scripts/mesh-mcp-deploy-drill.sh /tmp/mutant.sh > /tmp/mutant.log 2>&1; then
+        echo "the drill passed a script with the anchor-ordering rule reverted — it is not asserting anything"
+        cat /tmp/mutant.log
+        exit 1
+      fi
+      echo "negative control OK — the drill goes red on the reverted ordering rule:"
+      grep FAIL /tmp/mutant.log
