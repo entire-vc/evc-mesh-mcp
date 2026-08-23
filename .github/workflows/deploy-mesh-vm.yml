@@ -1,22 +1,33 @@
 name: Deploy MCP server to mesh VM (via hel01)
 
 # Delivery path for THIS repository's binary to the public MCP endpoint
-# (https://mesh.entire.host/mcp), replacing the second copy of the same server
-# that evc-mesh/cmd/mcp maintains today. Background: Mesh task #3bc9f59d.
+# (https://mesh.entire.host/mcp). Background: Mesh task #3bc9f59d.
 #
-# ─── No push trigger, on purpose ────────────────────────────────────────────
-# Until the cutover (subtask #2bfbff4c) mesh-mcp.service is still deployed by
-# evc-mesh's deploy-backend.yml on every backend merge. Two repositories
-# writing the same binary on their own triggers would fight, and GitHub's
-# `concurrency` groups are per-repository, so no group can serialise them.
-# So this workflow is dispatch-only and its default is a dry run. Adding
+# ─── The cutover is DONE (2026-08-23, subtask #e85e4e05) ────────────────────
+# evc-mesh/cmd/mcp — the second copy of this server — has been deleted, and
+# with it every pipeline step that built and shipped it:
+#   * evc-mesh/.github/workflows/deploy-backend.yml  (mesh-mcp steps removed)
+#   * entire-vc/deploy/.gitlab-ci.yml, build/deploy/verify:mesh-backend
+#     (the LIVE deploy path since the GitLab move — it was still building
+#     mesh-mcp from evc-mesh's copy, which is what actually kept the race alive)
+# On GitLab canon this workflow is therefore the only writer of
+# /opt/evc-mesh/bin/mesh-mcp. NOT yet true of the GitHub mirror: it still
+# carries the pre-#763 deploy-backend.yml and a cmd/mcp to build, and GitHub
+# Actions run off the mirror. Hence the cross-repo guard below is still armed —
+# see the removal condition written there.
 #
-#     push:
-#       branches: [main]
+# ─── Still no push trigger, and now for a DIFFERENT reason ──────────────────
+# The old reason (two repositories fighting over one binary) is gone. The
+# current one is fleet policy: since the GitLab move every product deploys
+# from a manual job in entire-vc/deploy, with `allow_failure: false`, on a
+# human's click. An auto-deploy here would make this the one product that
+# ships itself, and it would ship on a MIRROR push (GitHub) rather than from
+# the canonical repository (git.entire.host) — deploy triggered by a copy.
 #
-# here is the one-line change that completes the cutover — do it in the same
-# change that removes the mesh-mcp build/swap steps from evc-mesh's
-# deploy-backend.yml (subtask #e85e4e05), not before.
+# So this stays dispatch-only. What that costs, named plainly: a merged fix
+# does NOT reach prod until someone dispatches this workflow. If that gap
+# starts biting, the fix is a `deploy:mesh-mcp` manual job in entire-vc/deploy
+# next to the other products — not a push trigger on a mirror.
 
 on:
   workflow_dispatch:
@@ -32,8 +43,9 @@ on:
         default: false
 
 # Serialises this workflow against itself. It cannot serialise against
-# evc-mesh's deploy-backend.yml — see the cross-repo guard step below, which
-# is what covers that gap while both pipelines exist.
+# evc-mesh's deploy-backend.yml — see the cross-repo guard step below, which is
+# what covers that gap for as long as the GitHub mirror still carries a copy of
+# that workflow able to build cmd/mcp.
 concurrency:
   group: mesh-mcp-deploy-prod
   cancel-in-progress: false
@@ -96,10 +108,28 @@ jobs:
           } >> ~/.ssh/config
           chmod 600 ~/.ssh/config
 
-      # While evc-mesh still deploys mesh-mcp too, its run and ours can collide
-      # on the same binary. evc-mesh is a public repository, so its run list is
-      # readable without a token. Fail-closed: an unreadable API answer holds
-      # the deploy rather than assuming the coast is clear.
+      # Cross-repo guard: evc-mesh's deploy-backend.yml also writes
+      # /opt/evc-mesh/bin/mesh-mcp, so its run and ours can collide on the same
+      # binary. evc-mesh is a public repository, so its run list is readable
+      # without a token. Fail-closed: an unreadable API answer holds the deploy
+      # rather than assuming the coast is clear.
+      #
+      # ⚠️ THIS GUARD LOOKS DEAD AND IS NOT. Measured 2026-08-23 (#e85e4e05):
+      #   * GitLab canon (origin/main)  — deploy-backend.yml: 0 live mesh-mcp
+      #     lines. That half was removed by evc-mesh!763.
+      #   * GitHub mirror (showcase/main) — the SAME file still carries 20 live
+      #     mesh-mcp lines, AND cmd/mcp still exists on that branch, so the
+      #     workflow would build and swap the stale duplicate successfully.
+      #     It last did so on 2026-08-22T21:10Z.
+      # GitHub Actions run off the MIRROR, not off canon, and the mirror has
+      # been stuck since 2026-08-20 (Mesh #bdd682a4), with PRs still landing on
+      # GitHub main directly (Mesh #3967b15a). So merging the deletion into
+      # GitLab does NOT disarm this path — only the mirror catching up does.
+      #
+      # Remove this step when, and only when, `git show showcase/main:.github/
+      # workflows/deploy-backend.yml | grep -E 'mesh-mcp|cmd/mcp' | grep -vc '^\s*#'`
+      # returns 0. Removing it earlier restores the exact race this file exists
+      # to prevent, and the failure is silent: the wrong binary just wins.
       - name: Refuse to race evc-mesh's backend deploy
         if: inputs.mode != 'dry-run'
         run: |
