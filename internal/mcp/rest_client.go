@@ -470,6 +470,23 @@ func (c *RESTClient) AddVCSLink(ctx context.Context, taskID string, body map[str
 	return result, nil
 }
 
+// GetTaskVCSLinks returns the VCS links (PRs/MRs/commits/branches) attached
+// to a task — provider, link_type, external_id, url, status, created_at per
+// link. Unlike comments/artifacts, the underlying GET /tasks/:id/vcs-links
+// endpoint (internal/handler/vcs_link_handler.go List, in evc-mesh) has no
+// pagination: it returns the full set under the key "vcs_links" (plus a
+// "count"), not "items"/"total_count"/"has_more" — so there is no
+// truncation envelope to propagate here. Added for #5a6460b7: before this,
+// get_task only ever surfaced vcs_link_count, and diagnosing a
+// misclassified/stuck link required a raw REST call no MCP tool exposed.
+func (c *RESTClient) GetTaskVCSLinks(ctx context.Context, taskID string) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/tasks/"+taskID+"/vcs-links", nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // ListComments lists comments on a task.
 func (c *RESTClient) ListComments(ctx context.Context, taskID string, params map[string]string) (map[string]any, error) {
 	path := "/api/v1/tasks/" + taskID + "/comments"
