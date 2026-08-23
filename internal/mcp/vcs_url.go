@@ -83,9 +83,12 @@ func parseVCSURL(raw string) vcsURLFacts {
 	case host == "gitlab.com" || strings.HasSuffix(host, ".gitlab.com"):
 		facts.Provider = "gitlab"
 	default:
-		// Self-hosted instances are indistinguishable from any other host by
-		// URL alone; leave the provider to the caller but still try the path,
-		// since both products use the same path grammar.
+		// Self-hosted instances (our own git.entire.host included) are
+		// indistinguishable from any other host by hostname alone. The path
+		// grammar below still gives GitLab away unambiguously — its literal
+		// "-" resource separator has no GitHub equivalent — so provider
+		// detection there is NOT a guess; it is read off the one part of
+		// the URL that is conclusive. Until that point Provider stays "".
 	}
 
 	segments := splitPath(u.Path)
@@ -95,8 +98,14 @@ func parseVCSURL(raw string) vcsURLFacts {
 	facts.Repository = segments[0] + "/" + segments[1]
 
 	// GitLab puts a literal "-" between the project path and the resource.
+	// Seeing it is conclusive proof of GitLab even on an unrecognised host —
+	// this is what makes https://git.entire.host/<group>/<repo>/-/merge_requests/<n>
+	// resolve correctly instead of silently defaulting to github below.
 	rest := segments[2:]
 	if rest[0] == "-" {
+		if facts.Provider == "" {
+			facts.Provider = "gitlab"
+		}
 		rest = rest[1:]
 	}
 	if len(rest) < 2 {
@@ -104,7 +113,19 @@ func parseVCSURL(raw string) vcsURLFacts {
 	}
 
 	switch rest[0] {
-	case "pull", "pulls", "merge_requests":
+	case "pull", "pulls":
+		// Unlike "-" and "merge_requests" below, "pull" is NOT diagnostic of
+		// provider: self-hosted GitHub Enterprise uses this exact segment
+		// too, so an unrecognised host stays unrecognised here (the caller
+		// falls back to its own default) rather than guessing github.
+		if isAllDigits(rest[1]) {
+			facts.LinkType = vcsLinkTypePR
+			facts.ExternalID = rest[1]
+		}
+	case "merge_requests":
+		if facts.Provider == "" {
+			facts.Provider = "gitlab"
+		}
 		if isAllDigits(rest[1]) {
 			facts.LinkType = vcsLinkTypePR
 			facts.ExternalID = rest[1]
