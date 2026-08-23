@@ -67,6 +67,23 @@ func TestParseVCSURL(t *testing.T) {
 			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "17", Repository: "group/proj"},
 		},
 		{
+			// #0fbed572: our own self-hosted GitLab (git.entire.host) is an
+			// unrecognised host, but its merge-request URLs carry GitLab's
+			// literal "-" resource separator — that alone is enough to tell
+			// it apart from a self-hosted GitHub Enterprise "pull" URL.
+			name: "self-hosted gitlab merge request",
+			url:  "https://git.entire.host/entire-vc/team-relay-ops/-/merge_requests/14",
+			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "14", Repository: "entire-vc/team-relay-ops"},
+		},
+		{
+			// Negative control for the fix above: a github.com PR URL must
+			// keep resolving to github, not get swept up by the new GitLab
+			// path-grammar inference.
+			name: "github pull request still resolves to github",
+			url:  "https://github.com/entire-vc/team-relay-ops/pull/14",
+			want: vcsURLFacts{Provider: "github", LinkType: "pr", ExternalID: "14", Repository: "entire-vc/team-relay-ops"},
+		},
+		{
 			name: "host-only url yields nothing",
 			url:  "https://github.com/",
 			want: vcsURLFacts{Provider: "github"},
@@ -362,6 +379,34 @@ func TestHandleAddVCSLink_OmittedStatusIsNotSent(t *testing.T) {
 	}
 	if _, ok := (*captured)["status"]; ok {
 		t.Errorf("status was sent without being asked for: %v", (*captured)["status"])
+	}
+}
+
+// #0fbed572: before this fix, a git.entire.host MR URL silently got
+// provider=github (parseVCSURL's host switch didn't recognise our own
+// GitLab), and the done-evidence gate could then never verify it live.
+func TestHandleAddVCSLink_SelfHostedGitLabURLInfersGitLabProvider(t *testing.T) {
+	taskID := uuid.New().String()
+	server, captured, closeSrv := addVCSLinkHarness(t, taskID)
+	defer closeSrv()
+
+	result := callAddVCSLink(t, server, map[string]any{
+		"task_id": taskID,
+		"url":     "https://git.entire.host/entire-vc/team-relay-ops/-/merge_requests/14",
+	})
+	if result.IsError {
+		t.Fatalf("tool returned an error result: %v", result.Content)
+	}
+
+	body := *captured
+	if body["provider"] != "gitlab" {
+		t.Errorf("provider = %v, want gitlab", body["provider"])
+	}
+	if body["link_type"] != "pr" {
+		t.Errorf("link_type = %v, want pr", body["link_type"])
+	}
+	if body["external_id"] != "14" {
+		t.Errorf("external_id = %v, want 14", body["external_id"])
 	}
 }
 
