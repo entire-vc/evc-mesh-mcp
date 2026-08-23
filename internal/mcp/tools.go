@@ -261,6 +261,21 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		resp["dependencies_incoming"] = deps.Incoming
 	}
 
+	if mcpsdk.ParseBoolean(request, "include_vcs_links", false) {
+		page, err := s.getRESTClient(ctx).GetTaskVCSLinks(ctx, taskID)
+		if err != nil {
+			return errResult("failed to list vcs links: %v", err)
+		}
+		// REST returns {"vcs_links": [...], "count": N} — no pagination
+		// envelope to strip (unlike comments/artifacts), the endpoint
+		// always returns the full set.
+		if links, ok := page["vcs_links"]; ok {
+			resp["vcs_links"] = links
+		} else {
+			resp["vcs_links"] = []any{}
+		}
+	}
+
 	return jsonResult(resp)
 }
 

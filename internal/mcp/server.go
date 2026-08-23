@@ -269,11 +269,12 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("list_tasks", s.handleListTasks))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_task",
-		mcpsdk.WithDescription("Get full task details with optional comments, artifacts, and dependencies."),
+		mcpsdk.WithDescription("Get full task details with optional comments, artifacts, dependencies, and VCS links."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID (full UUID or 6–12 char hex short-ID prefix).")),
 		mcpsdk.WithBoolean("include_comments", mcpsdk.Description("Include comments."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_artifacts", mcpsdk.Description("Include artifacts."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_dependencies", mcpsdk.Description("Include dependencies."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("include_vcs_links", mcpsdk.Description("Include linked PRs/MRs/commits/branches (id, provider, link_type, external_id, url, status, created_at) — use this instead of a raw REST call to diagnose a misclassified or stuck-status link."), mcpsdk.DefaultBool(false)),
 	), s.tracked("get_task", s.handleGetTask))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("create_task",
