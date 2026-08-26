@@ -29,6 +29,13 @@ type docStore struct {
 	version int
 	docID   string
 	server  *httptest.Server
+
+	// forcedConflict, when set, makes every PATCH return this 409 body instead
+	// of writing — a way to simulate a conflict class the version-mismatch
+	// check below cannot produce (external_source_conflict,
+	// external_source_write_landed), which the real API returns for reasons
+	// unrelated to base_version.
+	forcedConflict map[string]any
 }
 
 func newDocStore(t *testing.T, body string) *docStore {
@@ -56,6 +63,12 @@ func newDocStore(t *testing.T, body string) *docStore {
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			st.mu.Lock()
 			defer st.mu.Unlock()
+
+			if st.forcedConflict != nil {
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(st.forcedConflict)
+				return
+			}
 
 			appendText, isAppend := req["append_body"].(string)
 			base, hasBase := req["base_version"].(float64)
@@ -386,5 +399,108 @@ func TestUpdateDoc_AppendWithStaleVersionConflictsInsteadOfRetrying(t *testing.T
 	}
 	if body, _ := st.read(); strings.Contains(body, "should not land") {
 		t.Errorf("the conflicting append wrote anyway: %q", body)
+	}
+}
+
+// The bug this task exists to fix: a copy of a Team Relay document whose
+// original changed underneath it gets a 409 with code=external_source_conflict
+// (task ae41281b, found live via a verifier hitting exactly this on the R8
+// prod acceptance run). The old conflictResult treated every 409 as a plain
+// version race and told the caller to retry with append — the very call that
+// had just conflicted, closing it into a loop. This asserts on the text the
+// caller actually sees: it must name the source that changed and must not
+// recommend append.
+func TestUpdateDoc_ExternalSourceConflictNamesSourceAndDoesNotSuggestAppend(t *testing.T) {
+	st := newDocStore(t, "original\n")
+	st.forcedConflict = map[string]any{
+		"code": "external_source_conflict",
+		"message": "This document is a copy of a Team Relay document, and the original changed " +
+			"since you opened it. Nothing was written — your text is unsaved and the original is " +
+			"untouched. Re-open the document to load the current original, re-apply your change, " +
+			"and save again.",
+		"source_path": "_probe/ee1745ce-sync-write-probe.md",
+		"base_sha256": "6574a3a9",
+	}
+
+	text, isErr := callTool(t, st.newServer().handleUpdateDoc, map[string]any{
+		"doc": st.docID, "append": "trying again\n",
+	})
+	if !isErr {
+		t.Fatalf("expected a conflict: %s", text)
+	}
+	if !strings.Contains(text, "_probe/ee1745ce-sync-write-probe.md") {
+		t.Errorf("does not name the source path that changed, so the caller cannot tell what to re-open: %s", text)
+	}
+	if strings.Contains(text, "use append") {
+		t.Errorf("recommends append — the exact call that just conflicted, closing the loop: %s", text)
+	}
+	if !strings.Contains(strings.ToLower(text), "re-open") {
+		t.Errorf("does not tell the caller the actual recovery (re-open, re-apply): %s", text)
+	}
+	// The recovery is only executable once the copy has actually been re-fetched,
+	// and that fetch is TTL-gated server-side (RefreshIfStale returns without a
+	// network call inside the project's sync interval, and this refusal path does
+	// not advance synced_at). "Re-open and re-apply" without that condition sends
+	// a caller who re-opens immediately back onto the same stale copy and into
+	// the same 409 — a slower spelling of the loop this test exists to close.
+	if !strings.Contains(strings.ToLower(text), "sync interval") {
+		t.Errorf("does not say the refresh is gated on the sync interval, so an immediate re-open silently returns the stale copy: %s", text)
+	}
+}
+
+// A version conflict must keep behaving exactly as before — the two codes must
+// not collapse into one branch. Duplicates the assertions already made by
+// TestUpdateDoc_ConflictCarriesCurrentVersionAndRetrySucceeds; kept here too so
+// this file's conflict-branch tests read as a complete set side by side.
+func TestUpdateDoc_VersionConflictStillSuggestsAppend(t *testing.T) {
+	st := newDocStore(t, "original\n")
+	server := st.newServer()
+
+	_, _ = callTool(t, server.handleUpdateDoc, map[string]any{
+		"doc": st.docID, "base_version": 1, "body": "first\n",
+	})
+	text, isErr := callTool(t, server.handleUpdateDoc, map[string]any{
+		"doc": st.docID, "base_version": 1, "body": "second\n",
+	})
+	if !isErr {
+		t.Fatal("expected a conflict")
+	}
+	if !strings.Contains(text, "base_version=2") {
+		t.Errorf("conflict did not name the version to retry with: %s", text)
+	}
+	if !strings.Contains(text, "use append") {
+		t.Errorf("a plain version conflict should still point at append as a cheaper alternative: %s", text)
+	}
+}
+
+// external_source_write_landed is the sibling case: the edit already reached
+// Team Relay, only the Mesh copy is behind. Telling the caller "NOTHING WAS
+// WRITTEN" here would be false — the text is safely on the source — and
+// telling them to retry would duplicate it there.
+func TestUpdateDoc_ExternalSourceWriteLandedDoesNotClaimNothingWasWritten(t *testing.T) {
+	st := newDocStore(t, "original\n")
+	st.forcedConflict = map[string]any{
+		"code": "external_source_write_landed",
+		"message": "Your change was saved to Team Relay, but another edit to this document in Mesh " +
+			"won the local update, so this copy is behind.",
+		"source_path":     "_probe/ee1745ce-sync-write-probe.md",
+		"sha256":          "6574a3a9",
+		"current_version": 3,
+	}
+
+	text, isErr := callTool(t, st.newServer().handleUpdateDoc, map[string]any{
+		"doc": st.docID, "append": "trying again\n",
+	})
+	if !isErr {
+		t.Fatalf("expected a conflict result: %s", text)
+	}
+	if strings.Contains(text, "NOTHING WAS WRITTEN") {
+		t.Errorf("claims nothing was written, but the edit already landed on Team Relay: %s", text)
+	}
+	if !strings.Contains(text, "WAS SAVED") {
+		t.Errorf("does not say the write actually landed: %s", text)
+	}
+	if !strings.Contains(text, "_probe/ee1745ce-sync-write-probe.md") {
+		t.Errorf("does not name where it landed: %s", text)
 	}
 }
