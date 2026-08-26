@@ -338,3 +338,5 @@ which commit is actually installed without shelling out to the host.
 ## License
 
 [MIT](LICENSE)
+
+<!-- transient branch used to exercise the hold gate; not for merge -->
