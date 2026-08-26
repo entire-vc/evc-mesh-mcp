@@ -520,25 +520,72 @@ func (s *Server) handleCreateDoc(ctx context.Context, request mcpsdk.CallToolReq
 
 // conflictResult renders a 409 from a conditional write.
 //
-// Returned as an ERROR, because the single most important fact is that nothing
-// was written — a caller that reads this as success will believe an edit landed
-// that did not. The current version is lifted out of the server's payload rather
-// than scraped from its prose, and the retry is spelled out, because a conflict
-// an agent cannot act on becomes a loop of blind repeats.
+// Returned as an ERROR, because the single most important fact is what actually
+// happened to the caller's text — a caller that misreads this will either
+// believe an edit landed that did not, or redo an edit that already did. The
+// server distinguishes three causes under one status code, and they need
+// different recipes: a plain version race (retry with the version given,
+// append is a safe alternative), a copy that fell behind its Team Relay
+// original (append does NOT help — it would still build on the stale copy;
+// the fix is to re-open and re-apply, once the refresh TTL has elapsed —
+// re-opening inside it re-fetches nothing and conflicts again), and a write
+// that already reached Team
+// Relay (nothing to retry — redoing it would duplicate the text). Collapsing
+// all three into the version-race wording is what used to send a caller stuck
+// on the second case back through `append`, straight into the same conflict.
 func conflictResult(apiErr *APIError) (*mcpsdk.CallToolResult, error) {
-	current := "unknown"
+	code := ""
 	if apiErr.Body != nil {
-		if v, ok := asInt(apiErr.Body, "current_version"); ok {
-			current = strconv.Itoa(v)
-		}
+		code = asString(apiErr.Body, "code")
 	}
-	return errResult("409 version conflict — NOTHING WAS WRITTEN. "+
-		"The document is now at version %s; somebody else wrote to it after you read it. "+
-		"Re-read it (get_doc, or get_doc version_only=true), re-apply your change on top of "+
-		"the current text, and retry with base_version=%s. "+
-		"Do not retry with the same base_version — it will conflict again. "+
-		"If you are only adding to the end, use append instead: it needs no base_version and cannot conflict.",
-		current, current)
+
+	switch code {
+	case "external_source_conflict":
+		sourcePath := "unknown"
+		if apiErr.Body != nil {
+			if v := asString(apiErr.Body, "source_path"); v != "" {
+				sourcePath = v
+			}
+		}
+		return errResult("409 external source conflict — NOTHING WAS WRITTEN, on either side. "+
+			"%s is a copy of a Team Relay document, and the original changed since you opened it. "+
+			"Re-reading this copy does not by itself show the new original — it is only refreshed "+
+			"from the source when the document is re-opened, and only once the project's sync "+
+			"interval has elapsed (5 minutes by default). Re-open it (get_doc), re-apply your "+
+			"change on top of the refreshed text, and save again — but if the re-opened text still "+
+			"looks unchanged, you are inside that interval and the copy has not been re-fetched "+
+			"yet: wait it out and re-open again, because saving on top of the stale copy conflicts "+
+			"exactly the same way. Do not retry with append either: the conflict is with the "+
+			"external source, not with a version number, so appending to the stale copy fails the "+
+			"same way.",
+			sourcePath)
+	case "external_source_write_landed":
+		sourcePath := "unknown"
+		if apiErr.Body != nil {
+			if v := asString(apiErr.Body, "source_path"); v != "" {
+				sourcePath = v
+			}
+		}
+		return errResult("409 external write landed — your change WAS SAVED, to %s on Team Relay. "+
+			"Only this Mesh copy is behind; it catches up on its own the next time the document is "+
+			"opened, once the project's sync interval has elapsed. Do not re-apply your change or "+
+			"retry the write — it is already on the source, and retrying would duplicate it there.",
+			sourcePath)
+	default:
+		current := "unknown"
+		if apiErr.Body != nil {
+			if v, ok := asInt(apiErr.Body, "current_version"); ok {
+				current = strconv.Itoa(v)
+			}
+		}
+		return errResult("409 version conflict — NOTHING WAS WRITTEN. "+
+			"The document is now at version %s; somebody else wrote to it after you read it. "+
+			"Re-read it (get_doc, or get_doc version_only=true), re-apply your change on top of "+
+			"the current text, and retry with base_version=%s. "+
+			"Do not retry with the same base_version — it will conflict again. "+
+			"If you are only adding to the end, use append instead: it needs no base_version and cannot conflict.",
+			current, current)
+	}
 }
 
 func (s *Server) handleUpdateDoc(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
