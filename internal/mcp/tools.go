@@ -779,6 +779,14 @@ func (s *Server) handleListComments(ctx context.Context, request mcpsdk.CallTool
 		params["page_size"] = strconv.Itoa(limit)
 	}
 
+	// `page` was declared nowhere and read nowhere: every call landed on page 1
+	// regardless of what the caller passed, silently, while total_pages/has_more
+	// in the response looked like a working pager. This is the tool
+	// READ-BEFORE-ACT tells every agent to page through for a truncated thread.
+	if page := mcpsdk.ParseInt(request, "page", 0); page > 0 {
+		params["page"] = strconv.Itoa(page)
+	}
+
 	result, err := s.getRESTClient(ctx).ListComments(ctx, taskID, params)
 	if err != nil {
 		return errResult("failed to list comments: %v", err)
