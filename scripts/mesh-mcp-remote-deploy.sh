@@ -28,6 +28,12 @@
 #                 always succeeds and the entire restore-on-failure block is
 #                 unreachable from the drill — deleting that block outright left
 #                 the suite at 17/17 green, which is how this knob came to exist.
+#   DRILL_STAMP   under DRILL only: pin the anchor second instead of reading the
+#                 clock. The same-second collision the sequence exists for is
+#                 the one case a drill cannot stage by running fast — it either
+#                 got the second it wanted or it silently tested something else.
+#                 Shape is validated, so a malformed pin fails loudly rather
+#                 than producing names outside ANCHOR_GLOB.
 set -uo pipefail
 
 BIN_DIR="${BIN_DIR:-/opt/evc-mesh/bin}"
@@ -37,6 +43,7 @@ KEEP_ANCHORS="${KEEP_ANCHORS:-10}"
 EXPECTED_SHA="${EXPECTED_SHA:-}"
 DRILL="${DRILL:-0}"
 DRILL_SMOKE_FAIL="${DRILL_SMOKE_FAIL:-0}"
+DRILL_STAMP="${DRILL_STAMP:-}"
 
 PROD_BIN_DIR=/opt/evc-mesh/bin
 LIVE="$BIN_DIR/mesh-mcp"
@@ -147,7 +154,15 @@ smoke() {
 #     came back empty, and `cp` failed onto the directory itself.
 new_anchor_name() {
   local stamp prefix n base seq
-  stamp=$(date -u +%Y%m%d-%H%M%S)
+  if [ "$DRILL" = "1" ] && [ -n "$DRILL_STAMP" ]; then
+    case "$DRILL_STAMP" in
+      [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+      *) die "DRILL_STAMP='$DRILL_STAMP' is not YYYYmmdd-HHMMSS — a pin of the wrong shape would build names outside ANCHOR_GLOB, invisible to both prune and rollback" ;;
+    esac
+    stamp=$DRILL_STAMP
+  else
+    stamp=$(date -u +%Y%m%d-%H%M%S)
+  fi
   prefix="mesh-mcp.rollback-$stamp-"
   n=0
   for f in "$BIN_DIR/$prefix"[0-9][0-9]-mcprepo; do
@@ -200,7 +215,13 @@ verify_incoming() {
 cmd_dry_run() {
   local sha anchor
   sha=$(verify_incoming) || exit 1
-  anchor=$(new_anchor_name)
+  # `die` inside $(...) exits only the SUBSHELL — without this the shape
+  # guard in new_anchor_name printed its ERROR and the deploy carried on to
+  # "DEPLOY OK", rc=0. Same shape as verify_incoming above, for the same
+  # reason. Found by review, not by the drill: the drill pre-seeds a live
+  # binary, so the empty name collided with $LIVE and `cp` refused — an
+  # accidental rc=1 that hid this on every path except a first install.
+  anchor=$(new_anchor_name) || exit 1
   echo "DRY RUN — nothing on this host was modified."
   note "uploaded artifact verified: $sha"
   [ -n "$EXPECTED_SHA" ] && note "built from commit: $EXPECTED_SHA"
@@ -225,7 +246,13 @@ cmd_deploy() {
   local sha anchor anchor_path post
   sha=$(verify_incoming) || exit 1
 
-  anchor=$(new_anchor_name)
+  # `die` inside $(...) exits only the SUBSHELL — without this the shape
+  # guard in new_anchor_name printed its ERROR and the deploy carried on to
+  # "DEPLOY OK", rc=0. Same shape as verify_incoming above, for the same
+  # reason. Found by review, not by the drill: the drill pre-seeds a live
+  # binary, so the empty name collided with $LIVE and `cp` refused — an
+  # accidental rc=1 that hid this on every path except a first install.
+  anchor=$(new_anchor_name) || exit 1
   anchor_path="$BIN_DIR/$anchor"
   if [ -f "$LIVE" ]; then
     cp -p "$LIVE" "$anchor_path" || die "could not write the rollback anchor — refusing to swap"

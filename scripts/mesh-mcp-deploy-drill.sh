@@ -22,7 +22,7 @@ check() { # check <label> <want> <got>
   else printf '  FAIL %-58s want=%s got=%s\n' "$1" "$2" "$3"; FAIL=$((FAIL + 1)); fi
 }
 
-run() { DRILL=1 DRILL_SMOKE_FAIL="${SMOKE_FAIL:-0}" BIN_DIR="$WORK" SERVICE=mesh-mcp-DRILL KEEP_ANCHORS="${KEEP:-3}" EXPECTED_SHA=drillsha bash "$SCRIPT" "$@"; }
+run() { DRILL=1 DRILL_SMOKE_FAIL="${SMOKE_FAIL:-0}" DRILL_STAMP="${STAMP:-}" BIN_DIR="$WORK" SERVICE=mesh-mcp-DRILL KEEP_ANCHORS="${KEEP:-3}" EXPECTED_SHA=drillsha bash "$SCRIPT" "$@"; }
 stage() { printf '%s\n' "$1" > "$WORK/mesh-mcp.new"; sha256sum "$WORK/mesh-mcp.new" | cut -d' ' -f1 > "$WORK/mesh-mcp.new.sha256"; }
 live() { cat "$WORK/mesh-mcp" 2>/dev/null; }
 own_anchors() { ls -1 "$WORK"/mesh-mcp.rollback-*-mcprepo 2>/dev/null | sort; }
@@ -58,9 +58,27 @@ check "live binary untouched" "v0" "$(live)"
 check "no anchor written by the refused run" "0" "$(own_anchors | wc -l | tr -d ' ')"
 
 echo "--- 3. six same-second deploys: anchors stay ordered, prune keeps KEEP=3"
+# The second is PINNED, not hoped for. Until 2026-08-27 this loop relied on six
+# deploys happening to land inside one wall-clock second. On a runner where they
+# straddled a boundary every anchor got sequence 00, `-ge` and `-eq` in
+# new_anchor_name stopped differing, and this section — the ONLY one that can
+# tell those two apart — quietly tested nothing. That made CI's negative control
+# a coin flip: on evc-mesh-mcp the same sha `2388e70f` failed job 4331 and
+# passed job 4515, reddening a merge request that touched none of this.
 fresh
+# Deliberately a second the clock cannot hand out. "All six landed in ONE
+# second" would be satisfied by a fast runner too, so it cannot tell a honoured
+# pin from a lucky one; a stamp in the past can only come from the pin.
+SAME_SECOND=20260101-120000
+STAMP=$SAME_SECOND
 for v in a b c d e f; do stage "v-$v"; run deploy >/dev/null 2>&1; done
+STAMP=
 check "live is the last deploy" "v-f" "$(live)"
+# If the pin ever stops being honoured — renamed knob, dropped env, a rewrite of
+# new_anchor_name — this suite must go red rather than drift back to deciding
+# the case by runner speed, which is silent and looks exactly like passing.
+check "kept anchors carry the pinned second" "$SAME_SECOND" \
+  "$(own_anchors | sed 's/.*\.rollback-//; s/-[0-9][0-9]-mcprepo$//' | sort -u | tr '\n' ' ' | sed 's/ *$//')"
 check "anchors kept" "3" "$(own_anchors | wc -l | tr -d ' ')"
 check "oldest kept anchor" "v-c" "$(cat "$(own_anchors | head -1)")"
 check "newest kept anchor" "v-e" "$(cat "$(own_anchors | tail -1)")"
@@ -98,6 +116,24 @@ check "newest anchor holds what was live before the failed deploy" "v-good" "$(c
 echo "--- 8. a drill may not run against the production directory"
 DRILL=1 BIN_DIR=/opt/evc-mesh/bin bash "$SCRIPT" status >/dev/null 2>&1; rc=$?
 check "DRILL against prod BIN_DIR refused" 1 "$rc"
+
+echo "--- 9. a malformed pin halts the deploy instead of logging and continuing"
+# new_anchor_name validates DRILL_STAMP's shape and calls die — but `die` inside
+# $(...) exits only the SUBSHELL. Before the call sites gained `|| exit 1` this
+# printed its ERROR and then went on to report "DEPLOY OK", rc=0: a guard that
+# could not go red, which is the very defect this drill exists to catch.
+#
+# Staged WITHOUT a live binary on purpose. With one present the empty anchor
+# name collides with $LIVE, `cp` refuses "same file", and that accidental rc=1
+# masks the bug on every path except a first install — which is how it survived
+# the review that added the guard.
+rm_rf_work; mkdir -p "$WORK"; stage v-new
+STAMP=not-a-timestamp
+run deploy >/dev/null 2>&1; rc=$?
+STAMP=
+check "deploy exit code on a malformed pin" 1 "$rc"
+check "nothing was installed by the refused run" "absent" \
+  "$( [ -e "$WORK/mesh-mcp" ] && echo present || echo absent )"
 
 rm_rf_work
 echo
