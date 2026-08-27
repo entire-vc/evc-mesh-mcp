@@ -604,10 +604,11 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Comments & Artifacts ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_comments",
-		mcpsdk.WithDescription("List comments on a task."),
+		mcpsdk.WithDescription("List comments on a task. Paginated: call again with a higher `page` to read a thread longer than `limit`."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithBoolean("include_internal", mcpsdk.Description("Include internal (agent-only) comments."), mcpsdk.DefaultBool(true)),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max comments to return (default 50).")),
+		mcpsdk.WithNumber("page", mcpsdk.Description("1-based page number. Omit for the first page; use with `has_more`/`total_pages` in the response to read the rest of a thread.")),
 	), s.tracked("list_comments", s.handleListComments))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("upload_artifact",
