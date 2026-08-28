@@ -446,3 +446,108 @@ func captureUploadParts(t *testing.T, args map[string]any) partCapture {
 	}
 	return out
 }
+
+// --- list_tasks: `order` and `page` ------------------------------------------
+
+// These two differ from every other case in this file in one way worth stating:
+// `order` and `page` were not advertised-and-discarded, they were absent from the
+// tool's schema outright, while the REST layer had honoured both all along. The
+// caller-visible damage was the same or worse. A project larger than `limit`
+// answered "what changed in the last day" with its OLDEST tasks inside a
+// well-formed envelope, so the walk reported "nothing changed" and looked clean;
+// and the envelope kept reporting total_pages, advertising pages no caller could
+// reach through this tool.
+//
+// The assertion is on the query string that LEAVES the process, for the reason
+// this file's header gives: a result-only check cannot tell forwarded from
+// dropped, and both spellings return a perfectly good page either way.
+
+func listTasksQueryCapture(t *testing.T, args map[string]any) string {
+	t.Helper()
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/tasks") {
+			gotQuery = r.URL.RawQuery
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+	}))
+	defer srv.Close()
+
+	server := &Server{restClient: NewRESTClient(srv.URL, "k"), tracker: NewSessionTracker()}
+	req := mcpsdk.CallToolRequest{}
+	req.Params.Arguments = args
+	if _, err := server.handleListTasks(context.Background(), req); err != nil {
+		t.Fatalf("handleListTasks: %v", err)
+	}
+	return gotQuery
+}
+
+func TestListTasks_ForwardsOrder(t *testing.T) {
+	q := listTasksQueryCapture(t, map[string]any{
+		"project_id": uuid.New().String(),
+		"sort":       "updated_at",
+		"order":      "desc",
+	})
+	if !strings.Contains(q, "order=desc") {
+		t.Errorf("order was not forwarded; query was %q", q)
+	}
+	if !strings.Contains(q, "sort_by=updated_at") {
+		t.Errorf("sort must still map to sort_by; query was %q", q)
+	}
+}
+
+// The asc direction is not a redundant twin of the test above: it pins that the
+// value is passed through rather than a fixed "desc" being stamped on any
+// non-empty order. Without it, a handler that hardcoded desc would pass.
+func TestListTasks_ForwardsOrderAsc(t *testing.T) {
+	q := listTasksQueryCapture(t, map[string]any{
+		"project_id": uuid.New().String(),
+		"order":      "asc",
+	})
+	if !strings.Contains(q, "order=asc") {
+		t.Errorf("order=asc was not forwarded verbatim; query was %q", q)
+	}
+}
+
+func TestListTasks_ForwardsPage(t *testing.T) {
+	q := listTasksQueryCapture(t, map[string]any{
+		"project_id": uuid.New().String(),
+		"page":       2,
+	})
+	if !strings.Contains(q, "page=2") {
+		t.Errorf("page was not forwarded; query was %q", q)
+	}
+}
+
+// Omission must stay omission. Sending page=1 or order="" unconditionally would
+// overwrite a server-side default with a client-side guess, which is how a
+// "harmless" default silently becomes policy.
+func TestListTasks_OmittedOrderAndPageAreNotSent(t *testing.T) {
+	q := listTasksQueryCapture(t, map[string]any{
+		"project_id": uuid.New().String(),
+	})
+	if strings.Contains(q, "order=") {
+		t.Errorf("order must not be sent when the caller omitted it; query was %q", q)
+	}
+	if strings.Contains(q, "page=") {
+		t.Errorf("page must not be sent when the caller omitted it; query was %q", q)
+	}
+}
+
+// The schema is the contract a caller reads before choosing a spelling. A handler
+// that forwards a parameter the schema never advertises is still unusable, so pin
+// both halves.
+func TestListTasks_SchemaAdvertisesOrderAndPage(t *testing.T) {
+	server := NewServer(ServerConfig{})
+	tool, ok := server.MCPServer().ListTools()["list_tasks"]
+	if !ok {
+		t.Fatal("list_tasks tool is not registered")
+	}
+	props := tool.Tool.InputSchema.Properties
+	for _, name := range []string{"order", "page"} {
+		if _, present := props[name]; !present {
+			t.Errorf("list_tasks schema must advertise %q, otherwise no caller can send it", name)
+		}
+	}
+}

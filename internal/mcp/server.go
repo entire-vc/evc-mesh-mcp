@@ -265,6 +265,8 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("search", mcpsdk.Description("Search in title and description.")),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results to return (default 50, max 200).")),
 		mcpsdk.WithString("sort", mcpsdk.Description("Sort field: created_at, updated_at, priority, due_date.")),
+		mcpsdk.WithString("order", mcpsdk.Description("Sort direction: asc (default) or desc. Without this, a project larger than `limit` returns its OLDEST tasks, so \"what changed recently\" walks come back empty and look clean. An invalid value is REFUSED by the API, not silently treated as asc.")),
+		mcpsdk.WithNumber("page", mcpsdk.Description("1-based page number (default 1). The response reports total_pages; without this parameter every page beyond the first was unreachable while the envelope kept advertising them.")),
 		mcpsdk.WithNumber("list_revision", mcpsdk.Description("The list_revision echoed back on a previous page of this same project-scoped walk (see the response's list_revision field). Pass it back to continue that walk. If the project's tasks changed since that page was issued, the call is REFUSED with list_revision_stale (HTTP 410) instead of silently returning an inconsistent page — restart pagination from page 1 (omit this field) on that error. Omit on the first page of a fresh walk. Ignored for workspace_id search.")),
 	), s.tracked("list_tasks", s.handleListTasks))
 
