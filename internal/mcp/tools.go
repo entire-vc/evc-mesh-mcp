@@ -123,6 +123,24 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 	if sort := mcpsdk.ParseString(request, "sort", ""); sort != "" {
 		params["sort_by"] = sort
 	}
+	// `order` and `page` were absent from this tool's schema entirely, not
+	// merely dropped in transit — the REST layer has honoured `sort_dir`/`order`
+	// and `page` all along (pagination.Params). The visible cost was not a
+	// missing convenience: a project larger than `limit` answered every
+	// "what changed in the last day" walk with its OLDEST tasks and an
+	// otherwise well-formed envelope, so the caller read "nothing changed".
+	// Worse, that envelope reports total_pages, advertising pages this tool
+	// gave no way to reach.
+	//
+	// Deliberately NOT validated here. The API already refuses a bad direction
+	// by name, and a second copy of that rule in this layer is one more thing
+	// to drift out of step with it.
+	if order := mcpsdk.ParseString(request, "order", ""); order != "" {
+		params["order"] = order
+	}
+	if page := mcpsdk.ParseInt(request, "page", 0); page > 0 {
+		params["page"] = strconv.Itoa(page)
+	}
 
 	limit := mcpsdk.ParseInt(request, "limit", 50)
 	if limit > 0 {
