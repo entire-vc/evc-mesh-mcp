@@ -610,12 +610,26 @@ func (s *Server) registerAdvancedTools() {
 	// with its own marker dictionary — which is how a driver came to read its own
 	// instructional boilerplate back as a raised blocker (#84ab54fd).
 	s.mcpServer.AddTool(mcpsdk.NewTool("set_human_gate",
-		mcpsdk.WithDescription("Arm the human gate on a task: freeze it and record WHO is waiting, WHAT was asked, and WHAT you will do if nobody answers. Use INSTEAD of writing a '❓ Blocking @pavel' comment by hand — the marker still works, but this path records the whole ask on the task, so nothing has to re-read the thread. recommended_default is REQUIRED: a gate with no stated default can only ever be resolved by finding a human. Before arming, apply the reversibility gate — if the credential already exists, the action is reversible, or the ask belongs on someone else's card, do not arm."),
+		mcpsdk.WithDescription("Arm the human gate on a task: freeze it and record WHO is waiting, WHAT was asked, and WHAT you will do if nobody answers. Use INSTEAD of writing a '❓ Blocking @pavel' comment by hand — the marker still works, but this path records the whole ask on the task, so nothing has to re-read the thread. recommended_default is REQUIRED: a gate with no stated default can only ever be resolved by finding a human. You must answer four questions (credential_exists / reversible / blocked_by_other_task / customer_visible_now), each with one line of justification. The server REFUSES the arm when your own answers say nobody needs to be asked: if you hold the credential, the action is reversible, and nothing a customer sees or pays changes right now, capture a rollback anchor and just do it. If the blocker is another card, the server tells you to use add_dependency instead."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to gate.")),
 		mcpsdk.WithString("reason", mcpsdk.Required(), mcpsdk.Description("The question itself, in your own words.")),
 		mcpsdk.WithString("recommended_default", mcpsdk.Required(), mcpsdk.Description("What you will do if nobody answers. Required — an ask with no default cannot time out.")),
 		mcpsdk.WithString("class", mcpsdk.Description("'hard' (default, never auto-released) or 'soft' (released by timeout — the release does NOT answer the question).")),
 		mcpsdk.WithString("deadline", mcpsdk.Description("RFC3339 timestamp when recommended_default applies. Omit for no deadline.")),
+		// The four-question predicate (task #5d3dc714). The audit measured that 40-45% of
+		// asks to Pavel were decidable from a rule already written down — an access
+		// already in keys.env, the agent's own 403 read as a human's decision, an approval
+		// Pavel had already declined, or waiting on someone else's card. Each answer needs
+		// one line of justification: a bare bool is unreviewable, and answering these four
+		// implicitly, in your head, is exactly how they got answered wrongly.
+		mcpsdk.WithBoolean("credential_exists", mcpsdk.Required(), mcpsdk.Description("Do you ALREADY hold the credential or access this needs? Check ~/.config/agents/ and the fleet credentials doc before answering false — a service account the fleet created for the fleet is yours to use.")),
+		mcpsdk.WithString("credential_reason", mcpsdk.Required(), mcpsdk.Description("One line: which credential, and where you checked.")),
+		mcpsdk.WithBoolean("reversible", mcpsdk.Required(), mcpsdk.Description("Is there a rollback anchor — git revert, backup, snapshot, image tag? If you can MANUFACTURE one (take a backup first), the answer is true.")),
+		mcpsdk.WithString("reversible_reason", mcpsdk.Required(), mcpsdk.Description("One line: the exact rollback path, or why none exists.")),
+		mcpsdk.WithBoolean("blocked_by_other_task", mcpsdk.Required(), mcpsdk.Description("Is the thing you are waiting on actually ANOTHER card? If yes, the answer is add_dependency, not a gate — a blocks edge freezes the feed without adding anything to a human's queue.")),
+		mcpsdk.WithString("blocked_reason", mcpsdk.Required(), mcpsdk.Description("One line: which card, or why none.")),
+		mcpsdk.WithBoolean("customer_visible_now", mcpsdk.Required(), mcpsdk.Description("Does this change what a customer SEES or PAYS right now? A disabled gateway, an inactive flag or a reversible migration is NOT customer-visible; a rate that prints on invoices people already download is.")),
+		mcpsdk.WithString("customer_reason", mcpsdk.Required(), mcpsdk.Description("One line: what the customer would see, or why nothing changes for them now.")),
 	), s.tracked("set_human_gate", s.handleSetHumanGate))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("clear_human_gate",

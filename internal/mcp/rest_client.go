@@ -1151,10 +1151,13 @@ func (c *RESTClient) ExtendCheckout(ctx context.Context, taskID, checkoutToken s
 //
 // recommendedDefault is required by the server (422 without it) — a gate with no stated
 // default can never time out, so it can only ever be resolved by finding a human.
-func (c *RESTClient) SetHumanGate(ctx context.Context, taskID, reason, recommendedDefault, class string, deadline *time.Time) (map[string]any, error) {
+func (c *RESTClient) SetHumanGate(ctx context.Context, taskID, reason, recommendedDefault, class string, deadline *time.Time, predicate map[string]any) (map[string]any, error) {
 	body := map[string]any{
 		"reason":              reason,
 		"recommended_default": recommendedDefault,
+	}
+	if len(predicate) > 0 {
+		body["predicate"] = predicate
 	}
 	if class != "" {
 		body["class"] = class
