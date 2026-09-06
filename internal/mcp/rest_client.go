@@ -1142,6 +1142,44 @@ func (c *RESTClient) ExtendCheckout(ctx context.Context, taskID, checkoutToken s
 	return result, nil
 }
 
+// SetHumanGate arms the "this card is waiting on a human" gate (task #4545660b).
+//
+// gate_author is deliberately NOT a parameter: the server takes it from the agent key
+// on this request. Every one of the 21 implementations this replaces read WHO was
+// waiting out of comment text, i.e. out of a claim anyone could type; here it is an
+// identity the caller cannot choose.
+//
+// recommendedDefault is required by the server (422 without it) — a gate with no stated
+// default can never time out, so it can only ever be resolved by finding a human.
+func (c *RESTClient) SetHumanGate(ctx context.Context, taskID, reason, recommendedDefault, class string, deadline *time.Time) (map[string]any, error) {
+	body := map[string]any{
+		"reason":              reason,
+		"recommended_default": recommendedDefault,
+	}
+	if class != "" {
+		body["class"] = class
+	}
+	if deadline != nil {
+		body["deadline"] = deadline.UTC().Format(time.RFC3339)
+	}
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/human-gate", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// ClearHumanGate releases the gate. The server enforces user-only clearing, so an agent
+// key gets a 403 whose message names the exits it CAN reach (withdraw its own marker, or
+// record a decision) — that refusal text is the point, not an obstacle to route around.
+func (c *RESTClient) ClearHumanGate(ctx context.Context, taskID string) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodDelete, "/api/v1/tasks/"+taskID+"/human-gate", nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // ExportWorkspaceConfig exports workspace configuration as YAML text.
 // reportSessionBody is the JSON body for POST /api/v1/agents/me/sessions/report.
 type reportSessionBody struct {
