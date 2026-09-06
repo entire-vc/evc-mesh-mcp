@@ -1963,9 +1963,18 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	if pp.ApplyDecay {
 		applyDecay = true
 	}
-	if pp.MinImportance > 0 {
-		minImportance = pp.MinImportance
-	}
+	// Same rule as order_by and limit below, and it was the one param that still
+	// broke it: a preset fills in what the caller left unsaid, it does not overrule
+	// what the caller said. Without the hasArgument guard an explicit
+	// min_importance was silently replaced whenever the classifier picked a profile
+	// that carries one — `factual` sets 0.5, so a caller asking for 0.3 got 0.5 and
+	// no session-checkpoints, with nothing in the response to say why.
+	//
+	// Measured through the real stdio path 2026-09-06 on one query: explicit
+	// min_importance=0.3 returned 0 checkpoints (preset won), the same query under
+	// the default profile returned 3. Task #a9752575.
+	minImportance = resolveProfileMinImportance(pp.MinImportance, minImportance,
+		hasArgument(request, "min_importance"))
 	// Same rule as the limit below, and for the same reason: a preset fills in
 	// what the caller left unsaid, it does not overrule what the caller said.
 	// This one was still an unconditional override — `factual` sets

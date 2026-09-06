@@ -158,3 +158,23 @@ func GetProfileParams(profile RecallProfile) ProfileParams {
 // recall_min_importance_default_test.go for why a stricter value here silently
 // replaces the server's instead of deferring to it (#a9752575).
 const recallDefaultMinImportance = 0.3
+
+// resolveProfileMinImportance applies the same precedence rule as
+// resolveProfileOrderBy and the limit guard: a preset fills in what the caller
+// left unsaid, it never overrules what the caller said.
+//
+// It exists as a shared function rather than an inline expression so the test
+// can exercise the code the handler actually runs. An inline copy in the test
+// would stay green while the handler regressed — which is the failure this whole
+// family of precedence bugs keeps taking.
+//
+// min_importance was the last recall parameter still breaking the rule: the
+// `factual` preset carries 0.5, so a caller who explicitly asked for 0.3 got 0.5
+// and lost every kind:session-checkpoint (scored 0.30) with nothing in the
+// response to say why (#a9752575).
+func resolveProfileMinImportance(presetMin, callerMin float64, callerSupplied bool) float64 {
+	if presetMin > 0 && !callerSupplied {
+		return presetMin
+	}
+	return callerMin
+}
