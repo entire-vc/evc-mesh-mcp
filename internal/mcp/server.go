@@ -399,12 +399,21 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithDescription("Save knowledge to persistent memory. Use for decisions, conventions, preferences. UPSERT by key — calling with same key updates the existing entry. "+
 			"Content is screened on write and REFUSED with a named reason (never silently stripped or stored) if it contains invisible/bidi characters, an LLM role tag, an instruction to ignore previous/system instructions, a PEM private key, a prefixed API token (sk-/ghp_/xox*/AKIA), or a literal assignment to a *_PASSWORD/_SECRET/_TOKEN/_API_KEY name. "+
 			"LIMITATION — this screen is partial and must not be relied on as a secret filter: it CANNOT see a secret that has no recognisable prefix and no field name next to it (a bare value pasted on its own line), nor names it does not know. Do not paste credentials here on the assumption they will be caught; record where a secret lives, never its value."),
-		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Slug key for UPSERT (e.g. 'api-convention', 'license-decision').")),
+		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Slug key for UPSERT (e.g. 'api-convention', 'license-decision'). "+
+			"ENFORCED server-side as ^[a-z0-9][a-z0-9-]*[a-z0-9]$ — lowercase alphanumeric and hyphens only, at least two characters, no leading or trailing hyphen. "+
+			"Hyphens, NEVER colons: a colon-delimited key such as 'episode:bill:2026-09-07' is REFUSED with a validation error — it is not normalised or accepted with a warning.")),
 		mcpsdk.WithString("content", mcpsdk.Required(), mcpsdk.Description("What to remember (markdown).")),
 		mcpsdk.WithString("scope", mcpsdk.Description("workspace | project | agent (default: project).")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project ID (required for project scope).")),
-		mcpsdk.WithArray("tags", mcpsdk.Description("Tags for categorization and filtering."), mcpsdk.WithStringItems()),
-		mcpsdk.WithNumber("relevance", mcpsdk.Description("Relevance score 0-1 (default 1.0).")),
+		mcpsdk.WithArray("tags", mcpsdk.Description("Tags for categorization and filtering. "+
+			"A kind: tag also SETS importance_score, which is what decides whether recall returns this entry at its default threshold of 0.3 — so the tag you choose is a retrieval decision, not a label. "+
+			"Base score by kind: kind:pinned 1.0, kind:incident 0.85, kind:decision 0.80, kind:preference 0.80, kind:learning 0.70, kind:fact 0.60, no kind: tag 0.50, kind:session-checkpoint 0.30. "+
+			"kind:session-checkpoint is a DOWNGRADE that overrides every other kind: tag on the same entry — tagging it alongside kind:decision yields 0.30, not 0.80. "+
+			"Any kind: value not in that list (e.g. kind:canonical-decision) is unrecognised and scores 0.50. "+
+			"Two boosts of +0.10 each, capped at 1.0: content mentioning icp / architecture / license / security / money, and a relevance:<n> tag whose n is >= 0.8."), mcpsdk.WithStringItems()),
+		mcpsdk.WithNumber("relevance", mcpsdk.Description("Relevance score 0-1 (default 1.0 when omitted). "+
+			"NOT the same field as importance_score: relevance is a caller-set ranking hint, importance_score is computed from tags (see tags) and is the field min_importance filters on. "+
+			"A relevance:<n> TAG with n >= 0.8 does feed importance_score by +0.10; this numeric parameter does not.")),
 		mcpsdk.WithString("expires_at", mcpsdk.Description("RFC3339 timestamp or Go duration (e.g. '72h') when this memory should expire.")),
 		mcpsdk.WithString("source_url", mcpsdk.Description("Optional URL/path to the source of this knowledge (task ID, PR, file path).")),
 		mcpsdk.WithString("source_task_id", mcpsdk.Description("UUID of the Mesh task that produced this memory. Auto-populated from the fiddler side-channel (FIDDLER_STATE_FILE) or active checkout. Enables Amendment 2/3 KG edge hooks.")),
@@ -422,7 +431,8 @@ func (s *Server) registerCoreTools() {
 	s.mcpServer.AddTool(mcpsdk.NewTool("set_project_knowledge",
 		mcpsdk.WithDescription("Write a structured fact to project knowledge. UPSERT by key — calling with same key updates the existing entry. Use for deploy URLs, stack conventions, gotchas. These facts are visible via get_project_knowledge."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID to store knowledge for.")),
-		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Slug key for UPSERT (e.g. 'deploy-url', 'stack-convention').")),
+		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Slug key for UPSERT (e.g. 'deploy-url', 'stack-convention'). "+
+			"Same enforced pattern as remember: ^[a-z0-9][a-z0-9-]*[a-z0-9]$ — hyphens, NEVER colons; a colon-delimited key is REFUSED, not normalised.")),
 		mcpsdk.WithString("value", mcpsdk.Required(), mcpsdk.Description("The knowledge to store (markdown, max 4000 chars).")),
 		mcpsdk.WithString("category", mcpsdk.Description("Optional category: deploy, stack, conventions, gotchas, api, auth, etc.")),
 		mcpsdk.WithArray("tags", mcpsdk.Description("Additional tags for filtering."), mcpsdk.WithStringItems()),
