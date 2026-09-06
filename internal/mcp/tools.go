@@ -2380,6 +2380,10 @@ type setHumanGateArgs struct {
 	RecommendedDefault string
 	Class              string
 	Deadline           *time.Time
+	// Predicate is the four-question check (task #5d3dc714). Sent to the server, which
+	// decides — the client does NOT pre-judge it. Deliberate: two implementations of one
+	// predicate drift, and the server's answer is the one that governs the write.
+	Predicate map[string]any
 }
 
 // parseSetHumanGateArgs validates locally, BEFORE the round trip. Not because the server
@@ -2422,12 +2426,38 @@ func parseSetHumanGateArgs(request mcpsdk.CallToolRequest) (*setHumanGateArgs, s
 		deadline = &parsed
 	}
 
+	// Four-question predicate. Validated for PRESENCE here (so the caller is told what
+	// to write, in words the HTTP 422 cannot carry), but never EVALUATED here — the
+	// server decides. A second copy of the decision rule in the client is exactly the
+	// drift this fleet keeps paying for.
+	predicate := map[string]any{}
+	for _, f := range []struct {
+		boolKey, reasonKey string
+	}{
+		{"credential_exists", "credential_reason"},
+		{"reversible", "reversible_reason"},
+		{"blocked_by_other_task", "blocked_reason"},
+		{"customer_visible_now", "customer_reason"},
+	} {
+		reason := strings.TrimSpace(mcpsdk.ParseString(request, f.reasonKey, ""))
+		if reason == "" {
+			return nil, fmt.Sprintf(
+				"%s is required — one line saying why you answered %s as you did. "+
+					"The audit found 40-45%% of asks to a human were decidable from a rule "+
+					"already written down; a bare true/false with no reason is what made "+
+					"those invisible.", f.reasonKey, f.boolKey)
+		}
+		predicate[f.boolKey] = mcpsdk.ParseBoolean(request, f.boolKey, false)
+		predicate[f.reasonKey] = reason
+	}
+
 	return &setHumanGateArgs{
 		TaskID:             taskID,
 		Reason:             reason,
 		RecommendedDefault: recommendedDefault,
 		Class:              class,
 		Deadline:           deadline,
+		Predicate:          predicate,
 	}, ""
 }
 
@@ -2438,7 +2468,7 @@ func (s *Server) handleSetHumanGate(ctx context.Context, request mcpsdk.CallTool
 	}
 
 	result, err := s.getRESTClient(ctx).SetHumanGate(ctx, args.TaskID, args.Reason,
-		args.RecommendedDefault, args.Class, args.Deadline)
+		args.RecommendedDefault, args.Class, args.Deadline, args.Predicate)
 	if err != nil {
 		return errResult("set_human_gate failed: %v", err)
 	}
