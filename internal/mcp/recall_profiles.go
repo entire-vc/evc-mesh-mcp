@@ -152,3 +152,9 @@ func GetProfileParams(profile RecallProfile) ProfileParams {
 		return ProfileParams{}
 	}
 }
+
+// recallDefaultMinImportance is this client's fallback when the caller passes no
+// min_importance. It must never exceed the server's own default — see
+// recall_min_importance_default_test.go for why a stricter value here silently
+// replaces the server's instead of deferring to it (#a9752575).
+const recallDefaultMinImportance = 0.3
