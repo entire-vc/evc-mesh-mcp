@@ -604,6 +604,25 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithNumber("ttl_minutes", mcpsdk.Description("New lock TTL in minutes from now (default 120, server clamps to [1, 240]).")),
 	), s.tracked("extend_checkout", s.handleExtendCheckout))
 
+	// --- Human gate (task #4545660b) ---
+	// The ONE way an agent says "this card is waiting on a human". Before this,
+	// "waiting on Pavel" was re-derived in 21 places by grepping comment text, each
+	// with its own marker dictionary — which is how a driver came to read its own
+	// instructional boilerplate back as a raised blocker (#84ab54fd).
+	s.mcpServer.AddTool(mcpsdk.NewTool("set_human_gate",
+		mcpsdk.WithDescription("Arm the human gate on a task: freeze it and record WHO is waiting, WHAT was asked, and WHAT you will do if nobody answers. Use INSTEAD of writing a '❓ Blocking @pavel' comment by hand — the marker still works, but this path records the whole ask on the task, so nothing has to re-read the thread. recommended_default is REQUIRED: a gate with no stated default can only ever be resolved by finding a human. Before arming, apply the reversibility gate — if the credential already exists, the action is reversible, or the ask belongs on someone else's card, do not arm."),
+		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to gate.")),
+		mcpsdk.WithString("reason", mcpsdk.Required(), mcpsdk.Description("The question itself, in your own words.")),
+		mcpsdk.WithString("recommended_default", mcpsdk.Required(), mcpsdk.Description("What you will do if nobody answers. Required — an ask with no default cannot time out.")),
+		mcpsdk.WithString("class", mcpsdk.Description("'hard' (default, never auto-released) or 'soft' (released by timeout — the release does NOT answer the question).")),
+		mcpsdk.WithString("deadline", mcpsdk.Description("RFC3339 timestamp when recommended_default applies. Omit for no deadline.")),
+	), s.tracked("set_human_gate", s.handleSetHumanGate))
+
+	s.mcpServer.AddTool(mcpsdk.NewTool("clear_human_gate",
+		mcpsdk.WithDescription("Release a human gate. Server-enforced user-only: an agent key gets a 403 that names the exits an agent CAN reach — withdraw your own marker with a short negator comment if you raised it, or record the human's answer via a human-gate decision. Read human_gate_info.clearable_by_owner on get_task first."),
+		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID whose gate to clear.")),
+	), s.tracked("clear_human_gate", s.handleClearHumanGate))
+
 	// --- Comments & Artifacts ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_comments",
 		mcpsdk.WithDescription("List comments on a task. Paginated: call again with a higher `page` to read a thread longer than `limit`."),

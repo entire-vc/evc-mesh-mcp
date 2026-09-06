@@ -2366,6 +2366,101 @@ func (s *Server) handleForget(ctx context.Context, request mcpsdk.CallToolReques
 }
 
 // ============================================================================
+// set_human_gate / clear_human_gate
+// ============================================================================
+
+// handleSetHumanGate is the explicit arming path (task #4545660b). It validates the two
+// fields locally BEFORE the round trip, not because the server would miss them — it
+// returns 422 naming the field — but because the local message can say what to do next
+// while the HTTP one can only say what was wrong.
+// setHumanGateArgs is the parsed, validated shape of a set_human_gate call.
+type setHumanGateArgs struct {
+	TaskID             string
+	Reason             string
+	RecommendedDefault string
+	Class              string
+	Deadline           *time.Time
+}
+
+// parseSetHumanGateArgs validates locally, BEFORE the round trip. Not because the server
+// would miss anything — it returns 422 naming the field — but because the local message
+// can say what to WRITE next, while the HTTP one can only say what was wrong. An agent
+// that learns only "recommended_default: required" retries the same call verbatim or
+// concludes it may not raise a gate at all; that misreading is the failure this card is
+// about. Split out of the handler so both the refusals and the accept path are testable
+// without a network.
+func parseSetHumanGateArgs(request mcpsdk.CallToolRequest) (*setHumanGateArgs, string) {
+	taskID := strings.TrimSpace(mcpsdk.ParseString(request, "task_id", ""))
+	if taskID == "" {
+		return nil, "task_id is required"
+	}
+	reason := strings.TrimSpace(mcpsdk.ParseString(request, "reason", ""))
+	if reason == "" {
+		return nil, "reason is required — a gate with no stated question cannot be answered by anyone but you"
+	}
+	recommendedDefault := strings.TrimSpace(mcpsdk.ParseString(request, "recommended_default", ""))
+	if recommendedDefault == "" {
+		return nil, "recommended_default is required — without it this gate can never time out, " +
+			"so it can only ever be resolved by finding a human. State what you will do if nobody " +
+			"answers (e.g. \"merge; the gateway is inactive so no client can be charged\")."
+	}
+
+	class := strings.TrimSpace(mcpsdk.ParseString(request, "class", ""))
+	if class != "" && class != "hard" && class != "soft" {
+		return nil, fmt.Sprintf("class must be 'hard' or 'soft' (got %q)", class)
+	}
+
+	var deadline *time.Time
+	if raw := strings.TrimSpace(mcpsdk.ParseString(request, "deadline", "")); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			// Refused, not silently dropped: a deadline the caller believes they set,
+			// which silently became "no deadline", is the exact failure shape this
+			// whole card removes.
+			return nil, fmt.Sprintf("deadline %q is not RFC3339 (e.g. 2026-09-09T12:00:00Z): %v", raw, err)
+		}
+		deadline = &parsed
+	}
+
+	return &setHumanGateArgs{
+		TaskID:             taskID,
+		Reason:             reason,
+		RecommendedDefault: recommendedDefault,
+		Class:              class,
+		Deadline:           deadline,
+	}, ""
+}
+
+func (s *Server) handleSetHumanGate(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	args, refusal := parseSetHumanGateArgs(request)
+	if refusal != "" {
+		return errResult("%s", refusal)
+	}
+
+	result, err := s.getRESTClient(ctx).SetHumanGate(ctx, args.TaskID, args.Reason,
+		args.RecommendedDefault, args.Class, args.Deadline)
+	if err != nil {
+		return errResult("set_human_gate failed: %v", err)
+	}
+	return jsonResult(result)
+}
+
+func (s *Server) handleClearHumanGate(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	taskID := mcpsdk.ParseString(request, "task_id", "")
+	if taskID == "" {
+		return errResult("task_id is required")
+	}
+	result, err := s.getRESTClient(ctx).ClearHumanGate(ctx, taskID)
+	if err != nil {
+		// The server's 403 body already names the agent-reachable exits; pass it
+		// through verbatim rather than replacing it with a generic "forbidden", which
+		// is what agents read as "no exit exists" and escalate.
+		return errResult("clear_human_gate failed: %v", err)
+	}
+	return jsonResult(result)
+}
+
+// ============================================================================
 // checkout_task / release_task
 // ============================================================================
 
