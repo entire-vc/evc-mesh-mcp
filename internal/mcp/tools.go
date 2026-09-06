@@ -1932,7 +1932,22 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	since := mcpsdk.ParseString(request, "since", "")
 	until := mcpsdk.ParseString(request, "until", "")
 	relevanceMin := mcpsdk.ParseFloat64(request, "relevance_min", 0)
-	minImportance := mcpsdk.ParseFloat64(request, "min_importance", 0.4)
+	// 0.3, not 0.4: this fallback must match the server's defaultMinImportance,
+	// which is itself pinned to the LOWEST score the server mints
+	// (kind:session-checkpoint = 0.30). At 0.4 this line silently defeated that
+	// server default for every agent — ParseFloat64 FILLS THE FIELD IN, so the
+	// request always carried min_importance and the server's "caller omitted it"
+	// branch could never run. Measured on prod 2026-09-06: 89 of 2527 active
+	// memories sat below 0.4 and all 89 were session-checkpoints, i.e. the one
+	// class written for the next session to read was invisible to a plain
+	// recall(). Task #a9752575.
+	//
+	// ⚠️ This is a SECOND copy of a default that the server also owns, which is
+	// the drift class CLAUDE-workflow §1q warns about. The structural fix is for
+	// this client to send nothing when the caller said nothing and let the server
+	// decide; that needs ImportanceMin to become a pointer through the shared
+	// request builder, so it is filed separately rather than smuggled in here.
+	minImportance := mcpsdk.ParseFloat64(request, "min_importance", recallDefaultMinImportance)
 	applyDecay := mcpsdk.ParseBoolean(request, "apply_recency_decay", false)
 	orderBy := mcpsdk.ParseString(request, "order_by", "")
 	includeExpired := mcpsdk.ParseBoolean(request, "include_expired", false)

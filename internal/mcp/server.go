@@ -377,7 +377,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("since", mcpsdk.Description("Return memories created at or after this RFC3339 timestamp.")),
 		mcpsdk.WithString("until", mcpsdk.Description("Return memories created at or before this RFC3339 timestamp.")),
 		mcpsdk.WithNumber("relevance_min", mcpsdk.Description("Minimum relevance score (0-1).")),
-		mcpsdk.WithNumber("min_importance", mcpsdk.Description("Minimum importance_score threshold (0-1, default 0.4). Entries below this are excluded (e.g. kind:session-checkpoint = 0.3). Pass 0 to disable filtering and retrieve all entries including low-importance ones.")),
+		mcpsdk.WithNumber("min_importance", mcpsdk.Description("Minimum importance_score threshold (0-1, default 0.3 — matches the lowest score the server assigns, kind:session-checkpoint, so prior-session hand-offs are returned without an override). Raise it to exclude low-value entries; pass 0 to disable filtering entirely.")),
 		mcpsdk.WithBoolean("apply_recency_decay", mcpsdk.Description("Sort by relevance * 0.95^days_since_created."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithString("order_by", mcpsdk.Description("Sort order: created_at:desc (default), created_at:asc, relevance:desc, decayed_relevance:desc.")),
 		mcpsdk.WithBoolean("include_expired", mcpsdk.Description("Include expired memories (default false)."), mcpsdk.DefaultBool(false)),
