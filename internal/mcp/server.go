@@ -640,6 +640,11 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithString("blocked_reason", mcpsdk.Required(), mcpsdk.Description("One line: which card, or why none.")),
 		mcpsdk.WithBoolean("customer_visible_now", mcpsdk.Required(), mcpsdk.Description("Does this change what a customer SEES or PAYS right now? A disabled gateway, an inactive flag or a reversible migration is NOT customer-visible; a rate that prints on invoices people already download is.")),
 		mcpsdk.WithString("customer_reason", mcpsdk.Required(), mcpsdk.Description("One line: what the customer would see, or why nothing changes for them now.")),
+		// copy_tier (task 1.17a, §1r.A). Optional in general, but the server REFUSES the
+		// arm with no copy_tier when `reason` reads like a copy-approval question — an
+		// agent that hits that refusal should answer it and retry, not treat it as a
+		// second unrelated field to fill in.
+		mcpsdk.WithString("copy_tier", mcpsdk.Description("Only when this ask is about VISIBLE PRODUCT COPY (a label, a page's prose, a message users read) — otherwise omit entirely. Answer three questions: (1) is this the company's voice going OUT, or a caption inside the interface? (2) would someone who never opened this screen notice the change? (3) does the text carry a promise — legal, price, product? Any \"yes\" → tier \"A\" (external/legal/marketing copy, a promise) and Pavel decides. All \"no\" → tier \"B\" (a field caption, menu item, system or validation message, section name, an existing dictionary string) and the product lead ships it without asking — Pavel sees it after the fact in the weekly digest. The server refuses tier \"B\" outright: ship it yourself, tag the task `copy:b`, quote the exact string in your closing comment. Omitting copy_tier on an ask that reads as copy-approval is refused too, naming this field — state the tier and retry.")),
 	), s.tracked("set_human_gate", s.handleSetHumanGate))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("clear_human_gate",
