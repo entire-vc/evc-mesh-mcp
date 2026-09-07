@@ -339,7 +339,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("body", mcpsdk.Required(), mcpsdk.Description("Comment body (markdown supported).")),
 		mcpsdk.WithBoolean("is_internal", mcpsdk.Description("Mark as internal (agent-only visible)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithString("parent_comment_id", mcpsdk.Description("Parent comment ID for threading.")),
-		mcpsdk.WithObject("metadata", mcpsdk.Description("Additional metadata as key-value pairs.")),
+		mcpsdk.WithObject("metadata", mcpsdk.Description("Additional metadata as key-value pairs. Set {\"informational\": true} on a comment you write on a task that is ALREADY done/cancelled when your comment needs no action from its assignee — a plain acknowledgement, \"noted\", \"nothing further from me\" — to stop the server's own follow-up-card mechanism from opening one for it (task #df22e695). Omit it (default: not flagged) for anything that names a problem, asks a question, or reports a finding — an unflagged comment on a closed card still opens a follow-up as before, so forgetting the flag costs nothing. The flag is IGNORED if your comment also contains a `❓ Blocking @pavel` marker: a live ask to a human is never suppressed by this field.")),
 	), s.tracked("add_comment", s.handleAddComment))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("add_vcs_link",
