@@ -202,3 +202,45 @@ func TestSetHumanGate_ForwardsPredicateWithoutJudgingIt(t *testing.T) {
 			len(args.Predicate), args.Predicate)
 	}
 }
+
+// Task 1.17a. copy_tier is optional and NOT judged client-side — same reasoning as
+// TestSetHumanGate_ForwardsPredicateWithoutJudgingIt: whether a reason is copy-shaped
+// enough to REQUIRE the field is the server's regex, and a second copy here would drift.
+func TestSetHumanGate_CopyTierForwardedWhenGiven(t *testing.T) {
+	req := mcpsdk.CallToolRequest{}
+	req.Params.Arguments = predicateArgs(map[string]any{
+		"task_id": "t", "reason": "апрув видимого текста: подписи пунктов меню",
+		"recommended_default": "закрываю сам под тиром B", "copy_tier": "B",
+	})
+
+	args, refusal := parseSetHumanGateArgs(req)
+	if refusal != "" {
+		t.Fatalf("client must not pre-judge copy_tier; got refusal: %s", refusal)
+	}
+	if args.Predicate["copy_tier"] != "B" {
+		t.Errorf("copy_tier not forwarded: %+v", args.Predicate)
+	}
+	if len(args.Predicate) != 9 {
+		t.Errorf("copy_tier must add exactly one key on top of the four answers, got %d: %+v",
+			len(args.Predicate), args.Predicate)
+	}
+}
+
+// An omitted copy_tier must be genuinely ABSENT from the forwarded predicate, not sent
+// as an empty string — the server tells "not answered" (may or may not be required,
+// depends on `reason`) apart from "answered empty" by whether the key exists at all.
+func TestSetHumanGate_CopyTierOmittedIsAbsentNotEmptyString(t *testing.T) {
+	req := mcpsdk.CallToolRequest{}
+	req.Params.Arguments = predicateArgs(map[string]any{
+		"task_id": "t", "reason": "мёржим сейчас или ждём?", "recommended_default": "d",
+	})
+
+	args, refusal := parseSetHumanGateArgs(req)
+	if refusal != "" {
+		t.Fatalf("unexpected refusal: %s", refusal)
+	}
+	if _, present := args.Predicate["copy_tier"]; present {
+		t.Errorf("omitted copy_tier must not appear in the forwarded predicate at all; got %+v",
+			args.Predicate)
+	}
+}

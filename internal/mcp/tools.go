@@ -2475,6 +2475,14 @@ func parseSetHumanGateArgs(request mcpsdk.CallToolRequest) (*setHumanGateArgs, s
 		predicate[f.reasonKey] = reason
 	}
 
+	// copy_tier (task 1.17a). Optional here — the server is the one place that knows
+	// whether `reason` is copy-shaped and this field is therefore required; duplicating
+	// that regex client-side would drift from the server's copy of it (the same
+	// argument that keeps Decide() itself server-only, see setHumanGateArgs.Predicate).
+	if copyTier := strings.TrimSpace(mcpsdk.ParseString(request, "copy_tier", "")); copyTier != "" {
+		predicate["copy_tier"] = copyTier
+	}
+
 	return &setHumanGateArgs{
 		TaskID:             taskID,
 		Reason:             reason,
