@@ -292,6 +292,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithObject("custom_fields", mcpsdk.Description("Custom field values as key-value pairs.")),
 		mcpsdk.WithString("parent_task_id", mcpsdk.Description("Parent task ID for subtask.")),
 		mcpsdk.WithString("due_date", mcpsdk.Description("Due date in RFC3339 format.")),
+		mcpsdk.WithString("start_after", mcpsdk.Description("Don't surface/feed this task before this RFC3339 timestamp (e.g. a scheduled retry). Independent of due_date.")),
 		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours for the task.")),
 		mcpsdk.WithString("delegation_level", mcpsdk.Description("Delegation level: auto, review, supervised.")),
 	), s.tracked("create_task", s.handleCreateTask))
@@ -305,6 +306,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithArray("labels", mcpsdk.Description("New labels."), mcpsdk.WithStringItems()),
 		mcpsdk.WithObject("custom_fields", mcpsdk.Description("Custom field values to update.")),
 		mcpsdk.WithString("due_date", mcpsdk.Description("Due date in RFC3339 format.")),
+		mcpsdk.WithString("start_after", mcpsdk.Description("Don't surface/feed this task before this RFC3339 timestamp. Independent of due_date.")),
 		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours.")),
 		mcpsdk.WithString("delegation_level", mcpsdk.Description("Routing after work: auto, review, or supervised.")),
 		mcpsdk.WithBoolean("completion_signal", mcpsdk.Description("Mark agent-side work as finished.")),
@@ -586,6 +588,7 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithArray("labels", mcpsdk.Description("Labels for the subtask.")),
 		mcpsdk.WithObject("custom_fields", mcpsdk.Description("Custom field values, keyed by field slug.")),
 		mcpsdk.WithString("due_date", mcpsdk.Description("Due date, RFC3339 (e.g. 2026-08-10T12:00:00Z).")),
+		mcpsdk.WithString("start_after", mcpsdk.Description("Don't surface/feed this subtask before this RFC3339 timestamp. Independent of due_date.")),
 		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours.")),
 	), s.tracked("create_subtask", s.handleCreateSubtask))
 
