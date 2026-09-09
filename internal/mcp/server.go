@@ -648,7 +648,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("set_human_gate", s.handleSetHumanGate))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("clear_human_gate",
-		mcpsdk.WithDescription("Release a human gate. Server-enforced user-only: an agent key gets a 403 that names the exits an agent CAN reach — withdraw your own marker with a short negator comment if you raised it, or record the human's answer via a human-gate decision. Read human_gate_info.clearable_by_owner on get_task first."),
+		mcpsdk.WithDescription("Release a human gate. Read human_gate_info on get_task first and go by clear_path. clear_path=\"clear_endpoint\" means YOU armed this gate through set_human_gate and it carries no marker comment — this tool releases it, and a withdrawal comment would be a silent no-op. clear_path=\"withdraw_marker\" means the ask lives in a \"Blocking @\" comment: this tool refuses, and you take it down by posting a short negator comment instead. Everything else is user-only — a gate a human armed, or one raw-armed via PATCH/UI with no author — and an agent key gets a 403 naming the exit it CAN reach: record the human's answer via a human-gate decision. Re-read human_gate after any release; a posted comment is not a cleared gate."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID whose gate to clear.")),
 	), s.tracked("clear_human_gate", s.handleClearHumanGate))
 

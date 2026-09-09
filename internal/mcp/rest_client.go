@@ -1172,9 +1172,12 @@ func (c *RESTClient) SetHumanGate(ctx context.Context, taskID, reason, recommend
 	return result, nil
 }
 
-// ClearHumanGate releases the gate. The server enforces user-only clearing, so an agent
-// key gets a 403 whose message names the exits it CAN reach (withdraw its own marker, or
-// record a decision) — that refusal text is the point, not an obstacle to route around.
+// ClearHumanGate releases the gate. Two callers get through: any user, and the AGENT
+// that armed this gate through the API when it carries no marker comment
+// (human_gate_info.clear_path == "clear_endpoint", server task #f933dc05) — withdrawing
+// your own ask has always been a sanctioned exit, and that shape had no other one.
+// Everyone else gets a 403 whose message names the exits it CAN reach — that refusal
+// text is the point, not an obstacle to route around.
 func (c *RESTClient) ClearHumanGate(ctx context.Context, taskID string) (map[string]any, error) {
 	var result map[string]any
 	if err := c.doJSON(ctx, http.MethodDelete, "/api/v1/tasks/"+taskID+"/human-gate", nil, &result); err != nil {
