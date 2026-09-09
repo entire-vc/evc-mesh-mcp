@@ -351,6 +351,12 @@ func (s *Server) handleCreateTask(ctx context.Context, request mcpsdk.CallToolRe
 		}
 		body["due_date"] = dueDateStr
 	}
+	if startAfterStr := mcpsdk.ParseString(request, "start_after", ""); startAfterStr != "" {
+		if _, err := time.Parse(time.RFC3339, startAfterStr); err != nil {
+			return errResult("invalid start_after format: %v", err)
+		}
+		body["start_after"] = startAfterStr
+	}
 	if eh := mcpsdk.ParseFloat64(request, "estimated_hours", 0); eh > 0 {
 		body["estimated_hours"] = eh
 	}
@@ -412,6 +418,12 @@ func (s *Server) handleUpdateTask(ctx context.Context, request mcpsdk.CallToolRe
 			return errResult("invalid due_date format: %v", err)
 		}
 		body["due_date"] = dueDateStr
+	}
+	if startAfterStr := mcpsdk.ParseString(request, "start_after", ""); startAfterStr != "" {
+		if _, err := time.Parse(time.RFC3339, startAfterStr); err != nil {
+			return errResult("invalid start_after format: %v", err)
+		}
+		body["start_after"] = startAfterStr
 	}
 	if _, ok := args["estimated_hours"]; ok {
 		eh := mcpsdk.ParseFloat64(request, "estimated_hours", 0)
@@ -554,6 +566,12 @@ func (s *Server) handleCreateSubtask(ctx context.Context, request mcpsdk.CallToo
 			return errResult("invalid due_date format: %v", err)
 		}
 		body["due_date"] = dueDateStr
+	}
+	if startAfterStr := mcpsdk.ParseString(request, "start_after", ""); startAfterStr != "" {
+		if _, err := time.Parse(time.RFC3339, startAfterStr); err != nil {
+			return errResult("invalid start_after format: %v", err)
+		}
+		body["start_after"] = startAfterStr
 	}
 	if eh := mcpsdk.ParseFloat64(request, "estimated_hours", 0); eh > 0 {
 		body["estimated_hours"] = eh
