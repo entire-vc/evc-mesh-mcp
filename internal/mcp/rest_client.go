@@ -26,9 +26,11 @@ const defaultHTTPTimeout = 30 * time.Second
 
 // RESTClient wraps HTTP calls to the Mesh REST API on behalf of an agent.
 type RESTClient struct {
-	baseURL    string
-	agentKey   string
-	httpClient *http.Client
+	baseURL        string
+	agentKey       string
+	httpClient     *http.Client
+	forwardedHost  string
+	forwardedProto string
 }
 
 // NewRESTClient creates a new RESTClient for the given API base URL and agent key.
@@ -54,6 +56,47 @@ func NewRESTClient(baseURL, agentKey string) *RESTClient {
 			Timeout: httpTimeoutFromEnv(),
 		},
 	}
+}
+
+// SetForwardedOrigin configures the client to send X-Forwarded-Host and
+// X-Forwarded-Proto on every request, derived from publicURL (e.g.
+// "https://mesh.entire.host" or "https://mesh.entire.host/mcp" — any path is
+// ignored, only scheme+host matter).
+//
+// This exists for a colocated SSE transport whose baseURL is a loopback
+// address (http://localhost:8005): the backend's computeTaskURL /
+// computeDocumentURL build the canonical link it returns to callers from the
+// *incoming request's* Host (overridable only via X-Forwarded-Host), not from
+// any of its own config. Without this, a task/doc URL requested by an SSE
+// client comes back as http://localhost:<port>/t/<id> — correct from the
+// backend's point of view, useless to anyone off that VM (task #fe507dc9).
+//
+// A malformed or empty publicURL is a no-op: forwarding stays off and every
+// request keeps behaving exactly as before this method existed. That is
+// deliberate — a stdio client or a direct HTTPS caller already has the right
+// baseURL in its Host header and must not be forced through this path.
+func (c *RESTClient) SetForwardedOrigin(publicURL string) {
+	publicURL = strings.TrimSpace(publicURL)
+	if publicURL == "" {
+		return
+	}
+	u, err := url.Parse(publicURL)
+	if err != nil || u.Host == "" || u.Scheme == "" {
+		return
+	}
+	c.forwardedHost = u.Host
+	c.forwardedProto = u.Scheme
+}
+
+// applyForwardedHeaders sets X-Forwarded-Host/X-Forwarded-Proto on req when
+// SetForwardedOrigin configured a public origin. No-op otherwise, so a client
+// with no public origin sends exactly the headers it always has.
+func (c *RESTClient) applyForwardedHeaders(req *http.Request) {
+	if c.forwardedHost == "" {
+		return
+	}
+	req.Header.Set("X-Forwarded-Host", c.forwardedHost)
+	req.Header.Set("X-Forwarded-Proto", c.forwardedProto)
 }
 
 // httpTimeoutFromEnv resolves MESH_MCP_HTTP_TIMEOUT_SECS to a Duration,
@@ -93,6 +136,7 @@ func (c *RESTClient) do(ctx context.Context, method, path string, body any) (*ht
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	c.applyForwardedHeaders(req)
 
 	return c.httpClient.Do(req)
 }
@@ -246,6 +290,7 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 
 	req.Header.Set("X-Agent-Key", c.agentKey)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	c.applyForwardedHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -801,6 +846,7 @@ func (c *RESTClient) doRaw(ctx context.Context, method, path, contentType string
 	if rawBody != nil {
 		req.Header.Set("Content-Type", contentType)
 	}
+	c.applyForwardedHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
