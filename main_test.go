@@ -167,6 +167,66 @@ func newTestSSEServer(t *testing.T, publicURL, basePath string) *sdkserver.SSESe
 	return sdkserver.NewSSEServer(srv.MCPServer(), advertiseOptions(publicURL, basePath)...)
 }
 
+// ---------------------------------------------------------------------------
+// agentSessionCache / serverRegistry — forwarded-origin wiring (task #fe507dc9)
+//
+// A colocated SSE transport dials apiURL over loopback (http://localhost:8005),
+// which is what makes the backend's computeTaskURL/computeDocumentURL echo
+// that loopback address back into every task/doc URL an SSE client receives —
+// useless off the VM. These two caches are where every per-connection
+// RESTClient in SSE mode gets built, so publicURL has to reach
+// SetForwardedOrigin from both, not just from main()'s own sharedRestClient.
+// ---------------------------------------------------------------------------
+
+func TestAgentSessionCache_ForwardsPublicOrigin(t *testing.T) {
+	var gotHost, gotProto string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Header.Get("X-Forwarded-Host")
+		gotProto = r.Header.Get("X-Forwarded-Proto")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":           "11111111-1111-1111-1111-111111111111",
+			"workspace_id": "22222222-2222-2222-2222-222222222222",
+			"name":         "linus",
+			"agent_type":   "agent",
+		})
+	}))
+	defer srv.Close()
+
+	cache := &agentSessionCache{apiURL: srv.URL, publicURL: "https://mesh.entire.host"}
+	if _, err := cache.GetOrAuthenticate(context.Background(), "agk_test"); err != nil {
+		t.Fatalf("GetOrAuthenticate: %v", err)
+	}
+	if gotHost != "mesh.entire.host" || gotProto != "https" {
+		t.Errorf("GetOrAuthenticate did not forward publicURL: X-Forwarded-Host=%q X-Forwarded-Proto=%q", gotHost, gotProto)
+	}
+}
+
+func TestServerRegistry_ForwardsPublicOrigin(t *testing.T) {
+	var gotHost, gotProto string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Header.Get("X-Forwarded-Host")
+		gotProto = r.Header.Get("X-Forwarded-Proto")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "task-1"})
+	}))
+	defer srv.Close()
+
+	reg := &serverRegistry{apiURL: srv.URL, publicURL: "https://mesh.entire.host"}
+	client := reg.GetClient("agk_test")
+	if _, err := client.GetTask(context.Background(), "task-1"); err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if gotHost != "mesh.entire.host" || gotProto != "https" {
+		t.Errorf("serverRegistry.GetClient did not forward publicURL: X-Forwarded-Host=%q X-Forwarded-Proto=%q", gotHost, gotProto)
+	}
+
+	// Cached lookups must return the same, already-configured client.
+	if reg.GetClient("agk_test") != client {
+		t.Error("GetClient returned a different instance on cache hit")
+	}
+}
+
 // A client that connects over a published container port or a reverse proxy has
 // to be told where to POST its messages. The listen address must never be the
 // answer: 0.0.0.0 is a wildcard bind, not somewhere a client can dial.

@@ -292,3 +292,67 @@ func TestNewRESTClient_UsesEnvTimeout(t *testing.T) {
 		t.Errorf("NewRESTClient did not apply env timeout: got %v, want 90s", c.httpClient.Timeout)
 	}
 }
+
+// TestSetForwardedOrigin_AddsHeaders reproduces task #fe507dc9: a colocated
+// SSE transport dials the backend over loopback, and without a forwarded
+// origin header the backend echoes that loopback address back into every
+// task/doc URL it returns. SetForwardedOrigin exists so the RESTClient can
+// tell the backend what its own public address really is.
+func TestSetForwardedOrigin_AddsHeaders(t *testing.T) {
+	var gotHost, gotProto string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Header.Get("X-Forwarded-Host")
+		gotProto = r.Header.Get("X-Forwarded-Proto")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	c := NewRESTClient(srv.URL, "test-key")
+	c.SetForwardedOrigin("https://mesh.entire.host/mcp")
+
+	if err := c.doJSON(context.Background(), http.MethodGet, "/health", nil, nil); err != nil {
+		t.Fatalf("doJSON: %v", err)
+	}
+	if gotHost != "mesh.entire.host" {
+		t.Errorf("X-Forwarded-Host = %q, want %q", gotHost, "mesh.entire.host")
+	}
+	if gotProto != "https" {
+		t.Errorf("X-Forwarded-Proto = %q, want %q", gotProto, "https")
+	}
+}
+
+// TestSetForwardedOrigin_Unset confirms the no-op default: a client nobody
+// called SetForwardedOrigin on (every stdio client, every direct HTTPS
+// caller) must send exactly the headers it always has — no
+// X-Forwarded-Host/-Proto appearing out of nowhere.
+func TestSetForwardedOrigin_Unset(t *testing.T) {
+	var sawHost bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawHost = r.Header.Get("X-Forwarded-Host") != ""
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	c := NewRESTClient(srv.URL, "test-key")
+	if err := c.doJSON(context.Background(), http.MethodGet, "/health", nil, nil); err != nil {
+		t.Fatalf("doJSON: %v", err)
+	}
+	if sawHost {
+		t.Errorf("X-Forwarded-Host present with no SetForwardedOrigin call")
+	}
+}
+
+// TestSetForwardedOrigin_MalformedIsNoOp covers empty and unparseable
+// publicURL values — both must leave forwarding off rather than panic or
+// send a garbage header.
+func TestSetForwardedOrigin_MalformedIsNoOp(t *testing.T) {
+	for _, in := range []string{"", "   ", "not a url", "/just/a/path", "mesh.entire.host"} {
+		c := NewRESTClient("http://example.invalid", "key")
+		c.SetForwardedOrigin(in)
+		if c.forwardedHost != "" {
+			t.Errorf("SetForwardedOrigin(%q) set forwardedHost = %q, want empty", in, c.forwardedHost)
+		}
+	}
+}

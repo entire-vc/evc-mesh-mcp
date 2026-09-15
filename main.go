@@ -161,10 +161,20 @@ func main() {
 		}
 
 	case "sse":
+		// Public origin this instance is reachable at, if any. Resolved here
+		// (rather than down where it was previously only used for the SSE
+		// `endpoint` event) because agentSessionCache/serverRegistry below
+		// also need it: their RESTClients dial apiURL directly (typically a
+		// colocated loopback address), and without a forwarded-origin header
+		// the backend echoes that loopback address back into every task/doc
+		// URL it hands an SSE client (task #fe507dc9).
+		publicURL := strings.TrimSpace(os.Getenv("MESH_MCP_PUBLIC_URL"))
+
 		// SSE mode: per-connection authentication via HTTP headers/query params.
 		// Create session cache that authenticates via REST API.
 		sessionCache := &agentSessionCache{
-			apiURL: apiURL,
+			apiURL:    apiURL,
+			publicURL: publicURL,
 		}
 
 		// For SSE mode, create a server without a static session.
@@ -192,7 +202,8 @@ func main() {
 		// We need a server with per-session REST clients for SSE mode.
 		// Use a server registry: map agentKey -> *Server.
 		srvRegistry := &serverRegistry{
-			apiURL: apiURL,
+			apiURL:    apiURL,
+			publicURL: publicURL,
 		}
 
 		// Build a "router" server that dispatches to per-agent servers.
@@ -207,6 +218,7 @@ func main() {
 		// clients are injected via context above; NewServer just needs one to
 		// build a valid ServerConfig).
 		sharedRestClient := mcpserver.NewRESTClient(apiURL, "")
+		sharedRestClient.SetForwardedOrigin(publicURL)
 
 		// Two servers, two profiles: full (default, backward compatible — every
 		// existing client connects here) and core (a lighter tool set for
@@ -232,7 +244,6 @@ func main() {
 			port = "8081"
 		}
 		addr := host + ":" + port
-		publicURL := strings.TrimSpace(os.Getenv("MESH_MCP_PUBLIC_URL"))
 
 		// Shared SSE context function: injects the authenticated agent session
 		// and per-agent REST client. Used by both profile servers — which
@@ -475,9 +486,10 @@ func safeKeyPrefix(key string) string {
 
 // agentSessionCache caches authenticated agent sessions by agent key.
 type agentSessionCache struct {
-	mu     sync.RWMutex
-	cache  map[string]*mcpserver.AgentSession
-	apiURL string
+	mu        sync.RWMutex
+	cache     map[string]*mcpserver.AgentSession
+	apiURL    string
+	publicURL string
 }
 
 // GetOrAuthenticate returns a cached session or authenticates and caches it.
@@ -493,6 +505,7 @@ func (c *agentSessionCache) GetOrAuthenticate(ctx context.Context, key string) (
 
 	// Authenticate via REST API.
 	client := mcpserver.NewRESTClient(c.apiURL, key)
+	client.SetForwardedOrigin(c.publicURL)
 	agentInfo, err := client.GetAgentMe(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("authentication failed: %w", err)
@@ -521,9 +534,10 @@ func (c *agentSessionCache) GetOrAuthenticate(ctx context.Context, key string) (
 
 // serverRegistry caches per-agent REST clients keyed by agent API key.
 type serverRegistry struct {
-	mu     sync.RWMutex
-	cache  map[string]*mcpserver.RESTClient
-	apiURL string
+	mu        sync.RWMutex
+	cache     map[string]*mcpserver.RESTClient
+	apiURL    string
+	publicURL string
 }
 
 // GetClient returns a cached REST client for the given agent key, creating one if needed.
@@ -538,6 +552,7 @@ func (r *serverRegistry) GetClient(key string) *mcpserver.RESTClient {
 	r.mu.RUnlock()
 
 	client := mcpserver.NewRESTClient(r.apiURL, key)
+	client.SetForwardedOrigin(r.publicURL)
 
 	r.mu.Lock()
 	if r.cache == nil {
