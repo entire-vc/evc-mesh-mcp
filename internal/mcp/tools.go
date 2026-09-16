@@ -413,15 +413,32 @@ func (s *Server) handleUpdateTask(ctx context.Context, request mcpsdk.CallToolRe
 			body["custom_fields"] = cfMap
 		}
 	}
-	if dueDateStr := mcpsdk.ParseString(request, "due_date", ""); dueDateStr != "" {
-		if _, err := time.Parse(time.RFC3339, dueDateStr); err != nil {
-			return errResult("invalid due_date format: %v", err)
+	// due_date/start_after use the presence-check (`args[...]; ok`), not the
+	// `!= ""` pattern the other date-ish fields below still use: an update
+	// that clears a date is a real, agent-reachable action (the whole reason
+	// start_after exists — #3e4c9f80), and `!= ""` cannot represent "caller
+	// sent an explicit empty value to clear it", only "field omitted". Both
+	// share that requirement, so both share the fix — leaving due_date on the
+	// old pattern right next to a just-fixed start_after would leave the
+	// identical bug sitting in the same function. An empty string reaches the
+	// API as `"due_date":""`/`"start_after":""`, which flexTime.UnmarshalJSON
+	// treats the same as JSON null: wasSet=true, Time=nil — an explicit clear,
+	// not a silent no-op.
+	if _, ok := args["due_date"]; ok {
+		dueDateStr := mcpsdk.ParseString(request, "due_date", "")
+		if dueDateStr != "" {
+			if _, err := time.Parse(time.RFC3339, dueDateStr); err != nil {
+				return errResult("invalid due_date format: %v", err)
+			}
 		}
 		body["due_date"] = dueDateStr
 	}
-	if startAfterStr := mcpsdk.ParseString(request, "start_after", ""); startAfterStr != "" {
-		if _, err := time.Parse(time.RFC3339, startAfterStr); err != nil {
-			return errResult("invalid start_after format: %v", err)
+	if _, ok := args["start_after"]; ok {
+		startAfterStr := mcpsdk.ParseString(request, "start_after", "")
+		if startAfterStr != "" {
+			if _, err := time.Parse(time.RFC3339, startAfterStr); err != nil {
+				return errResult("invalid start_after format: %v", err)
+			}
 		}
 		body["start_after"] = startAfterStr
 	}
