@@ -336,7 +336,7 @@ func (s *Server) registerCoreTools() {
 
 	// --- Communication ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("add_comment",
-		mcpsdk.WithDescription("Add a comment to a task."),
+		mcpsdk.WithDescription("Add a comment to a task. If the body @-mentions someone, the response carries a `delivery` array — one entry per mentioned handle — reporting whether it actually reached a path they consume (their task queue, a notification) or was skipped/failed and why; a `hint` field suggests the fix when there is one (e.g. assign the task). Omitted entirely when the comment mentions nobody."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("body", mcpsdk.Required(), mcpsdk.Description("Comment body (markdown supported).")),
 		mcpsdk.WithBoolean("is_internal", mcpsdk.Description("Mark as internal (agent-only visible)."), mcpsdk.DefaultBool(false)),
