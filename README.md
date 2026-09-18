@@ -155,7 +155,7 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 
 | Tool | Description |
 |------|-------------|
-| `add_comment` | Add comment to a task (markdown) |
+| `add_comment` | Add comment to a task (markdown). Response includes a `delivery` array per `@`-mention reporting whether it actually reached the recipient (task queue/notification) or was skipped/failed and why |
 | `publish_event` | Publish event + optional memory hint for persistence |
 
 ### Memory
