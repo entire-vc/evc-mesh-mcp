@@ -255,7 +255,7 @@ func (s *Server) registerCoreTools() {
 
 	// --- Task CRUD ---
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_tasks",
-		mcpsdk.WithDescription("List tasks with filters. Provide project_id for project-scoped listing or workspace_id for global search across all projects (requires search parameter)."),
+		mcpsdk.WithDescription("List tasks with filters. Provide project_id for project-scoped listing or workspace_id for global search across all projects (requires search parameter). Each item's description is included by default and has_description always reflects the task's real content, computed before any trimming below — but on ANY page (plain listing or search=) whose descriptions total more than 200KB, the server blanks descriptions from the TAIL of that page (in item order) to keep the response size bounded, and marks the response truncated:true (field omitted when false). search= usually returns few enough hits to stay under that budget, so it is the practical workaround for a specific known task, but the one guaranteed way to read a given task's full description regardless of any listing's size or order is get_task(task_id)."),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project ID (required unless workspace_id is provided).")),
 		mcpsdk.WithString("workspace_id", mcpsdk.Description("Workspace ID for global cross-project search (requires search parameter).")),
 		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: backlog, todo, in_progress, review, done, cancelled.")),
