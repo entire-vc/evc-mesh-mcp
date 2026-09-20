@@ -665,7 +665,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("list_comments", s.handleListComments))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("upload_artifact",
-		mcpsdk.WithDescription("Upload an artifact (file, code, log, etc.) to a task. Inline content travels through the model context, so for a binary larger than a few KB prefer the REST endpoint instead: POST /api/v1/tasks/<task_id>/artifacts as multipart/form-data with -H 'X-Agent-Key: $MESH_AGENT_KEY' -F 'name=<file>' -F 'artifact_type=image' -F 'file=@<path>;type=image/png' — the bytes then never enter the context and cannot be truncated on the way."),
+		mcpsdk.WithDescription("Upload an artifact (file, code, log, etc.) to a task. "+artifactDownloadHowTo+" Inline content travels through the model context, so for a binary larger than a few KB prefer the REST endpoint instead: POST /api/v1/tasks/<task_id>/artifacts as multipart/form-data with -H 'X-Agent-Key: $MESH_AGENT_KEY' -F 'name=<file>' -F 'artifact_type=image' -F 'file=@<path>;type=image/png' — the bytes then never enter the context and cannot be truncated on the way."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("name", mcpsdk.Required(), mcpsdk.Description("Artifact filename.")),
 		mcpsdk.WithString("content", mcpsdk.Required(), mcpsdk.Description("Artifact content. Plain text by default; set encoding=\"base64\" to send binary.")),
@@ -677,14 +677,14 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("upload_artifact", s.handleUploadArtifact))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("list_artifacts",
-		mcpsdk.WithDescription("List artifacts attached to a task."),
+		mcpsdk.WithDescription("List artifacts attached to a task. Each carries download_path; a browser_only_url block, when present, is for a human and must not be fetched. "+artifactDownloadHowTo),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 	), s.tracked("list_artifacts", s.handleListArtifacts))
 
 	s.mcpServer.AddTool(mcpsdk.NewTool("get_artifact",
-		mcpsdk.WithDescription("Get artifact details and optionally its content."),
+		mcpsdk.WithDescription("Get artifact details. The bytes are never inlined: download them with the two GETs below. "+artifactDownloadHowTo),
 		mcpsdk.WithString("artifact_id", mcpsdk.Required(), mcpsdk.Description("Artifact ID.")),
-		mcpsdk.WithBoolean("include_content", mcpsdk.Description("Include content for text files under 1MB."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("include_content", mcpsdk.Description("Adds download_api_url: step 1 of the download (the API endpoint you call with X-Agent-Key), NOT the file and NOT a link to open. The bytes are never inlined."), mcpsdk.DefaultBool(false)),
 	), s.tracked("get_artifact", s.handleGetArtifact))
 
 	// --- Event Bus ---

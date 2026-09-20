@@ -245,7 +245,7 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		}
 		var itemCount int
 		if items, ok := page["items"]; ok {
-			resp["artifacts"] = items
+			resp["artifacts"] = shapeArtifactList(items)
 			if arr, ok := items.([]any); ok {
 				itemCount = len(arr)
 			}
@@ -913,7 +913,7 @@ func (s *Server) handleUploadArtifact(ctx context.Context, request mcpsdk.CallTo
 		return errResult("failed to upload artifact: %v", err)
 	}
 
-	return jsonResult(result)
+	return jsonResult(shapeArtifact(result))
 }
 
 // ============================================================================
@@ -931,6 +931,7 @@ func (s *Server) handleListArtifacts(ctx context.Context, request mcpsdk.CallToo
 		return errResult("failed to list artifacts: %v", err)
 	}
 
+	shapeArtifactList(result)
 	return jsonResult(result)
 }
 
@@ -950,7 +951,7 @@ func (s *Server) handleGetArtifact(ctx context.Context, request mcpsdk.CallToolR
 	}
 
 	resp := map[string]any{
-		"artifact": artifact,
+		"artifact": shapeArtifact(artifact),
 	}
 
 	if mcpsdk.ParseBoolean(request, "include_content", false) {
@@ -958,7 +959,7 @@ func (s *Server) handleGetArtifact(ctx context.Context, request mcpsdk.CallToolR
 		if err != nil {
 			resp["content_error"] = fmt.Sprintf("failed to get download URL: %v", err)
 		} else {
-			resp["download_url"] = downloadURL
+			resp["download_api_url"] = downloadURL
 		}
 	}
 
@@ -1214,6 +1215,9 @@ func (s *Server) handleGetTaskContext(ctx context.Context, request mcpsdk.CallTo
 		}
 	}
 
+	if arts, ok := result["artifacts"]; ok {
+		shapeArtifactList(arts)
+	}
 	s.recordMemoryRead(ctx, "get_task_context")
 	return jsonResult(result)
 }
