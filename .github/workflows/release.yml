@@ -179,7 +179,11 @@ jobs:
           cp "dist/evc-mesh-mcp_${VERSION}_windows_amd64/evc-mesh-mcp.exe" \
              bundle/server/evc-mesh-mcp-win32-amd64.exe
 
-          chmod +x bundle/server/evc-mesh-mcp-linux-amd64 bundle/server/evc-mesh-mcp-darwin-universal
+          # Default command for clients that ignore platform_overrides
+          # (Smithery CLI): picks the binary above for the host OS/arch.
+          cp mcpb/launch.sh bundle/server/evc-mesh-mcp
+
+          chmod +x bundle/server/evc-mesh-mcp bundle/server/evc-mesh-mcp-linux-amd64 bundle/server/evc-mesh-mcp-darwin-universal
 
       - name: Validate manifest
         run: npx --yes @anthropic-ai/mcpb validate bundle/manifest.json
