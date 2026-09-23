@@ -1,5 +1,7 @@
 # EVC Mesh MCP Server
 
+<!-- mcp-name: io.github.entire-vc/evc-mesh-mcp -->
+
 [![Install via Spark](https://spark.entire.vc/badges/evc-mesh-mcp/install.svg)](https://spark.entire.vc/assets/evc-mesh-mcp?utm_source=github&utm_medium=readme)
 
 [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server for [EVC Mesh](https://github.com/entire-vc/evc-mesh) — a task management platform for coordinating humans and AI agents.
@@ -27,6 +29,21 @@ git clone https://github.com/entire-vc/evc-mesh-mcp.git
 cd evc-mesh-mcp
 go build -o evc-mesh-mcp .
 ```
+
+### Docker
+
+```bash
+docker run -i --rm \
+  -e MESH_API_URL \
+  -e MESH_AGENT_KEY \
+  ghcr.io/entire-vc/evc-mesh-mcp
+```
+
+`-i` is required — the server speaks MCP over stdio, and Docker only wires up
+stdin when the container runs interactively. Add `-e MESH_MCP_PROFILE=core`
+to switch profiles (see [Tool Profiles](#tool-profiles) below). The image is
+published for `linux/amd64` and `linux/arm64` from `Dockerfile` in this repo
+on every tagged release (`docs/RELEASING.md`).
 
 ## Tool Profiles
 
@@ -147,7 +164,7 @@ publish_event(type="summary", memory={persist: true})  → broadcast + persist
 session_report(model, tokens_in, tokens_out)           → report metrics
 ```
 
-## MCP Tools — Core Profile (20)
+## MCP Tools — Core Profile (25)
 
 ### ACP & Identity
 
@@ -171,6 +188,7 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 | `move_task` | Change task status using slugs |
 | `assign_task` | Assign/unassign a task |
 | `get_task_context` | Get everything about a task in one call |
+| `add_vcs_link` | Link a task to a pull request, commit or branch |
 
 ### Communication
 
@@ -186,6 +204,10 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 | `recall` | Search memory by keywords |
 | `remember` | Save knowledge (UPSERT by key) |
 | `forget` | Delete a memory entry |
+| `recall_with_graph` | Search memory, expanding results through the knowledge graph |
+| `set_project_knowledge` | Write a structured project fact (upsert by key) |
+| `get_canonical_updates` | Fetch canonical decisions recorded since a given time |
+| `pavel_decision` | Record a decision by the workspace owner as canonical project knowledge |
 
 #### What `recall` guarantees about its result
 
@@ -227,7 +249,7 @@ did not supply; an explicit `limit` always wins.
 | `report_error` | Report an error on a task |
 | `session_report` | Report session metrics (model, tokens, cost) |
 
-## MCP Tools — Full Profile (adds 25 more)
+## MCP Tools — Full Profile (adds 38 more, 63 total)
 
 ### Additional Task Tools
 
@@ -238,6 +260,9 @@ did not supply; an explicit `limit` always wins.
 | `add_dependency` | Add dependency between tasks |
 | `checkout_task` | Atomic task lock for multi-agent coordination |
 | `release_task` | Release atomic task lock |
+| `extend_checkout` | Extend an existing task lock for longer-running work |
+| `set_human_gate` | Freeze a task until a named person answers a recorded question |
+| `clear_human_gate` | Release a human gate |
 
 ### Comments & Artifacts
 
@@ -287,6 +312,21 @@ Downloading an artifact is two GETs. Step 1: GET <base>/api/v1/artifacts/<id>/do
 | `list_recurring_schedules` | List recurring schedules |
 | `get_recurring_history` | Get instance history for a schedule |
 | `trigger_recurring_now` | Trigger next instance immediately |
+| `update_recurring_schedule` | Change or deactivate a recurring schedule |
+| `delete_recurring_schedule` | Delete a recurring schedule (existing instances stay) |
+
+### Documents & Knowledge
+
+| Tool | Description |
+|------|-------------|
+| `list_docs` | List a project's documents (metadata only) |
+| `get_doc` | Read a document (outline by default, body on request) |
+| `search_docs` | Full-text search across a project's documents |
+| `create_doc` | Create a document |
+| `update_doc` | Edit a document (optimistic concurrency via `base_version`) |
+| `comment_doc` | Comment on a document or a quoted passage |
+| `list_doc_comments` | Read a document's comment threads |
+| `get_canonical` | Query curated facts and decisions for a topic |
 
 ## Architecture
 
@@ -302,58 +342,18 @@ PostgreSQL / Redis / NATS / S3
 
 The MCP server is a lightweight proxy — it translates MCP tool calls into REST API requests. No direct database access needed.
 
-## Deploy checklist (prod server — no CI)
+## Running the shared HTTP server
 
-evc-mesh-mcp has no CD pipeline; deploys are manual. **Mandatory order** (per
-[CLAUDE-workflow.md §1b Deploy Discipline](https://github.com/entire-vc/evc-mesh/blob/main/CLAUDE-workflow.md)):
-`migrate (goose up)` → `binary swap` → `restart`. Never swap the binary before migrations pass.
+To serve several agents from one process, run the server in SSE mode next to
+your Mesh API (the same image works: `docker run -e MESH_MCP_TRANSPORT=sse
+-e MESH_API_URL=... -p 8081:8081 ghcr.io/entire-vc/evc-mesh-mcp`) and put it
+behind your reverse proxy. It exposes both SSE (`/sse`, `/core/sse`) and
+Streamable HTTP (`/mcp`, `/core`); every connection or request authenticates
+with its own agent key. The server has no database of its own: it calls the
+Mesh REST API, so upgrade it after the Mesh API it talks to.
 
-```bash
-# 1. Build for the prod target
-GOOS=linux GOARCH=amd64 go build -o evc-mesh-mcp .
-
-# 2. Copy binary to prod
-scp evc-mesh-mcp root@prod-host:/opt/evc-mesh-mcp/evc-mesh-mcp.new
-
-# 3. On the prod host: run migrations FIRST, then swap binary
-ssh root@prod-host
-
-  # STEP 1 — Run evc-mesh DB migrations (mcp server reads the same DB).
-  # goose CLI is not installed on the host — use the official docker image.
-  # If this exits non-zero, STOP — do NOT swap the binary.
-  DB_URL=$(grep ^DATABASE_URL /opt/evc-mesh/.env.prod | cut -d= -f2-)
-  docker run --rm --network host \
-    -v /opt/evc-mesh/migrations:/migrations \
-    ghcr.io/pressly/goose:latest \
-    goose -dir /migrations postgres "$DB_URL" up
-
-  # STEP 2 — Swap binary (only after migrations succeed)
-  mv /opt/evc-mesh-mcp/evc-mesh-mcp /opt/evc-mesh-mcp/evc-mesh-mcp.bak.$(date +%Y%m%d-%H%M%S)
-  mv /opt/evc-mesh-mcp/evc-mesh-mcp.new /opt/evc-mesh-mcp/evc-mesh-mcp
-
-  # STEP 3 — Restart
-  sudo systemctl restart evc-mesh-mcp
-
-  # STEP 4 — Smoke test
-  curl -sf http://localhost:8081/health || echo "SMOKE FAILED"
-```
-
-> evc-mesh-mcp does not run its own migrations — it relies on the evc-mesh API's
-> schema. The goose step above ensures the schema matches before the new binary serves traffic.
-
-## Local stdio binary — this repo also builds the tool your agent runs
-
-The checklist above is for the SSE/HTTP prod server. This repo also builds the
-binary a local `stdio` MCP client runs directly (no network deploy involved,
-e.g. Claude Code's `.mcp.json` pointing at `~/bin/mesh-mcp`). That path used to
-be entirely manual — a merged fix could sit uninstalled indefinitely, looking
-identical to "the feature doesn't exist" from inside an agent session (no
-error, just an outdated tool). Where the fleet builds this way, a poll-based
-watcher (not a GitHub-hosted runner — self-hosted CI runners on developer
-machines are a known supply-chain risk this fleet avoids) rebuilds and
-atomically installs the binary on `origin/main` changes, and the `heartbeat`
-tool's `mesh_version` field (see the tools table above) lets a session confirm
-which commit is actually installed without shelling out to the host.
+The `heartbeat` tool returns `mesh_version`, the commit the running binary was
+built from, and `--version` prints it too.
 
 ## Related
 
