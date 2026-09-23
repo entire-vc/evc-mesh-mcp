@@ -52,6 +52,18 @@ registry error), dispatch it against the tag:
 gh workflow run release.yml --repo entire-vc/evc-mesh-mcp --ref v1.0.0
 ```
 
+## Smithery
+
+After the release run finishes, publish the bundle to Smithery:
+
+```bash
+SMITHERY_API_KEY=... scripts/smithery-publish.sh 1.0.0
+```
+
+The script sends the bundle with the tool list read from the server itself;
+`smithery mcp publish` would leave the listing without tools (see the comment
+at the top of the script).
+
 ## After the first release
 
 - **Container visibility.** The first push to `ghcr.io/entire-vc/evc-mesh-mcp`
