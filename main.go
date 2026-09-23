@@ -374,6 +374,23 @@ func main() {
 		})
 		mux.Handle(coreBasePath+"/message", coreSSE.MessageHandler())
 
+		// Streamable HTTP transport (the current MCP spec transport), served
+		// next to SSE by the same two profile servers, with the same per-request
+		// agent-key authentication. Stateless: every request carries its key and
+		// is authenticated on its own, so nothing ties a client to one process.
+		//   full profile: /mcp   (public: https://<host>/mcp when the proxy
+		//                         forwards that path unchanged)
+		//   core profile: /core  (public: https://<host>/mcp/core behind the
+		//                         existing /mcp/* prefix-stripping route)
+		streamOpts := []sdkserver.StreamableHTTPOption{
+			sdkserver.WithStateLess(true),
+			sdkserver.WithHTTPContextFunc(sseContextFunc),
+		}
+		fullHTTP := sdkserver.NewStreamableHTTPServer(fullSrv.MCPServer(), streamOpts...)
+		coreHTTP := sdkserver.NewStreamableHTTPServer(coreSrv.MCPServer(), streamOpts...)
+		mux.Handle(streamablePath, requireAgentKey(sessionCache, "streamable", fullHTTP))
+		mux.Handle(coreBasePath, requireAgentKey(sessionCache, "streamable core", coreHTTP))
+
 		// /read-counter — unauthenticated JSON snapshot for nightly cron / Grafana scrape.
 		mux.HandleFunc("/read-counter", func(w http.ResponseWriter, r *http.Request) {
 			snap := fullSrv.ReadCounter.Snapshot()
@@ -392,6 +409,8 @@ func main() {
 		log.Printf("Starting MCP SSE server on %s (multi-agent mode)", addr)
 		log.Printf("  Full profile SSE endpoint: %s/sse", dialableURL(publicURL, host, port))
 		log.Printf("  Core profile SSE endpoint: %s%s/sse", dialableURL(publicURL, host, port), coreBasePath)
+		log.Printf("  Full profile streamable HTTP: %s%s", dialableURL(publicURL, host, port), streamablePath)
+		log.Printf("  Core profile streamable HTTP: %s%s", dialableURL(publicURL, host, port), coreBasePath)
 		if publicURL == "" {
 			log.Printf("  Message endpoint is advertised relative to the URL each client connects to.")
 			log.Printf("  Set MESH_MCP_PUBLIC_URL if your clients require an absolute endpoint URL.")
@@ -417,6 +436,37 @@ func main() {
 // are mounted at. It has to be known to both the mux and the URL the server
 // advertises to clients, so it lives in one place.
 const coreBasePath = "/core"
+
+// streamablePath is where the full-profile Streamable HTTP endpoint is mounted.
+const streamablePath = "/mcp"
+
+// requireAgentKey rejects a request that carries no agent key (401) or a key
+// the Mesh API does not accept (403) before it reaches an MCP transport.
+//
+// The Streamable HTTP endpoints are stateless, so the key travels with every
+// request. They accept it from headers only: a key in the query string would
+// be repeated in every request URL, where proxies and tools tend to log it.
+// (The legacy SSE connect step keeps the query fallback for EventSource.)
+func requireAgentKey(cache *agentSessionCache, what string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Has("agent_key") {
+			http.Error(w, "Pass the agent key in a header (Authorization: Bearer agk_... or X-Agent-Key), not in the URL", http.StatusBadRequest)
+			return
+		}
+		key := extractAgentKeyFromRequest(r)
+		if key == "" {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="evc-mesh"`)
+			http.Error(w, "Missing agent key: provide Authorization: Bearer agk_..., X-Agent-Key header, or ?agent_key query param", http.StatusUnauthorized)
+			return
+		}
+		if _, err := cache.GetOrAuthenticate(r.Context(), key); err != nil {
+			log.Printf("%s auth failed for key %s...: %v", what, safeKeyPrefix(key), err)
+			http.Error(w, fmt.Sprintf("Authentication failed: %v", err), http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // advertiseOptions configures which URL the SSE server hands a client in its
 // `endpoint` event — the address the client will POST every subsequent JSON-RPC
