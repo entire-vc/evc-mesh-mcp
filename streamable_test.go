@@ -69,8 +69,8 @@ func TestStreamableHTTP_AuthAndProfiles(t *testing.T) {
 	}
 	opts := []sdkserver.StreamableHTTPOption{sdkserver.WithStateLess(true), sdkserver.WithHTTPContextFunc(ctxFn)}
 	mux := http.NewServeMux()
-	mux.Handle(streamablePath, requireAgentKey(cache, "t", sdkserver.NewStreamableHTTPServer(full.MCPServer(), opts...)))
-	mux.Handle(coreBasePath, requireAgentKey(cache, "t", sdkserver.NewStreamableHTTPServer(core.MCPServer(), opts...)))
+	mux.Handle(streamablePath, requireAgentKey(cache, nil, "t", sdkserver.NewStreamableHTTPServer(full.MCPServer(), opts...)))
+	mux.Handle(coreBasePath, requireAgentKey(cache, nil, "t", sdkserver.NewStreamableHTTPServer(core.MCPServer(), opts...)))
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
