@@ -141,6 +141,15 @@ SSE mode serves **two profiles simultaneously** on different paths:
 | `/sse` + `/message` | full | All 63 tools (backward compatible) |
 | `/core/sse` + `/core/message` | core | 25 essential tools |
 
+The same process also serves the **Streamable HTTP** transport (stateless, one
+agent key per request, sent in the `Authorization: Bearer` or `X-Agent-Key`
+header — the query parameter is refused there):
+
+| Path | Profile |
+|------|---------|
+| `/mcp` | full |
+| `/core` | core |
+
 Authentication per connection via:
 - `Authorization: Bearer agk_...` header
 - `X-Agent-Key: agk_...` header
