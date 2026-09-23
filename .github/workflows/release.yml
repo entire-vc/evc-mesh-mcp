@@ -1,0 +1,312 @@
+name: Release
+
+# Cuts a versioned release from a `v*` tag: cross-platform binaries and an
+# MCPB bundle attached to a GitHub Release, a multi-arch image on GHCR, and a
+# server.json entry on the official MCP Registry. See docs/RELEASING.md.
+# `workflow_dispatch` re-runs the pipeline against an existing tag
+# (dispatch with `--ref v<version>`).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (no leading v), e.g. 1.2.3. Leave empty to derive from the ref (works when dispatched with --ref v1.2.3).'
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Resolves VERSION once so every downstream job (binaries, image, registry
+  # publish) agrees on the same string instead of re-deriving it five times.
+  prep:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - name: Derive version from ref or dispatch input
+        id: v
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            REF="${GITHUB_REF_NAME}"
+            case "$REF" in
+              v*) VERSION="${REF#v}" ;;
+              *) echo "::error::no version input and ref '$REF' is not a v* tag — dispatch with --ref v<version> or pass the version input"; exit 1 ;;
+            esac
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "releasing $VERSION (tag v$VERSION)"
+
+  # Re-runs the suite before anything ships. A workflow_dispatch (or a tag
+  # pushed at an old commit) can target a ref whose CI never ran — same
+  # fail-closed reasoning as deploy-mesh-vm.yml's "Test (fail-closed gate)".
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: prep
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test ./... -race
+
+  build-binaries:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    needs: [prep, test]
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ needs.prep.outputs.version }}
+        run: |
+          OUT="evc-mesh-mcp"
+          [ "$GOOS" = "windows" ] && OUT="evc-mesh-mcp.exe"
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/entire-vc/evc-mesh-mcp/internal/mcp.BuildSHA=${{ github.sha }} -X github.com/entire-vc/evc-mesh-mcp/internal/mcp.Version=${VERSION}" \
+            -o "$OUT" .
+          DIST="evc-mesh-mcp_${VERSION}_${GOOS}_${GOARCH}"
+          mkdir -p "dist/$DIST"
+          mv "$OUT" "dist/$DIST/"
+          cp README.md LICENSE "dist/$DIST/"
+          cd dist
+          if [ "$GOOS" = "windows" ]; then
+            zip -r "${DIST}.zip" "$DIST"
+            echo "ASSET=dist/${DIST}.zip" >> "$GITHUB_ENV"
+          else
+            tar czf "${DIST}.tar.gz" "$DIST"
+            echo "ASSET=dist/${DIST}.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  # MCPB bundle for Smithery (`smithery mcp publish ./server.mcpb`) and the
+  # official registry's `mcpb` package type. A binary MCPB's mcp_config can
+  # only branch on OS via platform_overrides (win32/darwin/linux) — there is
+  # no per-arch key in the spec — so ONE bundle ships linux/amd64,
+  # windows/amd64 and a universal (amd64 + arm64) macOS binary, selected by
+  # mcp_config.platform_overrides in mcpb/manifest.json. Linux/ARM users use
+  # the multi-arch container image or `go install` instead. See
+  # docs/RELEASING.md.
+  build-mcpb:
+    name: Build MCPB bundle
+    runs-on: ubuntu-latest
+    needs: [prep, build-binaries]
+    outputs:
+      filename: ${{ steps.pack.outputs.filename }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Assemble bundle directory
+        env:
+          VERSION: ${{ needs.prep.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p bundle/server
+          cp mcpb/manifest.json bundle/manifest.json
+          jq --arg v "$VERSION" '.version = $v' bundle/manifest.json > bundle/manifest.tmp
+          mv bundle/manifest.tmp bundle/manifest.json
+
+          # Extract the raw binary each platform_overrides path in
+          # mcpb/manifest.json expects, out of the tarballs/zips
+          # build-binaries already produced — no separate unpacked build.
+          tar xzf "dist/evc-mesh-mcp_${VERSION}_linux_amd64.tar.gz" -C dist
+          cp "dist/evc-mesh-mcp_${VERSION}_linux_amd64/evc-mesh-mcp" \
+             bundle/server/evc-mesh-mcp-linux-amd64
+
+          # macOS: one universal (amd64 + arm64) binary, so Apple Silicon runs
+          # natively instead of depending on Rosetta 2 being installed.
+          tar xzf "dist/evc-mesh-mcp_${VERSION}_darwin_amd64.tar.gz" -C dist
+          tar xzf "dist/evc-mesh-mcp_${VERSION}_darwin_arm64.tar.gz" -C dist
+          go run github.com/randall77/makefat@v0.0.0-20210315173500-7ddd0e42c844 \
+             bundle/server/evc-mesh-mcp-darwin-universal \
+             "dist/evc-mesh-mcp_${VERSION}_darwin_amd64/evc-mesh-mcp" \
+             "dist/evc-mesh-mcp_${VERSION}_darwin_arm64/evc-mesh-mcp"
+
+          unzip -q "dist/evc-mesh-mcp_${VERSION}_windows_amd64.zip" -d dist
+          cp "dist/evc-mesh-mcp_${VERSION}_windows_amd64/evc-mesh-mcp.exe" \
+             bundle/server/evc-mesh-mcp-win32-amd64.exe
+
+          chmod +x bundle/server/evc-mesh-mcp-linux-amd64 bundle/server/evc-mesh-mcp-darwin-universal
+
+      - name: Validate manifest
+        run: npx --yes @anthropic-ai/mcpb validate bundle/manifest.json
+
+      - name: Pack
+        id: pack
+        env:
+          VERSION: ${{ needs.prep.outputs.version }}
+        run: |
+          set -euo pipefail
+          FILENAME="evc-mesh-mcp-${VERSION}.mcpb"
+          npx --yes @anthropic-ai/mcpb pack bundle "$FILENAME"
+          npx --yes @anthropic-ai/mcpb info "$FILENAME"
+          SHA256=$(sha256sum -- "$FILENAME" | cut -d' ' -f1)
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "built $FILENAME sha256=$SHA256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mcpb-bundle
+          path: ${{ steps.pack.outputs.filename }}
+          if-no-files-found: error
+
+  github-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [prep, build-binaries, build-mcpb]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: mcpb-bundle
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prep.outputs.tag }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "${{ github.repository }}" \
+            --title "$TAG" \
+            --generate-notes
+
+  docker:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    needs: [prep, test]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            VERSION=${{ needs.prep.outputs.version }}
+          tags: |
+            ghcr.io/entire-vc/evc-mesh-mcp:${{ needs.prep.outputs.version }}
+            ghcr.io/entire-vc/evc-mesh-mcp:latest
+
+  publish-mcp-registry:
+    name: Publish to MCP Registry
+    runs-on: ubuntu-latest
+    # Needs github-release (not just build-mcpb): the mcpb package identifier
+    # below is the release-asset download URL, which only resolves once the
+    # release job has actually uploaded that asset.
+    needs: [prep, docker, build-mcpb, github-release]
+    permissions:
+      id-token: write # OIDC — proves this run belongs to entire-vc/evc-mesh-mcp
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set version, OCI identifier, and MCPB identifier/hash in server.json
+        env:
+          VERSION: ${{ needs.prep.outputs.version }}
+          TAG: ${{ needs.prep.outputs.tag }}
+          MCPB_FILENAME: ${{ needs.build-mcpb.outputs.filename }}
+          MCPB_SHA256: ${{ needs.build-mcpb.outputs.sha256 }}
+        run: |
+          MCPB_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${MCPB_FILENAME}"
+          jq --arg v "$VERSION" \
+             --arg ociId "ghcr.io/entire-vc/evc-mesh-mcp:${VERSION}" \
+             --arg mcpbUrl "$MCPB_URL" \
+             --arg mcpbSha "$MCPB_SHA256" \
+             '.version = $v
+              | (.packages[] | select(.registryType == "oci") | .identifier) = $ociId
+              | (.packages[] | select(.registryType == "mcpb") | .identifier) = $mcpbUrl
+              | (.packages[] | select(.registryType == "mcpb") | .fileSha256) = $mcpbSha' \
+            server.json > server.tmp && mv server.tmp server.json
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Validate server.json
+        run: ./mcp-publisher validate
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish

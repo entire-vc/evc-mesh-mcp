@@ -1,0 +1,78 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/schemas/mcpb-manifest-v0.3.schema.json",
+  "manifest_version": "0.3",
+  "name": "evc-mesh-mcp",
+  "display_name": "EVC Mesh",
+  "version": "0.1.0",
+  "description": "MCP server for EVC Mesh: tasks, memory and coordination for human + AI agent teams",
+  "long_description": "Connects an MCP client (Claude Desktop, Claude Code, Cursor, Cline, ...) to an EVC Mesh instance over stdio: task management, persistent memory, event publishing, and multi-agent coordination tools. Talks to the Mesh REST API — no direct database access.",
+  "author": {
+    "name": "Entire VC",
+    "url": "https://github.com/entire-vc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/entire-vc/evc-mesh-mcp.git"
+  },
+  "homepage": "https://github.com/entire-vc/evc-mesh-mcp",
+  "documentation": "https://github.com/entire-vc/evc-mesh-mcp#readme",
+  "support": "https://github.com/entire-vc/evc-mesh-mcp/issues",
+  "license": "MIT",
+  "keywords": [
+    "mesh",
+    "task-management",
+    "agents",
+    "coordination",
+    "memory"
+  ],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/evc-mesh-mcp-linux-amd64",
+    "mcp_config": {
+      "command": "${__dirname}/server/evc-mesh-mcp-linux-amd64",
+      "args": [],
+      "env": {
+        "MESH_API_URL": "${user_config.mesh_api_url}",
+        "MESH_AGENT_KEY": "${user_config.mesh_agent_key}",
+        "MESH_MCP_PROFILE": "${user_config.profile}"
+      },
+      "platform_overrides": {
+        "darwin": {
+          "command": "${__dirname}/server/evc-mesh-mcp-darwin-universal"
+        },
+        "win32": {
+          "command": "${__dirname}/server/evc-mesh-mcp-win32-amd64.exe"
+        }
+      }
+    }
+  },
+  "user_config": {
+    "mesh_api_url": {
+      "type": "string",
+      "title": "Mesh URL",
+      "description": "Base URL of your Mesh instance, e.g. https://mesh.example.com",
+      "required": true
+    },
+    "mesh_agent_key": {
+      "type": "string",
+      "title": "Mesh Agent Key",
+      "description": "Agent API key issued by Mesh (agk_...)",
+      "required": true,
+      "sensitive": true
+    },
+    "profile": {
+      "type": "string",
+      "title": "Tool Profile",
+      "description": "core (25 tools, lower context overhead) or full (63 tools)",
+      "required": false,
+      "default": "core"
+    }
+  },
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ]
+  }
+}

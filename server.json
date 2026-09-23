@@ -1,0 +1,89 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.entire-vc/evc-mesh-mcp",
+  "description": "MCP server for EVC Mesh: tasks, memory and coordination for human + AI agent teams",
+  "repository": {
+    "url": "https://github.com/entire-vc/evc-mesh-mcp",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/entire-vc/evc-mesh-mcp:0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "MESH_API_URL",
+          "description": "Base URL of your Mesh instance, e.g. https://mesh.example.com",
+          "isRequired": true
+        },
+        {
+          "name": "MESH_AGENT_KEY",
+          "description": "Agent API key issued by Mesh (agk_...)",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "MESH_MCP_PROFILE",
+          "description": "Tool profile: core (25 tools, lower context overhead) or full (63 tools). Defaults to full.",
+          "isRequired": false
+        }
+      ]
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/entire-vc/evc-mesh-mcp/releases/download/v0.1.0/evc-mesh-mcp-0.1.0.mcpb",
+      "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "MESH_API_URL",
+          "description": "Base URL of your Mesh instance, e.g. https://mesh.example.com",
+          "isRequired": true
+        },
+        {
+          "name": "MESH_AGENT_KEY",
+          "description": "Agent API key issued by Mesh (agk_...)",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "MESH_MCP_PROFILE",
+          "description": "Tool profile: core (25 tools, lower context overhead) or full (63 tools). Defaults to full.",
+          "isRequired": false
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mesh.entire.host/mcp",
+      "headers": [
+        {
+          "name": "X-Agent-Key",
+          "description": "Agent API key issued by Mesh (agk_...)",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    },
+    {
+      "type": "sse",
+      "url": "https://mesh.entire.host/mcp/sse",
+      "headers": [
+        {
+          "name": "X-Agent-Key",
+          "description": "Agent API key issued by Mesh (agk_...)",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
