@@ -66,9 +66,9 @@ func TestSlugify(t *testing.T) {
 	}
 }
 
-// ── handlePavelDecision ─────────────────────────────────────────────────────
+// ── handleRecordOwnerDecision ─────────────────────────────────────────────────────
 
-func buildPavelDecisionRequest(text, summary string, propagateTo []string, scope, privacy string) mcpsdk.CallToolRequest {
+func buildOwnerDecisionRequest(text, summary string, propagateTo []string, scope, privacy string) mcpsdk.CallToolRequest {
 	args := map[string]any{
 		"text":    text,
 		"summary": summary,
@@ -91,7 +91,7 @@ func buildPavelDecisionRequest(text, summary string, propagateTo []string, scope
 	return req
 }
 
-func TestHandlePavelDecision_PublicDecision(t *testing.T) {
+func TestHandleRecordOwnerDecision_PublicDecision(t *testing.T) {
 	var capturedBody map[string]any
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -123,16 +123,16 @@ func TestHandlePavelDecision_PublicDecision(t *testing.T) {
 	}
 	ctx := withTestSession(context.Background(), server, wsID)
 
-	req := buildPavelDecisionRequest(
+	req := buildOwnerDecisionRequest(
 		"We will use Redis for all session state going forward.",
 		"Use Redis for sessions",
 		[]string{"linus", "bill"},
 		"",
 		"public",
 	)
-	result, err := server.handlePavelDecision(ctx, req)
+	result, err := server.handleRecordOwnerDecision(ctx, req)
 	if err != nil {
-		t.Fatalf("handlePavelDecision returned error: %v", err)
+		t.Fatalf("handleRecordOwnerDecision returned error: %v", err)
 	}
 
 	out := decodeToolResultJSON(t, result)
@@ -163,14 +163,14 @@ func TestHandlePavelDecision_PublicDecision(t *testing.T) {
 			tagSet[s] = true
 		}
 	}
-	for _, required := range []string{"kind:canonical-decision", "owner:riker", "source:pavel-tg", "privacy:public", "propagate_to:linus", "propagate_to:bill"} {
+	for _, required := range []string{"kind:canonical-decision", "source:owner-decision", "privacy:public", "propagate_to:linus", "propagate_to:bill"} {
 		if !tagSet[required] {
 			t.Errorf("missing required tag %q in %v", required, tags)
 		}
 	}
 }
 
-func TestHandlePavelDecision_SecretBackstop(t *testing.T) {
+func TestHandleRecordOwnerDecision_SecretBackstop(t *testing.T) {
 	var capturedBody map[string]any
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -192,16 +192,16 @@ func TestHandlePavelDecision_SecretBackstop(t *testing.T) {
 	ctx := withTestSession(context.Background(), server, wsID)
 
 	// Text contains a secret — should auto-elevate to private.
-	req := buildPavelDecisionRequest(
+	req := buildOwnerDecisionRequest(
 		"New deploy token: a3f8c2d1e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c9d0",
 		"Deploy token rotation",
 		[]string{"all"},
 		"",
 		"public", // caller says public but text has a secret
 	)
-	result, err := server.handlePavelDecision(ctx, req)
+	result, err := server.handleRecordOwnerDecision(ctx, req)
 	if err != nil {
-		t.Fatalf("handlePavelDecision returned error: %v", err)
+		t.Fatalf("handleRecordOwnerDecision returned error: %v", err)
 	}
 
 	out := decodeToolResultJSON(t, result)
@@ -225,7 +225,7 @@ func TestHandlePavelDecision_SecretBackstop(t *testing.T) {
 	}
 }
 
-func TestHandlePavelDecision_DeduplicatesViaSameKey(t *testing.T) {
+func TestHandleRecordOwnerDecision_DeduplicatesViaSameKey(t *testing.T) {
 	calls := 0
 	var lastKey string
 
@@ -250,13 +250,13 @@ func TestHandlePavelDecision_DeduplicatesViaSameKey(t *testing.T) {
 	}
 	ctx := withTestSession(context.Background(), server, wsID)
 
-	req := buildPavelDecisionRequest("Same decision text.", "Same summary", []string{"all"}, "", "public")
+	req := buildOwnerDecisionRequest("Same decision text.", "Same summary", []string{"all"}, "", "public")
 
 	// Call twice — both produce same key because summary+day are identical.
 	for i := 0; i < 2; i++ {
-		_, err := server.handlePavelDecision(ctx, req)
+		_, err := server.handleRecordOwnerDecision(ctx, req)
 		if err != nil {
-			t.Fatalf("call %d: handlePavelDecision error: %v", i+1, err)
+			t.Fatalf("call %d: handleRecordOwnerDecision error: %v", i+1, err)
 		}
 	}
 
@@ -272,31 +272,31 @@ func TestHandlePavelDecision_DeduplicatesViaSameKey(t *testing.T) {
 	}
 }
 
-// ── handlePavelDecision + task_id (human_gate linkage) ─────────────────────
+// ── handleRecordOwnerDecision + task_id (human_gate linkage) ─────────────────────
 
-// buildPavelDecisionRequestWithTask is buildPavelDecisionRequest plus an
+// buildOwnerDecisionRequestWithTask is buildOwnerDecisionRequest plus an
 // optional task_id argument.
-func buildPavelDecisionRequestWithTask(text, summary string, propagateTo []string, scope, privacy, taskID string) mcpsdk.CallToolRequest {
-	req := buildPavelDecisionRequest(text, summary, propagateTo, scope, privacy)
+func buildOwnerDecisionRequestWithTask(text, summary string, propagateTo []string, scope, privacy, taskID string) mcpsdk.CallToolRequest {
+	req := buildOwnerDecisionRequest(text, summary, propagateTo, scope, privacy)
 	if taskID != "" {
 		req.Params.Arguments.(map[string]any)["task_id"] = taskID
 	}
 	return req
 }
 
-// pavelTeamDirectoryPayload is a minimal team directory response carrying one
-// human with username=="pavel", matching what resolvePavelUserID looks for.
-func pavelTeamDirectoryPayload(pavelID string) map[string]any {
+// ownerTeamDirectoryPayload is a minimal team directory response carrying one
+// human with role=="owner", matching what resolveDeciderUserID falls back to.
+func ownerTeamDirectoryPayload(ownerID string) map[string]any {
 	return map[string]any{
 		"humans": []any{
-			map[string]any{"id": pavelID, "username": "pavel", "role": "owner"},
+			map[string]any{"id": ownerID, "username": "alice", "role": "owner"},
 		},
 		"agents": []any{},
 	}
 }
 
-func TestHandlePavelDecision_TaskID_LinksAndReleasesGate(t *testing.T) {
-	pavelID := uuid.New().String()
+func TestHandleRecordOwnerDecision_TaskID_LinksAndReleasesGate(t *testing.T) {
+	ownerID := uuid.New().String()
 	taskID := uuid.New().String()
 	var capturedDecisionBody map[string]any
 	var capturedDecisionPath string
@@ -310,7 +310,7 @@ func TestHandlePavelDecision_TaskID_LinksAndReleasesGate(t *testing.T) {
 				"outcome": "created",
 			})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/team"):
-			_ = json.NewEncoder(w).Encode(pavelTeamDirectoryPayload(pavelID))
+			_ = json.NewEncoder(w).Encode(ownerTeamDirectoryPayload(ownerID))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/tasks/"+taskID+"/human-gate-decisions":
 			capturedDecisionPath = r.URL.Path
 			_ = json.NewDecoder(r.Body).Decode(&capturedDecisionBody)
@@ -334,14 +334,14 @@ func TestHandlePavelDecision_TaskID_LinksAndReleasesGate(t *testing.T) {
 	server := &Server{restClient: rc, tracker: NewSessionTracker()}
 	ctx := withTestSession(context.Background(), server, wsID)
 
-	req := buildPavelDecisionRequestWithTask(
-		"Free tier stays unlimited on Pavel's own account.",
-		"TR free tier Pavel account unlimited",
+	req := buildOwnerDecisionRequestWithTask(
+		"Free tier stays unlimited on the owner's own account.",
+		"Free tier owner account unlimited",
 		nil, "", "public", taskID,
 	)
-	result, err := server.handlePavelDecision(ctx, req)
+	result, err := server.handleRecordOwnerDecision(ctx, req)
 	if err != nil {
-		t.Fatalf("handlePavelDecision returned error: %v", err)
+		t.Fatalf("handleRecordOwnerDecision returned error: %v", err)
 	}
 	out := decodeToolResultJSON(t, result)
 
@@ -366,8 +366,8 @@ func TestHandlePavelDecision_TaskID_LinksAndReleasesGate(t *testing.T) {
 		t.Errorf("decision canonical_key = %v, want %v", decision["canonical_key"], wantKey)
 	}
 
-	if capturedDecisionBody["decided_by"] != pavelID {
-		t.Errorf("decided_by = %v, want %v", capturedDecisionBody["decided_by"], pavelID)
+	if capturedDecisionBody["decided_by"] != ownerID {
+		t.Errorf("decided_by = %v, want %v", capturedDecisionBody["decided_by"], ownerID)
 	}
 	if capturedDecisionBody["provenance"] != "attested" {
 		t.Errorf("provenance = %v, want attested", capturedDecisionBody["provenance"])
@@ -375,15 +375,15 @@ func TestHandlePavelDecision_TaskID_LinksAndReleasesGate(t *testing.T) {
 	if capturedDecisionBody["channel"] != "telegram" {
 		t.Errorf("channel = %v, want telegram", capturedDecisionBody["channel"])
 	}
-	if capturedDecisionBody["quote"] != "Free tier stays unlimited on Pavel's own account." {
+	if capturedDecisionBody["quote"] != "Free tier stays unlimited on the owner's own account." {
 		t.Errorf("quote = %v, want verbatim text", capturedDecisionBody["quote"])
 	}
 }
 
-// TestHandlePavelDecision_NoTaskID_Unchanged is the regression control for
+// TestHandleRecordOwnerDecision_NoTaskID_Unchanged is the regression control for
 // AC2: omitting task_id must not call the human-gate-decisions or team
 // endpoints at all, and the response must carry no human_gate_decision* keys.
-func TestHandlePavelDecision_NoTaskID_Unchanged(t *testing.T) {
+func TestHandleRecordOwnerDecision_NoTaskID_Unchanged(t *testing.T) {
 	var otherCalls []string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -405,10 +405,10 @@ func TestHandlePavelDecision_NoTaskID_Unchanged(t *testing.T) {
 	server := &Server{restClient: rc, tracker: NewSessionTracker()}
 	ctx := withTestSession(context.Background(), server, wsID)
 
-	req := buildPavelDecisionRequest("Plain decision, no task.", "Plain decision", nil, "", "public")
-	result, err := server.handlePavelDecision(ctx, req)
+	req := buildOwnerDecisionRequest("Plain decision, no task.", "Plain decision", nil, "", "public")
+	result, err := server.handleRecordOwnerDecision(ctx, req)
 	if err != nil {
-		t.Fatalf("handlePavelDecision returned error: %v", err)
+		t.Fatalf("handleRecordOwnerDecision returned error: %v", err)
 	}
 	out := decodeToolResultJSON(t, result)
 
@@ -423,12 +423,12 @@ func TestHandlePavelDecision_NoTaskID_Unchanged(t *testing.T) {
 	}
 }
 
-// TestHandlePavelDecision_TaskID_UngatedTask_NoErrorSurfaced is AC3: a task_id
+// TestHandleRecordOwnerDecision_TaskID_UngatedTask_NoErrorSurfaced is AC3: a task_id
 // pointing at a task with no live gate still records the decision server-side
 // (the server no-ops the release, per contract) and the tool call surfaces no
 // error — canon was written either way.
-func TestHandlePavelDecision_TaskID_UngatedTask_NoErrorSurfaced(t *testing.T) {
-	pavelID := uuid.New().String()
+func TestHandleRecordOwnerDecision_TaskID_UngatedTask_NoErrorSurfaced(t *testing.T) {
+	ownerID := uuid.New().String()
 	taskID := uuid.New().String()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -440,7 +440,7 @@ func TestHandlePavelDecision_TaskID_UngatedTask_NoErrorSurfaced(t *testing.T) {
 				"outcome": "created",
 			})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/team"):
-			_ = json.NewEncoder(w).Encode(pavelTeamDirectoryPayload(pavelID))
+			_ = json.NewEncoder(w).Encode(ownerTeamDirectoryPayload(ownerID))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/tasks/"+taskID+"/human-gate-decisions":
 			// Server records the row and, because the task has no live gate,
 			// returns 201 without touching human_gate — no distinct signal in
@@ -464,10 +464,10 @@ func TestHandlePavelDecision_TaskID_UngatedTask_NoErrorSurfaced(t *testing.T) {
 	server := &Server{restClient: rc, tracker: NewSessionTracker()}
 	ctx := withTestSession(context.Background(), server, wsID)
 
-	req := buildPavelDecisionRequestWithTask("Ungated task decision.", "Ungated task decision", nil, "", "public", taskID)
-	result, err := server.handlePavelDecision(ctx, req)
+	req := buildOwnerDecisionRequestWithTask("Ungated task decision.", "Ungated task decision", nil, "", "public", taskID)
+	result, err := server.handleRecordOwnerDecision(ctx, req)
 	if err != nil {
-		t.Fatalf("handlePavelDecision returned error: %v", err)
+		t.Fatalf("handleRecordOwnerDecision returned error: %v", err)
 	}
 	out := decodeToolResultJSON(t, result)
 
@@ -479,11 +479,11 @@ func TestHandlePavelDecision_TaskID_UngatedTask_NoErrorSurfaced(t *testing.T) {
 	}
 }
 
-// TestHandlePavelDecision_TaskID_PavelUnresolvable_SurfacesError covers the
+// TestHandleRecordOwnerDecision_TaskID_DeciderUnresolvable_SurfacesError covers the
 // failure path: the canonical write still succeeds (its own assertions are
 // covered by the other tests), and a team-directory lookup failure is
 // reported via human_gate_decision_error rather than failing the whole call.
-func TestHandlePavelDecision_TaskID_PavelUnresolvable_SurfacesError(t *testing.T) {
+func TestHandleRecordOwnerDecision_TaskID_DeciderUnresolvable_SurfacesError(t *testing.T) {
 	taskID := uuid.New().String()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -495,7 +495,7 @@ func TestHandlePavelDecision_TaskID_PavelUnresolvable_SurfacesError(t *testing.T
 				"outcome": "created",
 			})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/team"):
-			// No "pavel" username and no "owner" role — unresolvable.
+			// No preferred username and no "owner" role — unresolvable.
 			_ = json.NewEncoder(w).Encode(map[string]any{"humans": []any{}, "agents": []any{}})
 		default:
 			http.NotFound(w, r)
@@ -508,10 +508,10 @@ func TestHandlePavelDecision_TaskID_PavelUnresolvable_SurfacesError(t *testing.T
 	server := &Server{restClient: rc, tracker: NewSessionTracker()}
 	ctx := withTestSession(context.Background(), server, wsID)
 
-	req := buildPavelDecisionRequestWithTask("Some decision.", "Some decision", nil, "", "public", taskID)
-	result, err := server.handlePavelDecision(ctx, req)
+	req := buildOwnerDecisionRequestWithTask("Some decision.", "Some decision", nil, "", "public", taskID)
+	result, err := server.handleRecordOwnerDecision(ctx, req)
 	if err != nil {
-		t.Fatalf("handlePavelDecision returned error: %v", err)
+		t.Fatalf("handleRecordOwnerDecision returned error: %v", err)
 	}
 	out := decodeToolResultJSON(t, result)
 
@@ -578,4 +578,58 @@ func TestHandleGetCanonicalUpdates_ForwardsParams(t *testing.T) {
 // withTestSession returns a context carrying a fake AgentSession so getSession(ctx) returns it.
 func withTestSession(ctx context.Context, _ *Server, wsID uuid.UUID) context.Context {
 	return ContextWithSession(ctx, &AgentSession{WorkspaceID: wsID})
+}
+
+// ── decider resolution & published tool names ───────────────────────────────
+
+// TestResolveDeciderUserID_PreferredUsernameWins pins the operator override:
+// with MESH_MCP_DECIDER_USERNAME set, that human is decided_by even when a
+// different human holds role=owner.
+func TestResolveDeciderUserID_PreferredUsernameWins(t *testing.T) {
+	preferredID, otherOwnerID := uuid.New().String(), uuid.New().String()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"humans": []any{
+				map[string]any{"id": otherOwnerID, "username": "carol", "role": "owner"},
+				map[string]any{"id": preferredID, "username": "dave", "role": "member"},
+			},
+			"agents": []any{},
+		})
+	}))
+	defer srv.Close()
+
+	server := &Server{restClient: NewRESTClient(srv.URL, "test-key"), tracker: NewSessionTracker()}
+	ctx := withTestSession(context.Background(), server, uuid.New())
+
+	t.Setenv(envDeciderUsername, "dave")
+	if got, err := server.resolveDeciderUserID(ctx); err != nil || got != preferredID {
+		t.Errorf("with %s=dave: got (%q, %v), want %q", envDeciderUsername, got, err, preferredID)
+	}
+	t.Setenv(envDeciderUsername, "")
+	if got, err := server.resolveDeciderUserID(ctx); err != nil || got != otherOwnerID {
+		t.Errorf("with %s unset: got (%q, %v), want owner %q", envDeciderUsername, got, err, otherOwnerID)
+	}
+}
+
+// TestPublishedToolNames_LegacyDecisionAliasIsOptIn: catalogs read tools/list
+// of the published binary, so the legacy name must be absent by default and
+// present only when a deployment opts in.
+func TestPublishedToolNames_LegacyDecisionAliasIsOptIn(t *testing.T) {
+	for _, profile := range []string{ProfileCore, ProfileFull} {
+		t.Setenv(envLegacyToolAliases, "")
+		tools := NewServer(ServerConfig{Profile: profile}).MCPServer().ListTools()
+		if _, ok := tools[toolRecordOwnerDecision]; !ok {
+			t.Errorf("profile %s: %s not registered", profile, toolRecordOwnerDecision)
+		}
+		if _, ok := tools[toolLegacyDecisionAlias]; ok {
+			t.Errorf("profile %s: legacy alias %s registered without opt-in", profile, toolLegacyDecisionAlias)
+		}
+
+		t.Setenv(envLegacyToolAliases, "1")
+		tools = NewServer(ServerConfig{Profile: profile}).MCPServer().ListTools()
+		if _, ok := tools[toolLegacyDecisionAlias]; !ok {
+			t.Errorf("profile %s: legacy alias %s missing with %s=1", profile, toolLegacyDecisionAlias, envLegacyToolAliases)
+		}
+	}
 }

@@ -221,7 +221,7 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 | `recall_with_graph` | Search memory, expanding results through the knowledge graph |
 | `set_project_knowledge` | Write a structured project fact (upsert by key) |
 | `get_canonical_updates` | Fetch canonical decisions recorded since a given time |
-| `pavel_decision` | Record a decision by the workspace owner as canonical project knowledge |
+| `record_owner_decision` | Record a decision by the workspace owner as canonical project knowledge |
 
 #### What `recall` guarantees about its result
 

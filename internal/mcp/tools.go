@@ -2694,7 +2694,7 @@ func (s *Server) handleSessionReport(ctx context.Context, request mcpsdk.CallToo
 }
 
 // ============================================================================
-// pavel_decision / get_canonical_updates
+// record_owner_decision / get_canonical_updates
 // ============================================================================
 
 // secretPattern matches text that should be auto-flagged privacy:private.
@@ -2725,7 +2725,7 @@ func slugify(s string) string {
 	return s
 }
 
-func (s *Server) handlePavelDecision(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+func (s *Server) handleRecordOwnerDecision(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	session := s.getSession(ctx)
 	if session == nil {
 		return errResult("not authenticated: no agent session")
@@ -2749,8 +2749,7 @@ func (s *Server) handlePavelDecision(ctx context.Context, request mcpsdk.CallToo
 	day := time.Now().UTC().Format("2006-01-02")
 	tags := []string{
 		"kind:canonical-decision",
-		"owner:riker",
-		"source:pavel-tg",
+		"source:owner-decision",
 		"privacy:" + privacy,
 	}
 	for _, target := range propagateTo {
@@ -2776,7 +2775,7 @@ func (s *Server) handlePavelDecision(ctx context.Context, request mcpsdk.CallToo
 
 	result, err := s.getRESTClient(ctx).Remember(ctx, body)
 	if err != nil {
-		return errResult("pavel_decision failed: %v", err)
+		return errResult("%s failed: %v", toolRecordOwnerDecision, err)
 	}
 
 	var id, recordedAt string
@@ -2802,9 +2801,9 @@ func (s *Server) handlePavelDecision(ctx context.Context, request mcpsdk.CallToo
 	// failure here is reported alongside it rather than discarding the canon record.
 	// Omitting task_id leaves behavior identical to before this field existed.
 	if taskID := mcpsdk.ParseString(request, "task_id", ""); taskID != "" {
-		decidedBy, pavelErr := s.resolvePavelUserID(ctx)
-		if pavelErr != nil {
-			resp["human_gate_decision_error"] = fmt.Sprintf("could not resolve Pavel's user id: %v", pavelErr)
+		decidedBy, deciderErr := s.resolveDeciderUserID(ctx)
+		if deciderErr != nil {
+			resp["human_gate_decision_error"] = fmt.Sprintf("could not resolve the deciding user's id: %v", deciderErr)
 		} else {
 			decision, hgdErr := s.getRESTClient(ctx).CreateHumanGateDecision(ctx, taskID, map[string]any{
 				"canonical_key": key,
@@ -2824,12 +2823,11 @@ func (s *Server) handlePavelDecision(ctx context.Context, request mcpsdk.CallToo
 	return jsonResult(resp)
 }
 
-// resolvePavelUserID finds Pavel's user UUID from the workspace team
-// directory, for decided_by on a human_gate decision record (contract
-// docs/human-gate-decision-recorded.md §3 in evc-mesh: "decided_by — человек,
-// принявший решение, сегодня — user-id Pavel'я"). Prefers username=="pavel";
-// falls back to role=="owner" if the username ever changes.
-func (s *Server) resolvePavelUserID(ctx context.Context) (string, error) {
+// resolveDeciderUserID finds the user UUID recorded as decided_by on a
+// human_gate decision (contract docs/human-gate-decision-recorded.md §3 in
+// evc-mesh). If MESH_MCP_DECIDER_USERNAME is set, the human with that username
+// wins; otherwise — and as a fallback — the first human with role=="owner".
+func (s *Server) resolveDeciderUserID(ctx context.Context) (string, error) {
 	session := s.getSession(ctx)
 	if session == nil {
 		return "", fmt.Errorf("not authenticated: no agent session")
@@ -2838,6 +2836,7 @@ func (s *Server) resolvePavelUserID(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	preferred := strings.TrimSpace(os.Getenv(envDeciderUsername))
 	humans, _ := dir["humans"].([]any)
 	var ownerID string
 	for _, h := range humans {
@@ -2849,7 +2848,7 @@ func (s *Server) resolvePavelUserID(ctx context.Context) (string, error) {
 		if id == "" {
 			continue
 		}
-		if username, _ := hm["username"].(string); username == "pavel" {
+		if username, _ := hm["username"].(string); preferred != "" && username == preferred {
 			return id, nil
 		}
 		if ownerID == "" {
@@ -2861,7 +2860,10 @@ func (s *Server) resolvePavelUserID(ctx context.Context) (string, error) {
 	if ownerID != "" {
 		return ownerID, nil
 	}
-	return "", fmt.Errorf("no user with username=pavel or role=owner found in team directory")
+	if preferred != "" {
+		return "", fmt.Errorf("no user with username=%s or role=owner found in team directory", preferred)
+	}
+	return "", fmt.Errorf("no user with role=owner found in team directory")
 }
 
 func (s *Server) handleGetCanonicalUpdates(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {

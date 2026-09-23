@@ -480,7 +480,11 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithBoolean("attach_context", mcpsdk.Description("When false, disables auto-injection of thread_id and source_task_id."), mcpsdk.DefaultBool(true)),
 	), s.tracked("set_project_knowledge", s.handleSetProjectKnowledge))
 
-	s.addTool(mcpsdk.NewTool("pavel_decision",
+	// record_owner_decision is the public name. The legacy name is registered only
+	// when the operator opts in (MESH_MCP_LEGACY_TOOL_ALIASES=1) so an existing
+	// deployment's callers keep working, while the published binary — what
+	// catalogs list via tools/list — never shows it.
+	decisionOpts := []mcpsdk.ToolOption{
 		mcpsdk.WithDescription("Record a directive from the workspace owner as a canonical decision in project_knowledge. Broadcasts to specified agents via propagate_to tags. privacy:private records are stored but EXCLUDED from get_canonical_updates. Auto-flags private if text contains secrets. If task_id is given, also records this as a human_gate decision on that task (docs/human-gate-decision-recorded.md in evc-mesh) — releases the gate as a consequence if it's currently live, and links back via canonical_key. Best-effort: a failure here is reported in the result but does not undo the canonical write."),
 		mcpsdk.WithString("text", mcpsdk.Required(), mcpsdk.Description("Full text of the decision/directive.")),
 		mcpsdk.WithString("summary", mcpsdk.Required(), mcpsdk.Description("One-line summary used as UPSERT key (dedupes same decision on same day).")),
@@ -488,7 +492,13 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("scope", mcpsdk.Description("Optional project_id UUID. Omit for workspace-level decisions.")),
 		mcpsdk.WithString("privacy", mcpsdk.Description("'public' (default, visible in change-feed) or 'private' (recorded but hidden)."), mcpsdk.DefaultString("public")),
 		mcpsdk.WithString("task_id", mcpsdk.Description("Optional task UUID this decision answers. When set, also records a human_gate decision on that task (provenance=attested, channel=telegram, quote=text) — releasing a live human_gate as a consequence. Omit for a plain canonical-only record (unchanged behavior).")),
-	), s.tracked("pavel_decision", s.handlePavelDecision))
+	}
+	s.addTool(mcpsdk.NewTool(toolRecordOwnerDecision, decisionOpts...),
+		s.tracked(toolRecordOwnerDecision, s.handleRecordOwnerDecision))
+	if legacyToolAliasesEnabled() {
+		s.addTool(mcpsdk.NewTool(toolLegacyDecisionAlias, decisionOpts...),
+			s.tracked(toolLegacyDecisionAlias, s.handleRecordOwnerDecision))
+	}
 
 	s.addTool(mcpsdk.NewTool("get_canonical_updates",
 		mcpsdk.WithDescription("Fetch canonical decisions broadcast since a given time. Call at ACP step 6 (session start) to catch up on owner directives since your previous session. Returns only privacy:public records targeted at you or all agents."),

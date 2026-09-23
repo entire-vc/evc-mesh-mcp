@@ -13,6 +13,8 @@ import (
 // clients and catalogs never fall back to the "may be destructive" default
 // for a tool that only reads.
 func TestEveryToolIsAnnotated(t *testing.T) {
+	// Opt-in legacy aliases are tools too and need annotations when registered.
+	t.Setenv(envLegacyToolAliases, "1")
 	srv := NewServer(ServerConfig{Profile: ProfileFull})
 	tools := srv.MCPServer().ListTools()
 	if len(tools) == 0 {
