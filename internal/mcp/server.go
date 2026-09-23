@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
@@ -108,6 +109,11 @@ type Server struct {
 	// checked-out task. Used by handleRemember to auto-populate source_task_id when
 	// absent, enabling Amendment 2/3 edge hooks (thread + task-graph bridges).
 	activeTaskIDs sync.Map
+	// deferredSession is set once a deferred authentication succeeds (stdio
+	// mode started while the Mesh API was unreachable or rejected the key).
+	deferredSession atomic.Pointer[AgentSession]
+	// authMu serialises deferred authentication attempts.
+	authMu sync.Mutex
 }
 
 // getSession returns the AgentSession for the current request.
@@ -117,7 +123,10 @@ func (s *Server) getSession(ctx context.Context) *AgentSession {
 	if session := SessionFromContext(ctx); session != nil {
 		return session
 	}
-	return s.session
+	if s.session != nil {
+		return s.session
+	}
+	return s.deferredSession.Load()
 }
 
 // getRESTClient returns the REST client for the current request.
@@ -144,6 +153,10 @@ type ServerConfig struct {
 	// this text instead of reaching the Mesh API. Used when stdio mode starts
 	// without MESH_AGENT_KEY (e.g. an MCP catalog inspecting the server).
 	SetupHint string
+	// Authenticate, when set and Session is nil, is called before a tool call
+	// until it succeeds: stdio mode whose startup authentication failed keeps
+	// running, lists its tools, and retries on use instead of exiting.
+	Authenticate func(context.Context) (*AgentSession, error)
 }
 
 // NewServer creates a new MCP server with tools registered according to the profile.
@@ -183,8 +196,11 @@ func (s *Server) serverOptions(cfg ServerConfig) []mcpserver.ServerOption {
 		mcpserver.WithTitle("EVC Mesh"),
 		mcpserver.WithWebsiteURL("https://github.com/entire-vc/evc-mesh-mcp"),
 	}
-	if cfg.SetupHint != "" {
+	switch {
+	case cfg.SetupHint != "":
 		opts = append(opts, mcpserver.WithToolHandlerMiddleware(unconfiguredMiddleware(cfg.SetupHint)))
+	case cfg.Session == nil && cfg.Authenticate != nil:
+		opts = append(opts, mcpserver.WithToolHandlerMiddleware(s.deferredAuthMiddleware(cfg.Authenticate)))
 	}
 	return opts
 }

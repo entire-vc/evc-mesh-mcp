@@ -160,7 +160,30 @@ func main() {
 		log.Printf("Connecting to Mesh API at %s...", apiURL)
 		agentInfo, err := authenticateWithRetry(context.Background(), restClient)
 		if err != nil {
-			log.Fatalf("Agent authentication failed: %v", err)
+			// Keep serving instead of exiting: the client still sees the tools,
+			// and every call retries authentication and, until it succeeds,
+			// returns the reason. A transient API outage at startup used to
+			// leave the client with no Mesh tools for the whole session.
+			log.Printf("Agent authentication failed: %v — serving tools, will retry on each call", err)
+			srv := mcpserver.NewServer(mcpserver.ServerConfig{
+				RESTClient: restClient,
+				Profile:    profile,
+				Authenticate: func(ctx context.Context) (*mcpserver.AgentSession, error) {
+					info, err := restClient.GetAgentMe(ctx)
+					if err != nil {
+						return nil, err
+					}
+					id, _ := info["id"].(string)
+					ws, _ := info["workspace_id"].(string)
+					name, _ := info["name"].(string)
+					typ, _ := info["agent_type"].(string)
+					return buildSession(id, ws, name, typ)
+				},
+			})
+			if err := sdkserver.ServeStdio(srv.MCPServer()); err != nil {
+				log.Fatalf("MCP server error: %v", err)
+			}
+			return
 		}
 
 		agentID, _ := agentInfo["id"].(string)
