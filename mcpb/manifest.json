@@ -27,9 +27,9 @@
   ],
   "server": {
     "type": "binary",
-    "entry_point": "server/evc-mesh-mcp-linux-amd64",
+    "entry_point": "server/evc-mesh-mcp",
     "mcp_config": {
-      "command": "${__dirname}/server/evc-mesh-mcp-linux-amd64",
+      "command": "${__dirname}/server/evc-mesh-mcp",
       "args": [],
       "env": {
         "MESH_API_URL": "${user_config.mesh_api_url}",
@@ -42,6 +42,9 @@
         },
         "win32": {
           "command": "${__dirname}/server/evc-mesh-mcp-win32-amd64.exe"
+        },
+        "linux": {
+          "command": "${__dirname}/server/evc-mesh-mcp-linux-amd64"
         }
       }
     }

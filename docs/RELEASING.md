@@ -32,6 +32,13 @@ per CPU architecture. The bundle therefore carries three binaries:
 
 On Linux ARM, use the container image or `go install`.
 
+Not every client reads `platform_overrides`: the Smithery CLI runs
+`mcp_config.command` as is. The default command is therefore
+`server/evc-mesh-mcp` (from `mcpb/launch.sh`), a POSIX launcher that picks
+the binary for the host's OS and architecture. Clients that do honour the
+overrides start the per-OS binary directly. `TestMCPBDefaultCommandIsLauncher`
+fails if the default points at a single platform's binary again.
+
 ## Cutting a release
 
 ```bash
