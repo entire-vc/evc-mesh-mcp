@@ -1,7 +1,7 @@
 name: Deploy MCP server to mesh VM (via hel01)
 
-# Delivery path for THIS repository's binary to the public MCP endpoint
-# (https://mesh.entire.host/mcp). Background: Mesh task #3bc9f59d.
+# Delivery path for THIS repository's binary to the public MCP endpoint.
+# Background: Mesh task #3bc9f59d.
 #
 # ─── The cutover is DONE (2026-08-23, subtask #e85e4e05) ────────────────────
 # evc-mesh/cmd/mcp — the second copy of this server — has been deleted, and
@@ -22,7 +22,7 @@ name: Deploy MCP server to mesh VM (via hel01)
 # from a manual job in entire-vc/deploy, with `allow_failure: false`, on a
 # human's click. An auto-deploy here would make this the one product that
 # ships itself, and it would ship on a MIRROR push (GitHub) rather than from
-# the canonical repository (git.entire.host) — deploy triggered by a copy.
+# the canonical repository (self-hosted GitLab) — deploy triggered by a copy.
 #
 # So this stays dispatch-only. What that costs, named plainly: a merged fix
 # does NOT reach prod until someone dispatches this workflow. If that gap
@@ -86,23 +86,24 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
-      # CI runners reach the mesh VM (private 10.10.10.10) only through the
-      # hel01 forwarding-only jump user `ghdeploy`. This repository has its own
-      # key (`ghdeploy-mesh-mcp@hel01-20260823`), not a copy of evc-mesh's:
-      # revoking one must not break the other. On hel01 it is pinned to
-      # permitopen="10.10.10.10:22"; on mesh-vm it carries `restrict`.
+      # CI runners reach the mesh VM (private address, secrets.MESH_VM_HOST) only
+      # through the hel01 forwarding-only jump user `ghdeploy`. This repository
+      # has its own key (`ghdeploy-mesh-mcp@hel01-20260823`), not a copy of
+      # evc-mesh's: revoking one must not break the other. On hel01 it is
+      # pinned to permitopen="<mesh VM's private address>:22"; on mesh-vm it
+      # carries `restrict`.
       - name: Configure hel01 jump
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          ssh-keyscan -H 66.151.34.194 >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -H ${{ secrets.HEL01_JUMP_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
           {
             echo "Host mesh-vm"
-            echo "  HostName 10.10.10.10"
+            echo "  HostName ${{ secrets.MESH_VM_HOST }}"
             echo "  User root"
             echo "  ProxyJump hel01-jump"
             echo "  StrictHostKeyChecking accept-new"
             echo "Host hel01-jump"
-            echo "  HostName 66.151.34.194"
+            echo "  HostName ${{ secrets.HEL01_JUMP_HOST }}"
             echo "  User ghdeploy"
             echo "  StrictHostKeyChecking accept-new"
           } >> ~/.ssh/config
