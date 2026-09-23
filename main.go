@@ -82,6 +82,12 @@ func isTransientAuthError(err error) bool {
 	return true
 }
 
+// unconfiguredHint is returned by every tool call when stdio mode starts
+// without an agent key.
+const unconfiguredHint = "EVC Mesh is not configured yet. Set MESH_API_URL to your Mesh instance " +
+	"(for example https://mesh.example.com) and MESH_AGENT_KEY to an agent key (agk_...) " +
+	"created in that workspace under Settings → Agents, then restart the MCP server."
+
 func main() {
 	// All logging goes to stderr so that stdout is reserved for MCP JSON-RPC.
 	log.SetOutput(os.Stderr)
@@ -117,16 +123,37 @@ func main() {
 		apiURL = "http://localhost:8005"
 	}
 
-	// 3. For stdio mode, require MESH_AGENT_KEY upfront.
+	// 3. For stdio mode, MESH_AGENT_KEY identifies the agent. Without it the
+	//    server still starts, in unconfigured mode: it initializes and lists
+	//    its tools, and every tool call returns setup instructions. That is
+	//    what MCP clients and catalogs need to inspect the server before the
+	//    user has entered credentials.
 	//    For SSE mode, agent keys are provided per-connection via HTTP headers/query params.
 	agentKey := os.Getenv("MESH_AGENT_KEY")
-	if transport == "stdio" && agentKey == "" {
-		log.Fatal("MESH_AGENT_KEY environment variable is required for stdio mode")
+
+	// Tool profile for stdio mode (SSE serves both profiles on separate paths).
+	profile := strings.ToLower(strings.TrimSpace(os.Getenv("MESH_MCP_PROFILE")))
+	if profile == "" {
+		profile = mcpserver.ProfileFull
+	}
+	if profile != mcpserver.ProfileCore && profile != mcpserver.ProfileFull {
+		log.Fatalf("Invalid MESH_MCP_PROFILE %q: must be 'core' or 'full'", profile)
 	}
 
 	// 4. Start transport.
 	switch transport {
 	case "stdio":
+		if agentKey == "" {
+			log.Println("MESH_AGENT_KEY is not set — starting unconfigured: tools are listed, calls return setup instructions")
+			srv := mcpserver.NewServer(mcpserver.ServerConfig{
+				Profile:   profile,
+				SetupHint: unconfiguredHint,
+			})
+			if err := sdkserver.ServeStdio(srv.MCPServer()); err != nil {
+				log.Fatalf("MCP server error: %v", err)
+			}
+			return
+		}
 		restClient := mcpserver.NewRESTClient(apiURL, agentKey)
 
 		// Verify connectivity and get agent info.
@@ -152,6 +179,7 @@ func main() {
 		cfg := mcpserver.ServerConfig{
 			Session:    session,
 			RESTClient: restClient,
+			Profile:    profile,
 		}
 
 		srv := mcpserver.NewServer(cfg)
