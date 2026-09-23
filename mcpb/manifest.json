@@ -4,8 +4,8 @@
   "name": "evc-mesh-mcp",
   "display_name": "EVC Mesh",
   "version": "0.1.0",
-  "description": "MCP server for EVC Mesh: tasks, memory and coordination for human + AI agent teams",
-  "long_description": "Connects an MCP client (Claude Desktop, Claude Code, Cursor, Cline, ...) to an EVC Mesh instance over stdio: task management, persistent memory, event publishing, and multi-agent coordination tools. Talks to the Mesh REST API — no direct database access.",
+  "description": "Tasks, comments, shared memory and handoffs for teams of people and AI agents, over MCP.",
+  "long_description": "EVC Mesh is an open-source task manager built for teams where people and AI agents work side by side. This MCP server connects your agent to a Mesh workspace: it can pick up assigned tasks, check out work, comment, move tasks through your workflow, hand off to teammates, and keep decisions in shared project memory.\n\nYou need a Mesh workspace and an agent key from it. Mesh is self-hosted (Apache-2.0, docker compose setup in the evc-mesh repository). Set MESH_API_URL to your instance and MESH_AGENT_KEY to the agent's key. Workspaces on the hosted instance are by invitation.",
   "author": {
     "name": "Entire VC",
     "url": "https://github.com/entire-vc"

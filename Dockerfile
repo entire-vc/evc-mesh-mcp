@@ -43,7 +43,7 @@ FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 ARG BUILD_SHA
 
 LABEL org.opencontainers.image.title="evc-mesh-mcp" \
-      org.opencontainers.image.description="MCP server for EVC Mesh: tasks, memory and coordination for human + AI agent teams" \
+      org.opencontainers.image.description="Tasks, comments, shared memory and handoffs for teams of people and AI agents, over MCP." \
       org.opencontainers.image.source="https://github.com/entire-vc/evc-mesh-mcp" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.vendor="Entire VC" \
