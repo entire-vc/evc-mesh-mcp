@@ -34,8 +34,8 @@ The MCP server supports two profiles to optimize context window usage:
 
 | Profile | Tools | Context overhead | Best for |
 |---------|-------|-----------------|----------|
-| **core** | 20 | ~6K tokens (3% of 200K) | Claude Code, Cursor, small-context models |
-| **full** | 45 | ~14K tokens (7% of 200K) | Power users, automation agents, admin ops |
+| **core** | 25 | ~8K tokens (4% of 200K) | Claude Code, Cursor, small-context models |
+| **full** | 63 | ~18K tokens (9% of 200K) | Power users, automation agents, admin ops |
 
 Set via `MESH_MCP_PROFILE` environment variable. Default: `full`.
 
@@ -45,10 +45,31 @@ Set via `MESH_MCP_PROFILE` environment variable. Default: `full`.
 |----------|----------|---------|-------------|
 | `MESH_API_URL` | Yes | `http://localhost:8005` | Base URL of the Mesh API |
 | `MESH_AGENT_KEY` | Yes (stdio) | — | Agent API key (`agk_...`) |
-| `MESH_MCP_PROFILE` | No | `full` | Tool profile: `core` or `full` |
+| `MESH_MCP_PROFILE` | No | `full` | Tool profile for stdio: `core` or `full` (SSE serves both) |
 | `MESH_MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio` or `sse` |
 | `MESH_MCP_HOST` | No | `0.0.0.0` | SSE server bind host |
 | `MESH_MCP_PORT` | No | `8081` | SSE server bind port |
+
+### Running without credentials
+
+In stdio mode the server also starts when `MESH_AGENT_KEY` is not set. It then
+answers `initialize` and `tools/list` as usual, and every tool call returns
+instructions for setting `MESH_API_URL` and `MESH_AGENT_KEY`. This lets MCP
+clients and catalogs inspect the tool list before you have a key. A key that is
+set but rejected by the API still stops the server with an error.
+
+### Tool annotations
+
+Every tool declares the MCP hints `readOnlyHint`, `destructiveHint`,
+`idempotentHint` and `openWorldHint`, so clients can tell read-only tools
+(`get_*`, `list_*`, `recall`, `search_docs`, …) from ones that change or
+remove data (`update_*`, `move_task`, `forget`, …).
+
+### Client metrics
+
+Each `initialize` is logged with the client's `clientInfo.name` and version,
+and counted in the Prometheus metric `mesh_mcp_initialize_total{client,profile}`
+(exposed on `/metrics` in SSE mode; client names are normalised and capped).
 
 ### Claude Code (stdio mode)
 
@@ -100,8 +121,8 @@ SSE mode serves **two profiles simultaneously** on different paths:
 
 | Path | Profile | Description |
 |------|---------|-------------|
-| `/sse` + `/message` | full | All 45 tools (backward compatible) |
-| `/core/sse` + `/core/message` | core | 20 essential tools |
+| `/sse` + `/message` | full | All 63 tools (backward compatible) |
+| `/core/sse` + `/core/message` | core | 25 essential tools |
 
 Authentication per connection via:
 - `Authorization: Bearer agk_...` header
