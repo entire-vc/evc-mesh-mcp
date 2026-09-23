@@ -1,7 +1,7 @@
 # Deploying this binary to mesh-vm
 
 `https://mesh.entire.host/mcp` is served by `mesh-mcp.service` on **mesh-vm**
-(`10.10.10.10`, reachable only through the hel01 edge). Today that service runs
+(private address, `secrets.MESH_VM_HOST` — reachable only through the hel01 edge). Today that service runs
 a binary built from a *second copy* of this MCP server that lives in
 `evc-mesh/cmd/mcp`; the two copies have drifted by 37 functions, all in one
 direction — this repository is ahead. Mesh task `#3bc9f59d` removes the copy,
@@ -98,21 +98,22 @@ file cannot see.
 
 ## Credentials
 
-The workflow uses `secrets.DEPLOY_SSH_KEY` — this repository's **own** key
-(`ghdeploy-mesh-mcp@hel01-20260823`), not a copy of evc-mesh's. Revoking one
-must not break the other. It is scoped on both hops, and both restrictions were
-verified rather than assumed:
+The workflow uses `secrets.DEPLOY_SSH_KEY` — this repository's **own** jump-user
+key, distinct from evc-mesh's. Revoking one must not break the other. It is
+scoped on both hops, and both restrictions were verified rather than assumed.
+(General jump-host mechanism and how to register a new product's key: see
+evc-mesh's `docs/DEPLOY_HEL01.md`, same pattern.)
 
-* hel01 `ghdeploy`: `restrict,port-forwarding,permitopen="10.10.10.10:22"`, shell
-  `/usr/sbin/nologin` — a shell attempt answers *"This account is currently not
+* hel01 `ghdeploy`: `restrict,port-forwarding,permitopen="<mesh VM's private address>:22"`,
+  shell `/usr/sbin/nologin` — a shell attempt answers *"This account is currently not
   available"*, and a tunnel to any other internal host is refused with
   *"administratively prohibited"*.
 * mesh-vm `root`: `restrict` — no pty, no forwarding.
 
-To revoke: delete the secret, then drop the
-`ghdeploy-mesh-mcp@hel01-20260823` line from `/home/ghdeploy/.ssh/authorized_keys`
-on hel01 and `/root/.ssh/authorized_keys` on mesh-vm. Pre-change copies of both
-files are kept beside them as `authorized_keys.bak-20260823-pre-meshmcp`.
+To revoke: delete the secret, then drop this repository's deploy-key line from
+the jump user's `authorized_keys` on hel01 and from `root`'s on mesh-vm — the
+exact key comment/path is operational data, not published here. A pre-change
+backup of both `authorized_keys` files is kept beside each original.
 
 ## The drill
 

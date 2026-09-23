@@ -88,10 +88,10 @@ jobs:
 
       # CI runners reach the mesh VM (private address, secrets.MESH_VM_HOST) only
       # through the hel01 forwarding-only jump user `ghdeploy`. This repository
-      # has its own key (`ghdeploy-mesh-mcp@hel01-20260823`), not a copy of
-      # evc-mesh's: revoking one must not break the other. On hel01 it is
-      # pinned to permitopen="<mesh VM's private address>:22"; on mesh-vm it
-      # carries `restrict`.
+      # has its own deploy key, not a copy of evc-mesh's: revoking one must not
+      # break the other. On hel01 it is pinned to
+      # permitopen="<mesh VM's private address>:22"; on mesh-vm it carries
+      # `restrict`.
       - name: Configure hel01 jump
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
