@@ -200,10 +200,12 @@ func main() {
 
 		// SSE mode: per-connection authentication via HTTP headers/query params.
 		// Create session cache that authenticates via REST API.
-		sessionCache := &agentSessionCache{
-			apiURL:    apiURL,
-			publicURL: publicURL,
-		}
+		sessionCache := newAgentSessionCache(apiURL, publicURL)
+
+		// Per-IP budget for authentication attempts against a not-yet-cached
+		// key, shared across /sse, /core/sse, /mcp and /mcp/core — see
+		// ipRateLimiter's doc comment (ratelimit.go) for why this exists.
+		authLimiter := newIPRateLimiter(envIntOrDefault("MESH_MCP_AUTH_FAIL_RPM", defaultAuthFailRPM))
 
 		// For SSE mode, create a server without a static session.
 		// Per-connection sessions are injected via the SSE context function.
@@ -340,6 +342,9 @@ func main() {
 				http.Error(w, "Missing agent key: provide Authorization: Bearer agk_..., X-Agent-Key header, or ?agent_key query param", http.StatusUnauthorized)
 				return
 			}
+			if !sessionCache.peekValid(key) && !checkAuthRateLimit(w, r, authLimiter) {
+				return
+			}
 
 			// Validate the key at connection time to fail fast.
 			_, err := sessionCache.GetOrAuthenticate(r.Context(), key)
@@ -359,6 +364,9 @@ func main() {
 			key := extractAgentKeyFromRequest(r)
 			if key == "" {
 				http.Error(w, "Missing agent key: provide Authorization: Bearer agk_..., X-Agent-Key header, or ?agent_key query param", http.StatusUnauthorized)
+				return
+			}
+			if !sessionCache.peekValid(key) && !checkAuthRateLimit(w, r, authLimiter) {
 				return
 			}
 
@@ -388,8 +396,8 @@ func main() {
 		}
 		fullHTTP := sdkserver.NewStreamableHTTPServer(fullSrv.MCPServer(), streamOpts...)
 		coreHTTP := sdkserver.NewStreamableHTTPServer(coreSrv.MCPServer(), streamOpts...)
-		mux.Handle(streamablePath, requireAgentKey(sessionCache, "streamable", fullHTTP))
-		mux.Handle(coreBasePath, requireAgentKey(sessionCache, "streamable core", coreHTTP))
+		mux.Handle(streamablePath, requireAgentKey(sessionCache, authLimiter, "streamable", fullHTTP))
+		mux.Handle(coreBasePath, requireAgentKey(sessionCache, authLimiter, "streamable core", coreHTTP))
 
 		// /read-counter — unauthenticated JSON snapshot for nightly cron / Grafana scrape.
 		mux.HandleFunc("/read-counter", func(w http.ResponseWriter, r *http.Request) {
@@ -440,14 +448,18 @@ const coreBasePath = "/core"
 // streamablePath is where the full-profile Streamable HTTP endpoint is mounted.
 const streamablePath = "/mcp"
 
-// requireAgentKey rejects a request that carries no agent key (401) or a key
-// the Mesh API does not accept (403) before it reaches an MCP transport.
+// requireAgentKey rejects a request that carries no agent key (401), one
+// whose source IP has exhausted its authentication-attempt budget (429,
+// without even asking Mesh API — see checkAuthRateLimit), or a key the Mesh
+// API does not accept (403), before it reaches an MCP transport. limiter may
+// be nil to disable the rate-limit check (e.g. in a test that isn't
+// exercising it).
 //
 // The Streamable HTTP endpoints are stateless, so the key travels with every
 // request. They accept it from headers only: a key in the query string would
 // be repeated in every request URL, where proxies and tools tend to log it.
 // (The legacy SSE connect step keeps the query fallback for EventSource.)
-func requireAgentKey(cache *agentSessionCache, what string, next http.Handler) http.Handler {
+func requireAgentKey(cache *agentSessionCache, limiter *ipRateLimiter, what string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Has("agent_key") {
 			http.Error(w, "Pass the agent key in a header (Authorization: Bearer agk_... or X-Agent-Key), not in the URL", http.StatusBadRequest)
@@ -457,6 +469,9 @@ func requireAgentKey(cache *agentSessionCache, what string, next http.Handler) h
 		if key == "" {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="evc-mesh"`)
 			http.Error(w, "Missing agent key: provide Authorization: Bearer agk_..., X-Agent-Key header, or ?agent_key query param", http.StatusUnauthorized)
+			return
+		}
+		if !cache.peekValid(key) && !checkAuthRateLimit(w, r, limiter) {
 			return
 		}
 		if _, err := cache.GetOrAuthenticate(r.Context(), key); err != nil {
@@ -562,21 +577,137 @@ func safeKeyPrefix(key string) string {
 	return key
 }
 
+// defaultSessionCacheTTL bounds how long a successful authentication is
+// trusted before the key is re-checked against Mesh API. Without this, a
+// revoked agent key kept authenticating successfully here indefinitely —
+// GetOrAuthenticate never re-verified a key it had already accepted once,
+// so revocation only took effect on the next process restart. Override via
+// MESH_MCP_SESSION_CACHE_TTL_MIN. Task #887de18a.
+const defaultSessionCacheTTL = 15 * time.Minute
+
+// defaultAuthFailCacheTTL bounds how long a FAILED authentication is
+// remembered, so a client (or attacker) retrying the exact same bad key
+// doesn't force a fresh GET /api/v1/agents/me on every single request.
+// Streamable HTTP (/mcp, /mcp/core) re-authenticates on every request
+// (WithStateLess(true)), so before this a bad-key loop turned 1:1 into load
+// on Mesh API. Override via MESH_MCP_AUTH_FAIL_CACHE_SEC. Task #887de18a.
+const defaultAuthFailCacheTTL = 30 * time.Second
+
 // agentSessionCache caches authenticated agent sessions by agent key.
+//
+// Two independent TTLs bound how long an entry is trusted without asking
+// Mesh API again — see defaultSessionCacheTTL and defaultAuthFailCacheTTL
+// for what each defends against. Zero-value ttl/negTTL (e.g. a bare
+// &agentSessionCache{apiURL: ...} in a test) fall back to those defaults via
+// sessionTTL()/failTTL() rather than caching nothing or everything forever;
+// use newAgentSessionCache to build one from the environment instead.
 type agentSessionCache struct {
 	mu        sync.RWMutex
-	cache     map[string]*mcpserver.AgentSession
+	cache     map[string]sessionCacheEntry
+	negCache  map[string]negCacheEntry
 	apiURL    string
 	publicURL string
+	ttl       time.Duration // positive entry TTL; <=0 = use defaultSessionCacheTTL
+	negTTL    time.Duration // negative entry TTL; <=0 = use defaultAuthFailCacheTTL
+}
+
+type sessionCacheEntry struct {
+	session   *mcpserver.AgentSession
+	expiresAt time.Time
+}
+
+type negCacheEntry struct {
+	err       error
+	expiresAt time.Time
+}
+
+// newAgentSessionCache builds a cache with TTLs read from the environment
+// (or their defaults) and starts a background goroutine that evicts expired
+// entries. Without that eviction, a stream of distinct never-valid keys —
+// exactly the traffic negCache exists to absorb — would grow it without
+// bound between successful lookups (which are the only other place entries
+// are removed, via the delete(c.negCache, key) in GetOrAuthenticate).
+func newAgentSessionCache(apiURL, publicURL string) *agentSessionCache {
+	c := &agentSessionCache{
+		apiURL:    apiURL,
+		publicURL: publicURL,
+		ttl:       envDurationMinutes("MESH_MCP_SESSION_CACHE_TTL_MIN", defaultSessionCacheTTL),
+		negTTL:    envDurationSeconds("MESH_MCP_AUTH_FAIL_CACHE_SEC", defaultAuthFailCacheTTL),
+	}
+	go c.evictExpiredLoop()
+	return c
+}
+
+func (c *agentSessionCache) sessionTTL() time.Duration {
+	if c.ttl <= 0 {
+		return defaultSessionCacheTTL
+	}
+	return c.ttl
+}
+
+func (c *agentSessionCache) failTTL() time.Duration {
+	if c.negTTL <= 0 {
+		return defaultAuthFailCacheTTL
+	}
+	return c.negTTL
+}
+
+func (c *agentSessionCache) evictExpiredLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		c.mu.Lock()
+		for k, e := range c.cache {
+			if now.After(e.expiresAt) {
+				delete(c.cache, k)
+			}
+		}
+		for k, e := range c.negCache {
+			if now.After(e.expiresAt) {
+				delete(c.negCache, k)
+			}
+		}
+		c.mu.Unlock()
+	}
+}
+
+// peekValid reports whether key already has a live, unexpired entry in the
+// positive cache — no network access, no side effects. Callers use it to
+// decide whether a request needs to spend per-IP rate-limit budget at all:
+// a request presenting an already-known-good key must not compete for the
+// same budget that exists to bound authentication attempts against a
+// NOT-yet-cached key (see checkAuthRateLimit's call sites in main.go).
+// Without this, the Streamable HTTP transport — which re-authenticates on
+// every single tool call by design — would spend budget on ordinary,
+// already-authenticated traffic and could spuriously 429 a well-behaved
+// client well under any actual abuse.
+func (c *agentSessionCache) peekValid(key string) bool {
+	now := time.Now()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.cache == nil {
+		return false
+	}
+	entry, ok := c.cache[key]
+	return ok && now.Before(entry.expiresAt)
 }
 
 // GetOrAuthenticate returns a cached session or authenticates and caches it.
 func (c *agentSessionCache) GetOrAuthenticate(ctx context.Context, key string) (*mcpserver.AgentSession, error) {
+	now := time.Now()
+
 	c.mu.RLock()
 	if c.cache != nil {
-		if session, ok := c.cache[key]; ok {
+		if entry, ok := c.cache[key]; ok && now.Before(entry.expiresAt) {
 			c.mu.RUnlock()
-			return session, nil
+			return entry.session, nil
+		}
+	}
+	if c.negCache != nil {
+		if entry, ok := c.negCache[key]; ok && now.Before(entry.expiresAt) {
+			c.mu.RUnlock()
+			return nil, entry.err
 		}
 	}
 	c.mu.RUnlock()
@@ -586,7 +717,21 @@ func (c *agentSessionCache) GetOrAuthenticate(ctx context.Context, key string) (
 	client.SetForwardedOrigin(c.publicURL)
 	agentInfo, err := client.GetAgentMe(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("authentication failed: %w", err)
+		authErr := fmt.Errorf("authentication failed: %w", err)
+		// Only a real rejection (401/403/404/...) is worth remembering as a
+		// negative entry. A transient gateway blip (502/503/504, or a
+		// network error before any response — see isTransientAuthError)
+		// would otherwise get a valid key stuck answering 403 for up to
+		// failTTL() after Mesh API recovers.
+		if !isTransientAuthError(err) {
+			c.mu.Lock()
+			if c.negCache == nil {
+				c.negCache = make(map[string]negCacheEntry)
+			}
+			c.negCache[key] = negCacheEntry{err: authErr, expiresAt: time.Now().Add(c.failTTL())}
+			c.mu.Unlock()
+		}
+		return nil, authErr
 	}
 
 	agentID, _ := agentInfo["id"].(string)
@@ -601,9 +746,12 @@ func (c *agentSessionCache) GetOrAuthenticate(ctx context.Context, key string) (
 
 	c.mu.Lock()
 	if c.cache == nil {
-		c.cache = make(map[string]*mcpserver.AgentSession)
+		c.cache = make(map[string]sessionCacheEntry)
 	}
-	c.cache[key] = &session
+	c.cache[key] = sessionCacheEntry{session: &session, expiresAt: time.Now().Add(c.sessionTTL())}
+	if c.negCache != nil {
+		delete(c.negCache, key)
+	}
 	c.mu.Unlock()
 
 	log.Printf("SSE: authenticated agent %s (ID: %s)", agentName, agentID)

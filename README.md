@@ -66,6 +66,9 @@ Set via `MESH_MCP_PROFILE` environment variable. Default: `full`.
 | `MESH_MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio` or `sse` |
 | `MESH_MCP_HOST` | No | `0.0.0.0` | SSE server bind host |
 | `MESH_MCP_PORT` | No | `8081` | SSE server bind port |
+| `MESH_MCP_AUTH_FAIL_RPM` | No | `20` | SSE mode: per-IP budget for authentication attempts against a not-yet-cached agent key on `/sse`, `/core/sse`, `/mcp`, `/mcp/core`. Over budget → `429` without calling Mesh API. `0` disables. |
+| `MESH_MCP_SESSION_CACHE_TTL_MIN` | No | `15` | SSE mode: how long a successful authentication is trusted before the key is re-checked — bounds how long a revoked key keeps working without a restart. |
+| `MESH_MCP_AUTH_FAIL_CACHE_SEC` | No | `30` | SSE mode: how long a failed authentication (bad/unknown key) is remembered, so repeating the same bad key doesn't call Mesh API every request. |
 
 ### Running without credentials
 
