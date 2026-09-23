@@ -74,5 +74,6 @@
       "win32",
       "linux"
     ]
-  }
+  },
+  "tools_generated": true
 }
