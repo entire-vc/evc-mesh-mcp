@@ -361,7 +361,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("body", mcpsdk.Required(), mcpsdk.Description("Comment body (markdown supported).")),
 		mcpsdk.WithBoolean("is_internal", mcpsdk.Description("Mark as internal (agent-only visible)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithString("parent_comment_id", mcpsdk.Description("Parent comment ID for threading.")),
-		mcpsdk.WithObject("metadata", mcpsdk.Description("Additional metadata as key-value pairs. Set {\"informational\": true} on a comment you write on a task that is ALREADY done/cancelled when your comment needs no action from its assignee — a plain acknowledgement, \"noted\", \"nothing further from me\" — to stop the server's own follow-up-card mechanism from opening one for it (task #df22e695). Omit it (default: not flagged) for anything that names a problem, asks a question, or reports a finding — an unflagged comment on a closed card still opens a follow-up as before, so forgetting the flag costs nothing. The flag is IGNORED if your comment also contains a `❓ Blocking @pavel` marker: a live ask to a human is never suppressed by this field.")),
+		mcpsdk.WithObject("metadata", mcpsdk.Description("Additional metadata as key-value pairs. Set {\"informational\": true} on a comment you write on a task that is ALREADY done/cancelled when your comment needs no action from its assignee — a plain acknowledgement, \"noted\", \"nothing further from me\" — to stop the server's own follow-up-card mechanism from opening one for it. Omit it (default: not flagged) for anything that names a problem, asks a question, or reports a finding — an unflagged comment on a closed card still opens a follow-up as before, so forgetting the flag costs nothing. The flag is IGNORED if your comment also contains a `❓ Blocking @<person>` marker: a live ask to a human is never suppressed by this field.")),
 	), s.tracked("add_comment", s.handleAddComment))
 
 	s.addTool(mcpsdk.NewTool("add_vcs_link",
@@ -423,7 +423,7 @@ func (s *Server) registerCoreTools() {
 			"LIMITATION — this screen is partial and must not be relied on as a secret filter: it CANNOT see a secret that has no recognisable prefix and no field name next to it (a bare value pasted on its own line), nor names it does not know. Do not paste credentials here on the assumption they will be caught; record where a secret lives, never its value."),
 		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Slug key for UPSERT (e.g. 'api-convention', 'license-decision'). "+
 			"ENFORCED server-side as ^[a-z0-9][a-z0-9-]*[a-z0-9]$ — lowercase alphanumeric and hyphens only, at least two characters, no leading or trailing hyphen. "+
-			"Hyphens, NEVER colons: a colon-delimited key such as 'episode:bill:2026-09-07' is REFUSED with a validation error — it is not normalised or accepted with a warning.")),
+			"Hyphens, NEVER colons: a colon-delimited key such as 'episode:alice:2026-09-07' is REFUSED with a validation error — it is not normalised or accepted with a warning.")),
 		mcpsdk.WithString("content", mcpsdk.Required(), mcpsdk.Description("What to remember (markdown).")),
 		mcpsdk.WithString("scope", mcpsdk.Description("workspace | project | agent (default: project).")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project ID (required for project scope).")),
@@ -438,8 +438,8 @@ func (s *Server) registerCoreTools() {
 			"A relevance:<n> TAG with n >= 0.8 does feed importance_score by +0.10; this numeric parameter does not.")),
 		mcpsdk.WithString("expires_at", mcpsdk.Description("RFC3339 timestamp or Go duration (e.g. '72h') when this memory should expire.")),
 		mcpsdk.WithString("source_url", mcpsdk.Description("Optional URL/path to the source of this knowledge (task ID, PR, file path).")),
-		mcpsdk.WithString("source_task_id", mcpsdk.Description("UUID of the Mesh task that produced this memory. Auto-populated from the fiddler side-channel (FIDDLER_STATE_FILE) or active checkout. Enables Amendment 2/3 KG edge hooks.")),
-		mcpsdk.WithString("thread_id", mcpsdk.Description("Thread identifier for same-session memory grouping. Auto-populated from the fiddler side-channel when omitted.")),
+		mcpsdk.WithString("source_task_id", mcpsdk.Description("UUID of the Mesh task that produced this memory. Auto-populated from the runner state file (FIDDLER_STATE_FILE) or the active checkout. Enables Amendment 2/3 KG edge hooks.")),
+		mcpsdk.WithString("thread_id", mcpsdk.Description("Thread identifier for same-session memory grouping. Auto-populated from the runner state file when omitted.")),
 		mcpsdk.WithBoolean("attach_context", mcpsdk.Description("When false, disables auto-injection of thread_id and source_task_id. Use for cross-cutting records not tied to the active task."), mcpsdk.DefaultBool(true)),
 		mcpsdk.WithString("reason", mcpsdk.Description("Why this memory is worth writing — what a future thread should be able to do with it, or what changed if you are correcting an existing key. Recorded on the revision alongside the content, so a later reader can judge whether the entry still applies instead of guessing from the text alone. Optional today and about to become required; write it now.")),
 		mcpsdk.WithNumber("expected_version", mcpsdk.Description("Make the write conditional: it succeeds only if the stored version still matches this number, and is REFUSED with both version numbers if someone else wrote to the key in between. Pass the version returned by your previous remember/recall of this key. Omit for last-write-wins.")),
@@ -459,25 +459,25 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("category", mcpsdk.Description("Optional category: deploy, stack, conventions, gotchas, api, auth, etc.")),
 		mcpsdk.WithArray("tags", mcpsdk.Description("Additional tags for filtering."), mcpsdk.WithStringItems()),
 		mcpsdk.WithString("source_url", mcpsdk.Description("Optional URL/path to the source of this knowledge.")),
-		mcpsdk.WithString("source_task_id", mcpsdk.Description("UUID of the Mesh task that produced this fact. Auto-populated from the fiddler side-channel when omitted.")),
-		mcpsdk.WithString("thread_id", mcpsdk.Description("Thread identifier. Auto-populated from the fiddler side-channel when omitted.")),
+		mcpsdk.WithString("source_task_id", mcpsdk.Description("UUID of the Mesh task that produced this fact. Auto-populated from the runner state file when omitted.")),
+		mcpsdk.WithString("thread_id", mcpsdk.Description("Thread identifier. Auto-populated from the runner state file when omitted.")),
 		mcpsdk.WithBoolean("attach_context", mcpsdk.Description("When false, disables auto-injection of thread_id and source_task_id."), mcpsdk.DefaultBool(true)),
 	), s.tracked("set_project_knowledge", s.handleSetProjectKnowledge))
 
 	s.addTool(mcpsdk.NewTool("pavel_decision",
-		mcpsdk.WithDescription("Record a Pavel directive as a canonical decision in project_knowledge. Broadcasts to specified agents via propagate_to tags. privacy:private records are stored but EXCLUDED from get_canonical_updates. Auto-flags private if text contains secrets. If task_id is given, also records this as a human_gate decision on that task (docs/human-gate-decision-recorded.md in evc-mesh) — releases the gate as a consequence if it's currently live, and links back via canonical_key. Best-effort: a failure here is reported in the result but does not undo the canonical write."),
+		mcpsdk.WithDescription("Record a directive from the workspace owner as a canonical decision in project_knowledge. Broadcasts to specified agents via propagate_to tags. privacy:private records are stored but EXCLUDED from get_canonical_updates. Auto-flags private if text contains secrets. If task_id is given, also records this as a human_gate decision on that task (docs/human-gate-decision-recorded.md in evc-mesh) — releases the gate as a consequence if it's currently live, and links back via canonical_key. Best-effort: a failure here is reported in the result but does not undo the canonical write."),
 		mcpsdk.WithString("text", mcpsdk.Required(), mcpsdk.Description("Full text of the decision/directive.")),
 		mcpsdk.WithString("summary", mcpsdk.Required(), mcpsdk.Description("One-line summary used as UPSERT key (dedupes same decision on same day).")),
-		mcpsdk.WithArray("propagate_to", mcpsdk.Description("Agent slugs to propagate to, e.g. ['linus','bill']. Use ['all'] for workspace-wide broadcast."), mcpsdk.WithStringItems()),
+		mcpsdk.WithArray("propagate_to", mcpsdk.Description("Agent slugs to propagate to, e.g. ['alice','bob']. Use ['all'] for workspace-wide broadcast."), mcpsdk.WithStringItems()),
 		mcpsdk.WithString("scope", mcpsdk.Description("Optional project_id UUID. Omit for workspace-level decisions.")),
 		mcpsdk.WithString("privacy", mcpsdk.Description("'public' (default, visible in change-feed) or 'private' (recorded but hidden)."), mcpsdk.DefaultString("public")),
 		mcpsdk.WithString("task_id", mcpsdk.Description("Optional task UUID this decision answers. When set, also records a human_gate decision on that task (provenance=attested, channel=telegram, quote=text) — releasing a live human_gate as a consequence. Omit for a plain canonical-only record (unchanged behavior).")),
 	), s.tracked("pavel_decision", s.handlePavelDecision))
 
 	s.addTool(mcpsdk.NewTool("get_canonical_updates",
-		mcpsdk.WithDescription("Fetch canonical decisions broadcast since a given time. Call at ACP step 6 (session start) to catch up on Pavel directives since your previous session. Returns only privacy:public records targeted at you or all agents."),
+		mcpsdk.WithDescription("Fetch canonical decisions broadcast since a given time. Call at ACP step 6 (session start) to catch up on owner directives since your previous session. Returns only privacy:public records targeted at you or all agents."),
 		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 cursor. Defaults to your previous session's start time (server-resolved). Omit on first call.")),
-		mcpsdk.WithString("agent", mcpsdk.Description("Your agent slug (e.g. 'linus'). Used to filter propagate_to:<slug> records. Omit to get only propagate_to:all records.")),
+		mcpsdk.WithString("agent", mcpsdk.Description("Your agent slug (e.g. 'alice'). Used to filter propagate_to:<slug> records. Omit to get only propagate_to:all records.")),
 		mcpsdk.WithString("scope", mcpsdk.Description("Optional project UUID to restrict to project-scoped decisions.")),
 	), s.tracked("get_canonical_updates", s.handleGetCanonicalUpdates))
 
@@ -643,7 +643,7 @@ func (s *Server) registerAdvancedTools() {
 	// with its own marker dictionary — which is how a driver came to read its own
 	// instructional boilerplate back as a raised blocker (#84ab54fd).
 	s.addTool(mcpsdk.NewTool("set_human_gate",
-		mcpsdk.WithDescription("Arm the human gate on a task: freeze it and record WHO is waiting, WHAT was asked, and WHAT you will do if nobody answers. Use INSTEAD of writing a '❓ Blocking @pavel' comment by hand — the marker still works, but this path records the whole ask on the task, so nothing has to re-read the thread. recommended_default is REQUIRED: a gate with no stated default can only ever be resolved by finding a human. You must answer four questions (credential_exists / reversible / blocked_by_other_task / customer_visible_now), each with one line of justification. The server REFUSES the arm when your own answers say nobody needs to be asked: if you hold the credential, the action is reversible, and nothing a customer sees or pays changes right now, capture a rollback anchor and just do it. If the blocker is another card, the server tells you to use add_dependency instead."),
+		mcpsdk.WithDescription("Arm the human gate on a task: freeze it and record WHO is waiting, WHAT was asked, and WHAT you will do if nobody answers. Use INSTEAD of writing a '❓ Blocking @<person>' comment by hand — the marker still works, but this path records the whole ask on the task, so nothing has to re-read the thread. recommended_default is REQUIRED: a gate with no stated default can only ever be resolved by finding a human. You must answer four questions (credential_exists / reversible / blocked_by_other_task / customer_visible_now), each with one line of justification. The server REFUSES the arm when your own answers say nobody needs to be asked: if you hold the credential, the action is reversible, and nothing a customer sees or pays changes right now, capture a rollback anchor and just do it. If the blocker is another card, the server tells you to use add_dependency instead."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to gate.")),
 		mcpsdk.WithString("reason", mcpsdk.Required(), mcpsdk.Description("The question itself, in your own words.")),
 		mcpsdk.WithString("recommended_default", mcpsdk.Required(), mcpsdk.Description("What you will do if nobody answers. Required — an ask with no default cannot time out.")),
@@ -655,7 +655,7 @@ func (s *Server) registerAdvancedTools() {
 		// Pavel had already declined, or waiting on someone else's card. Each answer needs
 		// one line of justification: a bare bool is unreviewable, and answering these four
 		// implicitly, in your head, is exactly how they got answered wrongly.
-		mcpsdk.WithBoolean("credential_exists", mcpsdk.Required(), mcpsdk.Description("Do you ALREADY hold the credential or access this needs? Check ~/.config/agents/ and the fleet credentials doc before answering false — a service account the fleet created for the fleet is yours to use.")),
+		mcpsdk.WithBoolean("credential_exists", mcpsdk.Required(), mcpsdk.Description("Do you ALREADY hold the credential or access this needs? Check your team's credential store before answering false — a service account your team created for its agents is yours to use.")),
 		mcpsdk.WithString("credential_reason", mcpsdk.Required(), mcpsdk.Description("One line: which credential, and where you checked.")),
 		mcpsdk.WithBoolean("reversible", mcpsdk.Required(), mcpsdk.Description("Is there a rollback anchor — git revert, backup, snapshot, image tag? If you can MANUFACTURE one (take a backup first), the answer is true.")),
 		mcpsdk.WithString("reversible_reason", mcpsdk.Required(), mcpsdk.Description("One line: the exact rollback path, or why none exists.")),
@@ -667,7 +667,7 @@ func (s *Server) registerAdvancedTools() {
 		// arm with no copy_tier when `reason` reads like a copy-approval question — an
 		// agent that hits that refusal should answer it and retry, not treat it as a
 		// second unrelated field to fill in.
-		mcpsdk.WithString("copy_tier", mcpsdk.Description("Only when this ask is about VISIBLE PRODUCT COPY (a label, a page's prose, a message users read) — otherwise omit entirely. Answer three questions: (1) is this the company's voice going OUT, or a caption inside the interface? (2) would someone who never opened this screen notice the change? (3) does the text carry a promise — legal, price, product? Any \"yes\" → tier \"A\" (external/legal/marketing copy, a promise) and Pavel decides. All \"no\" → tier \"B\" (a field caption, menu item, system or validation message, section name, an existing dictionary string) and the product lead ships it without asking — Pavel sees it after the fact in the weekly digest. The server refuses tier \"B\" outright: ship it yourself, tag the task `copy:b`, quote the exact string in your closing comment. Omitting copy_tier on an ask that reads as copy-approval is refused too, naming this field — state the tier and retry.")),
+		mcpsdk.WithString("copy_tier", mcpsdk.Description("Only when this ask is about VISIBLE PRODUCT COPY (a label, a page's prose, a message users read) — otherwise omit entirely. Answer three questions: (1) is this the company's voice going OUT, or a caption inside the interface? (2) would someone who never opened this screen notice the change? (3) does the text carry a promise — legal, price, product? Any \"yes\" → tier \"A\" (external/legal/marketing copy, a promise) and the workspace owner decides. All \"no\" → tier \"B\" (a field caption, menu item, system or validation message, section name, an existing dictionary string) and the product lead ships it without asking — the workspace owner sees it after the fact. The server refuses tier \"B\" outright: ship it yourself, tag the task `copy:b`, quote the exact string in your closing comment. Omitting copy_tier on an ask that reads as copy-approval is refused too, naming this field — state the tier and retry.")),
 	), s.tracked("set_human_gate", s.handleSetHumanGate))
 
 	s.addTool(mcpsdk.NewTool("clear_human_gate",
