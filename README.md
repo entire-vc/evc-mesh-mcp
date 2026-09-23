@@ -75,8 +75,10 @@ Set via `MESH_MCP_PROFILE` environment variable. Default: `full`.
 In stdio mode the server also starts when `MESH_AGENT_KEY` is not set. It then
 answers `initialize` and `tools/list` as usual, and every tool call returns
 instructions for setting `MESH_API_URL` and `MESH_AGENT_KEY`. This lets MCP
-clients and catalogs inspect the tool list before you have a key. A key that is
-set but rejected by the API still stops the server with an error.
+clients and catalogs inspect the tool list before you have a key. If a key is
+set but authentication fails at startup (API unreachable, key rejected), the
+server keeps running: tools are listed, and each call retries authentication
+and returns the reason until it succeeds.
 
 ### Tool annotations
 

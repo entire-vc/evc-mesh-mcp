@@ -92,3 +92,27 @@ func unconfiguredMiddleware(hint string) mcpserver.ToolHandlerMiddleware {
 		}
 	}
 }
+
+// deferredAuthMiddleware authenticates on first use when startup
+// authentication failed. Until it succeeds every tool call returns the error,
+// so the client sees why the server is not working instead of a missing tool.
+func (s *Server) deferredAuthMiddleware(authenticate func(context.Context) (*AgentSession, error)) mcpserver.ToolHandlerMiddleware {
+	return func(next mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
+		return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			if s.deferredSession.Load() == nil {
+				s.authMu.Lock()
+				if s.deferredSession.Load() == nil {
+					sess, err := authenticate(ctx)
+					if err != nil {
+						s.authMu.Unlock()
+						return mcpsdk.NewToolResultError("Could not authenticate with the Mesh API (check MESH_API_URL and MESH_AGENT_KEY): " + err.Error()), nil
+					}
+					s.deferredSession.Store(sess)
+					log.Printf("deferred authentication succeeded: agent %s", sess.AgentName)
+				}
+				s.authMu.Unlock()
+			}
+			return next(ctx, req)
+		}
+	}
+}
