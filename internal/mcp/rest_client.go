@@ -132,7 +132,7 @@ func (c *RESTClient) do(ctx context.Context, method, path string, body any) (*ht
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	req.Header.Set("X-Agent-Key", c.agentKey)
+	c.setAuth(req)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -288,7 +288,7 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	req.Header.Set("X-Agent-Key", c.agentKey)
+	c.setAuth(req)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	c.applyForwardedHeaders(req)
 
@@ -324,6 +324,22 @@ func (c *RESTClient) BaseURL() string {
 // Ping checks connectivity by calling GET /health.
 func (c *RESTClient) Ping(ctx context.Context) error {
 	return c.doJSON(ctx, http.MethodGet, "/health", nil, nil)
+}
+
+// OAuthAccessTokenPrefix marks an OAuth access token issued by the Mesh API's
+// own authorization server, as opposed to a long-lived agent key (agk_...).
+const OAuthAccessTokenPrefix = "mot_"
+
+// setAuth authenticates req as the agent this client acts for. The Mesh API
+// reads an OAuth access token only from "Authorization: Bearer" and an agent
+// key only from X-Agent-Key, so the header depends on which credential the
+// client holds. One place, so the three request builders cannot disagree.
+func (c *RESTClient) setAuth(req *http.Request) {
+	if strings.HasPrefix(c.agentKey, OAuthAccessTokenPrefix) {
+		req.Header.Set("Authorization", "Bearer "+c.agentKey)
+		return
+	}
+	req.Header.Set("X-Agent-Key", c.agentKey)
 }
 
 // GetAgentMe returns the current agent's profile.
@@ -842,7 +858,7 @@ func (c *RESTClient) doRaw(ctx context.Context, method, path, contentType string
 		return nil, 0, fmt.Errorf("create request: %w", err)
 	}
 
-	req.Header.Set("X-Agent-Key", c.agentKey)
+	c.setAuth(req)
 	if rawBody != nil {
 		req.Header.Set("Content-Type", contentType)
 	}

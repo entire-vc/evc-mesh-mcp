@@ -76,6 +76,21 @@ func (l *ipRateLimiter) allow(ip string) bool {
 	return b.count <= l.rpm
 }
 
+// over reports whether ip has already used up its budget for the current
+// window, without counting a new attempt. It is the check for callers that
+// charge the budget only after the fact (see requireCredential: an OAuth token
+// costs budget when it is REJECTED, not when it is verified).
+func (l *ipRateLimiter) over(ip string) bool {
+	if l == nil || l.rpm <= 0 {
+		return false
+	}
+	window := time.Now().Unix() / 60
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b, ok := l.buckets[ip]
+	return ok && b.windowStart == window && b.count >= l.rpm
+}
+
 func (l *ipRateLimiter) evictIdleLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
