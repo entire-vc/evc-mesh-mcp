@@ -69,6 +69,9 @@ Set via `MESH_MCP_PROFILE` environment variable. Default: `full`.
 | `MESH_MCP_AUTH_FAIL_RPM` | No | `20` | SSE mode: per-IP budget for authentication attempts against a not-yet-cached agent key on `/sse`, `/core/sse`, `/mcp`, `/mcp/core`. Over budget → `429` without calling Mesh API. `0` disables. |
 | `MESH_MCP_SESSION_CACHE_TTL_MIN` | No | `15` | SSE mode: how long a successful authentication is trusted before the key is re-checked — bounds how long a revoked key keeps working without a restart. |
 | `MESH_MCP_AUTH_FAIL_CACHE_SEC` | No | `30` | SSE mode: how long a failed authentication (bad/unknown key) is remembered, so repeating the same bad key doesn't call Mesh API every request. |
+| `MESH_MCP_PUBLIC_URL` | No | — | SSE mode: the URL the MCP root is reachable at from outside, e.g. `https://mesh.example.com/mcp`. Used for the absolute SSE endpoint and as the OAuth resource URL (see [OAuth](#oauth-remote-connectors)). Unset: derived from each request's host, which is only right when clients reach this server directly — behind a proxy set it, or the derived core URL (`/core`) will not match the public one (`/mcp/core`). |
+| `MESH_MCP_OAUTH_ISSUER` | No | origin of `MESH_MCP_PUBLIC_URL` | SSE mode: the OAuth authorization server named in the protected-resource metadata — your Mesh instance's public origin. Set it only if the MCP server is served from a different origin than the Mesh API. |
+| `MESH_MCP_OAUTH_CACHE_TTL_SEC` | No | `60` | SSE mode: how long a verified OAuth access token is trusted before Mesh API is asked again. Deliberately much shorter than the agent-key TTL so a revoked grant stops working within about a minute. |
 | `MESH_MCP_DECIDER_USERNAME` | No | — | Username recorded as `decided_by` when `record_owner_decision` answers a gated task. Unset: the workspace owner. |
 | `MESH_MCP_LEGACY_TOOL_ALIASES` | No | off | `1` also registers the tools' earlier names, for deployments whose callers still use them. Leave off for new installs. |
 
@@ -160,7 +163,66 @@ header — the query parameter is refused there):
 Authentication per connection via:
 - `Authorization: Bearer agk_...` header
 - `X-Agent-Key: agk_...` header
-- `?agent_key=agk_...` query parameter
+- `?agent_key=agk_...` query parameter (SSE connect only)
+- `Authorization: Bearer mot_...` — an OAuth access token issued by your Mesh instance (see below); the header only, never the query string, and on the Streamable HTTP endpoints only (SSE connections need an agent key)
+
+### OAuth (remote connectors)
+
+Clients that sign users in with OAuth — remote-connector directories, MCP
+Inspector, editors that follow the MCP authorization spec — connect to the
+Streamable HTTP endpoints without a pre-shared key. Your Mesh instance is the
+authorization server (dynamic client registration, PKCE, user consent); this
+server is the resource server and does two things:
+
+- **Challenges.** A request with no credential, or with an OAuth access token
+  Mesh API rejects (expired, revoked, never issued), gets `401` and
+
+  ```
+  WWW-Authenticate: Bearer resource_metadata="https://mesh.example.com/.well-known/oauth-protected-resource/mcp", scope="mesh"
+  ```
+
+  which is where a client starts the authorization flow. A rejected agent key
+  keeps answering `403`. Only a verdict from Mesh API (a `4xx` other than
+  `408`/`429`) makes a token invalid: if Mesh API cannot be reached or answers
+  with an error that says nothing about the token (`5xx`, `429`), the answer is
+  `503` with `Retry-After`, so a valid token is not thrown away over an outage.
+- **Serves the metadata** ([RFC 9728](https://www.rfc-editor.org/rfc/rfc9728))
+  at the well-known path derived from each endpoint's URL:
+
+  | Endpoint | Metadata |
+  |----------|----------|
+  | `https://mesh.example.com/mcp` (full) | `/.well-known/oauth-protected-resource/mcp` |
+  | `https://mesh.example.com/mcp/core` (core) | `/.well-known/oauth-protected-resource/mcp/core` |
+
+  ```json
+  {
+    "resource": "https://mesh.example.com/mcp",
+    "authorization_servers": ["https://mesh.example.com"],
+    "scopes_supported": ["mesh"],
+    "bearer_methods_supported": ["header"]
+  }
+  ```
+
+  `resource` is `MESH_MCP_PUBLIC_URL` (trailing slash, query and fragment
+  removed; `/core` appended for the core profile), so set it to the URL your
+  users paste into the client.
+  The authorization server defaults to that URL's origin; override it with
+  `MESH_MCP_OAUTH_ISSUER`.
+
+An OAuth token acts as a connector agent in the workspace the user chose when
+they granted access, with that agent's permissions — the same tools, the same
+permission model as an agent key. Verified tokens are cached for a minute (`MESH_MCP_OAUTH_CACHE_TTL_SEC`). The
+per-IP budget (`MESH_MCP_AUTH_FAIL_RPM`) is spent by *rejected* tokens, not by
+verifications, so many users behind one address are not throttled by their own
+token refreshes. The token is not audience-bound: any valid access token from
+your Mesh instance is accepted, which is the intent while the authorization
+server and this server belong to the same deployment. Agent keys (`agk_...`) in `Authorization` or
+`X-Agent-Key` work exactly as before, and stdio mode is unaffected.
+
+Your reverse proxy must send `/.well-known/oauth-protected-resource*` to this
+server instead of the web app's catch-all: a single-page app answers every
+unknown path with `200 text/html`, which a client cannot tell from missing
+metadata.
 
 ## Agent Context Protocol (ACP)
 

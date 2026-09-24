@@ -82,6 +82,21 @@ func isTransientAuthError(err error) bool {
 	return true
 }
 
+// isCredentialRejection reports whether err means the Mesh API looked at the
+// credential and refused it: any 4xx it answered with, except 408/429, which
+// say "try again later", not "this credential is bad". A 5xx, a network error
+// or an unusable response is not a verdict on the credential at all, and must
+// neither be remembered against it nor turned into a "your token is invalid"
+// answer that sends an OAuth client off to re-authorize.
+func isCredentialRejection(err error) bool {
+	var apiErr *mcpserver.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	code := apiErr.StatusCode
+	return code >= 400 && code < 500 && code != http.StatusRequestTimeout && code != http.StatusTooManyRequests
+}
+
 // unconfiguredHint is returned by every tool call when stdio mode starts
 // without an agent key.
 const unconfiguredHint = "EVC Mesh is not configured yet. Set MESH_API_URL to your Mesh instance " +
@@ -225,6 +240,11 @@ func main() {
 		// Create session cache that authenticates via REST API.
 		sessionCache := newAgentSessionCache(apiURL, publicURL)
 
+		// The Mesh API is the OAuth authorization server; this process is only
+		// the resource server. See oauth_resource.go.
+		oauth := newOAuthResources(publicURL, os.Getenv("MESH_MCP_OAUTH_ISSUER"))
+		oauth.warnIfMisconfigured()
+
 		// Per-IP budget for authentication attempts against a not-yet-cached
 		// key, shared across /sse, /core/sse, /mcp and /mcp/core — see
 		// ipRateLimiter's doc comment (ratelimit.go) for why this exists.
@@ -362,7 +382,10 @@ func main() {
 		mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
 			key := extractAgentKeyFromRequest(r)
 			if key == "" {
-				http.Error(w, "Missing agent key: provide Authorization: Bearer agk_..., X-Agent-Key header, or ?agent_key query param", http.StatusUnauthorized)
+				http.Error(w, "Missing agent key: provide Authorization: Bearer <OAuth access token or agk_ key>, X-Agent-Key header, or ?agent_key query param", http.StatusUnauthorized)
+				return
+			}
+			if refuseOAuthOnSSE(w, key) {
 				return
 			}
 			if !sessionCache.peekValid(key) && !checkAuthRateLimit(w, r, authLimiter) {
@@ -386,7 +409,10 @@ func main() {
 		mux.HandleFunc(coreBasePath+"/sse", func(w http.ResponseWriter, r *http.Request) {
 			key := extractAgentKeyFromRequest(r)
 			if key == "" {
-				http.Error(w, "Missing agent key: provide Authorization: Bearer agk_..., X-Agent-Key header, or ?agent_key query param", http.StatusUnauthorized)
+				http.Error(w, "Missing agent key: provide Authorization: Bearer <OAuth access token or agk_ key>, X-Agent-Key header, or ?agent_key query param", http.StatusUnauthorized)
+				return
+			}
+			if refuseOAuthOnSSE(w, key) {
 				return
 			}
 			if !sessionCache.peekValid(key) && !checkAuthRateLimit(w, r, authLimiter) {
@@ -419,8 +445,14 @@ func main() {
 		}
 		fullHTTP := sdkserver.NewStreamableHTTPServer(fullSrv.MCPServer(), streamOpts...)
 		coreHTTP := sdkserver.NewStreamableHTTPServer(coreSrv.MCPServer(), streamOpts...)
-		mux.Handle(streamablePath, requireAgentKey(sessionCache, authLimiter, "streamable", fullHTTP))
-		mux.Handle(coreBasePath, requireAgentKey(sessionCache, authLimiter, "streamable core", coreHTTP))
+		mux.Handle(streamablePath, requireCredential(sessionCache, authLimiter, "streamable", oauth, profileFull, fullHTTP))
+		mux.Handle(coreBasePath, requireCredential(sessionCache, authLimiter, "streamable core", oauth, profileCore, coreHTTP))
+
+		// OAuth protected-resource metadata (RFC 9728), one document per
+		// profile. Unauthenticated by design: a client reads it to learn how
+		// to authenticate at all.
+		mux.Handle(protectedResourceWellKnown, oauth.handler())
+		mux.Handle(protectedResourceWellKnown+"/", oauth.handler())
 
 		// /read-counter — unauthenticated JSON snapshot for nightly cron / Grafana scrape.
 		mux.HandleFunc("/read-counter", func(w http.ResponseWriter, r *http.Request) {
@@ -451,7 +483,8 @@ func main() {
 		log.Printf("  Read counter:     %s/read-counter", dialableURL(publicURL, host, port))
 		log.Printf("  Metrics:          %s/metrics", dialableURL(publicURL, host, port))
 		log.Printf("  Counter file:     %s", counterFile)
-		log.Printf("  Auth: Authorization: Bearer agk_..., X-Agent-Key, or ?agent_key=agk_...")
+		log.Printf("  Auth: Authorization: Bearer <OAuth access token (mot_...) or agk_ key>, X-Agent-Key, or ?agent_key=agk_... (SSE connect only)")
+		log.Printf("  OAuth resource metadata: %s%s", dialableURL(publicURL, host, port), protectedResourceWellKnown)
 
 		httpServer := &http.Server{
 			Addr:    addr,
@@ -483,6 +516,25 @@ const streamablePath = "/mcp"
 // be repeated in every request URL, where proxies and tools tend to log it.
 // (The legacy SSE connect step keeps the query fallback for EventSource.)
 func requireAgentKey(cache *agentSessionCache, limiter *ipRateLimiter, what string, next http.Handler) http.Handler {
+	return requireCredential(cache, limiter, what, nil, profileFull, next)
+}
+
+// requireCredential is requireAgentKey with OAuth support. With oauth set, a
+// request that carries no credential, or an OAuth access token the Mesh API
+// rejects, gets 401 and a WWW-Authenticate header pointing at the profile's
+// protected-resource metadata — the only signal an OAuth client has that it
+// should start (or restart) the authorization flow. A rejected agent key
+// keeps its 403. A Mesh API that could not be reached is 503 for an OAuth
+// token, not 401: 401 tells the client its token is dead and sends it off to
+// refresh, which a gateway blip must not do to a valid one.
+func requireCredential(cache *agentSessionCache, limiter *ipRateLimiter, what string, oauth *oauthResources, profile mcpProfile, next http.Handler) http.Handler {
+	challenge := func(w http.ResponseWriter, r *http.Request) {
+		if oauth != nil {
+			w.Header().Set("WWW-Authenticate", oauth.challenge(r, profile))
+		} else {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="evc-mesh"`)
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Has("agent_key") {
 			http.Error(w, "Pass the agent key in a header (Authorization: Bearer agk_... or X-Agent-Key), not in the URL", http.StatusBadRequest)
@@ -490,20 +542,57 @@ func requireAgentKey(cache *agentSessionCache, limiter *ipRateLimiter, what stri
 		}
 		key := extractAgentKeyFromRequest(r)
 		if key == "" {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="evc-mesh"`)
-			http.Error(w, "Missing agent key: provide Authorization: Bearer agk_..., X-Agent-Key header, or ?agent_key query param", http.StatusUnauthorized)
+			challenge(w, r)
+			http.Error(w, "Missing credentials: provide Authorization: Bearer <OAuth access token or agk_ key> or X-Agent-Key header", http.StatusUnauthorized)
 			return
 		}
-		if !cache.peekValid(key) && !checkAuthRateLimit(w, r, limiter) {
+		viaOAuth := oauth != nil && isOAuthToken(key)
+		if viaOAuth {
+			// An OAuth token is re-verified about once a minute for as long as
+			// it is in use (short cache, see defaultOAuthCacheTTL), so charging
+			// the per-IP budget for every verification would let ordinary
+			// traffic from a shared egress address starve itself. The budget
+			// exists to bound guessing, so it is charged for rejections only —
+			// below — and merely consulted here.
+			if !cache.peekValid(key) && limiter.over(clientIP(r)) {
+				w.Header().Set("Retry-After", "60")
+				http.Error(w, "Too many authentication attempts from this address, retry in a minute", http.StatusTooManyRequests)
+				return
+			}
+		} else if !cache.peekValid(key) && !checkAuthRateLimit(w, r, limiter) {
 			return
 		}
 		if _, err := cache.GetOrAuthenticate(r.Context(), key); err != nil {
 			log.Printf("%s auth failed for key %s...: %v", what, safeKeyPrefix(key), err)
+			if viaOAuth {
+				if !isCredentialRejection(err) {
+					w.Header().Set("Retry-After", "5")
+					http.Error(w, "Authentication temporarily unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				limiter.allow(clientIP(r)) // charge the rejection
+				challenge(w, r)
+				http.Error(w, "Invalid or expired access token", http.StatusUnauthorized)
+				return
+			}
 			http.Error(w, fmt.Sprintf("Authentication failed: %v", err), http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// refuseOAuthOnSSE rejects an OAuth access token presented at an SSE connect.
+// The OAuth flow is advertised for the Streamable HTTP endpoints only: SSE
+// keeps a long-lived stream, and a token that expires mid-stream would turn
+// every later /message POST into a tool error instead of the 401 an OAuth
+// client can act on.
+func refuseOAuthOnSSE(w http.ResponseWriter, key string) bool {
+	if !isOAuthToken(key) {
+		return false
+	}
+	http.Error(w, "OAuth access tokens are supported on the streamable HTTP endpoints only; use an agent key for SSE", http.StatusUnauthorized)
+	return true
 }
 
 // advertiseOptions configures which URL the SSE server hands a client in its
@@ -572,13 +661,26 @@ func buildSession(agentID, workspaceID, agentName, agentType string) (*mcpserver
 	return &session, nil
 }
 
-// extractAgentKeyFromRequest extracts the agent API key from an HTTP request.
+// isOAuthToken reports whether credential is an OAuth access token (mot_...)
+// rather than an agent key (agk_...). OAuth tokens are accepted only in the
+// Authorization: Bearer header — never X-Agent-Key or the query string, the
+// same places the Mesh API itself reads them from.
+func isOAuthToken(credential string) bool {
+	return strings.HasPrefix(credential, mcpserver.OAuthAccessTokenPrefix)
+}
+
+// extractAgentKeyFromRequest extracts the credential identifying the calling
+// agent from an HTTP request: an agent API key (agk_...) from Authorization:
+// Bearer, X-Agent-Key or (SSE connect only) ?agent_key=, or an OAuth access
+// token (mot_...) from Authorization: Bearer.
 func extractAgentKeyFromRequest(r *http.Request) string {
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		const bearerPrefix = "Bearer "
-		if strings.HasPrefix(auth, bearerPrefix) {
+		// The auth scheme is case-insensitive (RFC 9110 §11.1); generic OAuth
+		// libraries are free to send "bearer".
+		if len(auth) > len(bearerPrefix) && strings.EqualFold(auth[:len(bearerPrefix)], bearerPrefix) {
 			token := strings.TrimSpace(auth[len(bearerPrefix):])
-			if strings.HasPrefix(token, "agk_") {
+			if strings.HasPrefix(token, "agk_") || isOAuthToken(token) {
 				return token
 			}
 		}
@@ -592,8 +694,14 @@ func extractAgentKeyFromRequest(r *http.Request) string {
 	return ""
 }
 
-// safeKeyPrefix returns a safe prefix of the key for logging.
+// safeKeyPrefix returns a safe prefix of the key for logging. An agent key's
+// leading bytes are a workspace slug and a type marker; an OAuth token has no
+// such structure — every byte after "mot_" is secret — so only its marker is
+// ever logged.
 func safeKeyPrefix(key string) string {
+	if isOAuthToken(key) {
+		return mcpserver.OAuthAccessTokenPrefix
+	}
 	if len(key) > 12 {
 		return key[:12]
 	}
@@ -616,6 +724,15 @@ const defaultSessionCacheTTL = 15 * time.Minute
 // on Mesh API. Override via MESH_MCP_AUTH_FAIL_CACHE_SEC. Task #887de18a.
 const defaultAuthFailCacheTTL = 30 * time.Second
 
+// defaultOAuthCacheTTL bounds how long a successfully verified OAuth access
+// token is trusted. Much shorter than defaultSessionCacheTTL on purpose: an
+// agent key is revoked by an administrator and lag is tolerable, but an OAuth
+// grant is revoked by the user from a settings page that promises the
+// connection stops, and an access token also expires by itself (about an
+// hour), so a long cache would keep honouring a dead one. Override via
+// MESH_MCP_OAUTH_CACHE_TTL_SEC.
+const defaultOAuthCacheTTL = 60 * time.Second
+
 // agentSessionCache caches authenticated agent sessions by agent key.
 //
 // Two independent TTLs bound how long an entry is trusted without asking
@@ -631,6 +748,7 @@ type agentSessionCache struct {
 	apiURL    string
 	publicURL string
 	ttl       time.Duration // positive entry TTL; <=0 = use defaultSessionCacheTTL
+	oauthTTL  time.Duration // positive TTL for OAuth access tokens; <=0 = use defaultOAuthCacheTTL
 	negTTL    time.Duration // negative entry TTL; <=0 = use defaultAuthFailCacheTTL
 }
 
@@ -655,6 +773,7 @@ func newAgentSessionCache(apiURL, publicURL string) *agentSessionCache {
 		apiURL:    apiURL,
 		publicURL: publicURL,
 		ttl:       envDurationMinutes("MESH_MCP_SESSION_CACHE_TTL_MIN", defaultSessionCacheTTL),
+		oauthTTL:  envDurationSeconds("MESH_MCP_OAUTH_CACHE_TTL_SEC", defaultOAuthCacheTTL),
 		negTTL:    envDurationSeconds("MESH_MCP_AUTH_FAIL_CACHE_SEC", defaultAuthFailCacheTTL),
 	}
 	go c.evictExpiredLoop()
@@ -666,6 +785,21 @@ func (c *agentSessionCache) sessionTTL() time.Duration {
 		return defaultSessionCacheTTL
 	}
 	return c.ttl
+}
+
+// entryTTL is how long a fresh successful verification of key is trusted.
+func (c *agentSessionCache) entryTTL(key string) time.Duration {
+	if !isOAuthToken(key) {
+		return c.sessionTTL()
+	}
+	ttl := c.oauthTTL
+	if ttl <= 0 {
+		ttl = defaultOAuthCacheTTL
+	}
+	if base := c.sessionTTL(); base < ttl {
+		ttl = base
+	}
+	return ttl
 }
 
 func (c *agentSessionCache) failTTL() time.Duration {
@@ -741,12 +875,13 @@ func (c *agentSessionCache) GetOrAuthenticate(ctx context.Context, key string) (
 	agentInfo, err := client.GetAgentMe(ctx)
 	if err != nil {
 		authErr := fmt.Errorf("authentication failed: %w", err)
-		// Only a real rejection (401/403/404/...) is worth remembering as a
-		// negative entry. A transient gateway blip (502/503/504, or a
-		// network error before any response — see isTransientAuthError)
-		// would otherwise get a valid key stuck answering 403 for up to
-		// failTTL() after Mesh API recovers.
-		if !isTransientAuthError(err) {
+		// Only a real rejection (a 4xx verdict — see isCredentialRejection) is
+		// worth remembering as a negative entry. A transient gateway blip
+		// (502/503/504, or a network error before any response), an API 500,
+		// or its own rate limiter answering 429 would otherwise get a valid
+		// credential stuck failing for up to failTTL() after Mesh API
+		// recovers.
+		if isCredentialRejection(err) {
 			c.mu.Lock()
 			if c.negCache == nil {
 				c.negCache = make(map[string]negCacheEntry)
@@ -771,7 +906,7 @@ func (c *agentSessionCache) GetOrAuthenticate(ctx context.Context, key string) (
 	if c.cache == nil {
 		c.cache = make(map[string]sessionCacheEntry)
 	}
-	c.cache[key] = sessionCacheEntry{session: &session, expiresAt: time.Now().Add(c.sessionTTL())}
+	c.cache[key] = sessionCacheEntry{session: &session, expiresAt: time.Now().Add(c.entryTTL(key))}
 	if c.negCache != nil {
 		delete(c.negCache, key)
 	}
@@ -791,6 +926,15 @@ type serverRegistry struct {
 
 // GetClient returns a cached REST client for the given agent key, creating one if needed.
 func (r *serverRegistry) GetClient(key string) *mcpserver.RESTClient {
+	if isOAuthToken(key) {
+		// Not cached: OAuth tokens rotate about hourly per user, so a cache
+		// keyed by token would grow for the life of the process and keep every
+		// past token in memory. A client is cheap (it shares the default
+		// transport), and the session behind it is cached separately.
+		client := mcpserver.NewRESTClient(r.apiURL, key)
+		client.SetForwardedOrigin(r.publicURL)
+		return client
+	}
 	r.mu.RLock()
 	if r.cache != nil {
 		if client, ok := r.cache[key]; ok {
