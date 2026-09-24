@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strconv"
@@ -2858,6 +2859,9 @@ func (s *Server) resolveDeciderUserID(ctx context.Context) (string, error) {
 		}
 	}
 	if ownerID != "" {
+		if preferred != "" {
+			log.Printf("%s: %s=%q matches no human in the team directory; recording the workspace owner as decided_by", toolRecordOwnerDecision, envDeciderUsername, preferred)
+		}
 		return ownerID, nil
 	}
 	if preferred != "" {
