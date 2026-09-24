@@ -606,6 +606,11 @@ func TestResolveDeciderUserID_PreferredUsernameWins(t *testing.T) {
 	if got, err := server.resolveDeciderUserID(ctx); err != nil || got != preferredID {
 		t.Errorf("with %s=dave: got (%q, %v), want %q", envDeciderUsername, got, err, preferredID)
 	}
+	// A preferred username that matches nobody falls back to the owner (and logs).
+	t.Setenv(envDeciderUsername, "nobody-here")
+	if got, err := server.resolveDeciderUserID(ctx); err != nil || got != otherOwnerID {
+		t.Errorf("with unmatched %s: got (%q, %v), want owner %q", envDeciderUsername, got, err, otherOwnerID)
+	}
 	t.Setenv(envDeciderUsername, "")
 	if got, err := server.resolveDeciderUserID(ctx); err != nil || got != otherOwnerID {
 		t.Errorf("with %s unset: got (%q, %v), want owner %q", envDeciderUsername, got, err, otherOwnerID)

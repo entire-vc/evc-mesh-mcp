@@ -69,6 +69,8 @@ Set via `MESH_MCP_PROFILE` environment variable. Default: `full`.
 | `MESH_MCP_AUTH_FAIL_RPM` | No | `20` | SSE mode: per-IP budget for authentication attempts against a not-yet-cached agent key on `/sse`, `/core/sse`, `/mcp`, `/mcp/core`. Over budget → `429` without calling Mesh API. `0` disables. |
 | `MESH_MCP_SESSION_CACHE_TTL_MIN` | No | `15` | SSE mode: how long a successful authentication is trusted before the key is re-checked — bounds how long a revoked key keeps working without a restart. |
 | `MESH_MCP_AUTH_FAIL_CACHE_SEC` | No | `30` | SSE mode: how long a failed authentication (bad/unknown key) is remembered, so repeating the same bad key doesn't call Mesh API every request. |
+| `MESH_MCP_DECIDER_USERNAME` | No | — | Username recorded as `decided_by` when `record_owner_decision` answers a gated task. Unset: the workspace owner. |
+| `MESH_MCP_LEGACY_TOOL_ALIASES` | No | off | `1` also registers the tools' earlier names, for deployments whose callers still use them. Leave off for new installs. |
 
 ### Running without credentials
 
