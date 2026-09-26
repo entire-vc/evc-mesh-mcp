@@ -161,8 +161,19 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 	}
 
 	if result != nil {
-		if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
-			return fmt.Errorf("decode response: %w", err)
+		// A success response with no body (204 No Content is the common case,
+		// but nothing here depends on that exact status) has nothing to
+		// decode. Decoding an empty body unconditionally turns every such
+		// endpoint's success into a caller-visible "decode response: EOF" —
+		// hit in practice by UpdateAgentProfile, whose handler returns 204.
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("read response: %w", err)
+		}
+		if len(respBody) > 0 {
+			if err := json.Unmarshal(respBody, result); err != nil {
+				return fmt.Errorf("decode response: %w", err)
+			}
 		}
 	}
 	return nil
