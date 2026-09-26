@@ -110,6 +110,50 @@ func TestDoJSON_SurfacesValidationDetail(t *testing.T) {
 	}
 }
 
+// TestDoJSON_NoContentIsNotAnError is the regression test for task #58c27463:
+// a handler that answers 204 No Content on success (rules_handler.go's
+// UpdateAgentProfile is the one that surfaced this) has nothing to decode,
+// but doJSON tried anyway whenever the caller passed a non-nil result
+// pointer, turning io.EOF into a caller-visible "decode response: EOF" on
+// every single call regardless of payload.
+func TestDoJSON_NoContentIsNotAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := NewRESTClient(srv.URL, "test-key")
+	var result map[string]any
+	err := c.doJSON(context.Background(), http.MethodPut, "/agents/a1/profile", map[string]string{"role": "reviewer"}, &result)
+
+	if err != nil {
+		t.Fatalf("expected no error decoding a 204 response, got: %v", err)
+	}
+}
+
+// TestUpdateAgentProfile_204IsSuccess exercises the exact call shape from the
+// bug report: UpdateAgentProfile against a handler that mirrors
+// rules_handler.go's real behavior (204, empty body) on success.
+func TestUpdateAgentProfile_204IsSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("expected PUT, got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := NewRESTClient(srv.URL, "test-key")
+	result, err := c.UpdateAgentProfile(context.Background(), "a1", map[string]any{"description": "..."})
+
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil result for a 204 response, got: %v", result)
+	}
+}
+
 // TestRecallWithGraph_SendsScopeAndTagsOnTheWire is the regression test for
 // task #37e9344c: RecallWithGraphParams had no Scope/Tags/TagsAny fields at
 // all, so the graph-boost arm of recall() ran unscoped no matter what the
