@@ -1657,7 +1657,59 @@ func (s *Server) handleGetTeamDirectory(ctx context.Context, request mcpsdk.Call
 		return errResult("failed to get team directory: %v", err)
 	}
 
-	return jsonResult(result)
+	if mcpsdk.ParseBoolean(request, "full", false) {
+		return jsonResult(result)
+	}
+	return jsonResult(compactTeamDirectory(result))
+}
+
+// teamDirectoryColumns are the row-array columns compactTeamDirectory emits
+// for both "agents" and "humans", in this order.
+var teamDirectoryColumns = []string{"id", "name", "role", "project", "status"}
+
+// compactTeamDirectory trims the full team-directory dump (~35 fields per
+// agent: heartbeat text, capabilities map, accepts_from, three timestamps,
+// is_home/is_stale, parent_agent_id, working_hours, ...) to a row-array
+// table of the fields routing decisions actually use: identity (id/name),
+// role, project/zone, and status. Full profiles remain one full=true call
+// away.
+//
+// "status" is computed_status, not the raw status field — get_team_directory's
+// own status lies (§3 fleet registry rules: liveness is computed_status +
+// heartbeat age, not status), so surfacing the trustworthy field under a
+// plain "status" column here is a deliberate correction, not an oversight.
+func compactTeamDirectory(full map[string]any) map[string]any {
+	out := map[string]any{
+		"workspace": full["workspace"],
+		"columns":   teamDirectoryColumns,
+		"agents":    compactTeamDirectoryRows(full["agents"]),
+		"humans":    compactTeamDirectoryRows(full["humans"]),
+		"note":      "Trimmed to id/name/role/project/status (project = responsibility_zone, status = computed_status). Pass full=true for full profiles (capabilities, heartbeat, escalation_to, timestamps, ...).",
+	}
+	return out
+}
+
+func compactTeamDirectoryRows(members any) [][]any {
+	items, _ := members.([]any)
+	rows := make([][]any, 0, len(items))
+	for _, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		status, _ := m["computed_status"].(string)
+		if status == "" {
+			status, _ = m["status"].(string)
+		}
+		rows = append(rows, []any{
+			m["id"],
+			m["name"],
+			m["role"],
+			m["responsibility_zone"],
+			status,
+		})
+	}
+	return rows
 }
 
 // ============================================================================
