@@ -33,7 +33,7 @@ var authRetryBackoff = time.Second
 // came back). A one-shot 502 from the Mesh API gateway used to be
 // indistinguishable from a bad credential: log.Fatalf killed the process
 // before a single MCP tool was registered, leaving the whole session
-// without Mesh tools until a manual restart (task #8afc7aba). A 401/403/404
+// without Mesh tools until a manual restart. A 401/403/404
 // is a real auth/config problem and returns immediately — retrying those
 // would just mask the failure behind a few seconds of pointless waiting.
 func authenticateWithRetry(ctx context.Context, restClient *mcpserver.RESTClient) (map[string]any, error) {
@@ -114,7 +114,7 @@ func main() {
 
 	// Print version and exit before anything that requires network/env setup
 	// (MESH_AGENT_KEY, API connectivity) — origin of the installed binary must
-	// be checkable offline. See task #1c602063.
+	// be checkable offline.
 	if *versionFlag {
 		fmt.Println(mcpserver.BuildSHA)
 		return
@@ -233,7 +233,7 @@ func main() {
 		// also need it: their RESTClients dial apiURL directly (typically a
 		// colocated loopback address), and without a forwarded-origin header
 		// the backend echoes that loopback address back into every task/doc
-		// URL it hands an SSE client (task #fe507dc9).
+		// URL it hands an SSE client.
 		publicURL := strings.TrimSpace(os.Getenv("MESH_MCP_PUBLIC_URL"))
 
 		// SSE mode: per-connection authentication via HTTP headers/query params.
@@ -297,8 +297,7 @@ func main() {
 		// existing client connects here) and core (a lighter tool set for
 		// lightweight/embedded agents). This mirrors evc-mesh/cmd/mcp's
 		// already-deployed dual-profile SSE setup, so mesh-vm can run this
-		// binary instead of maintaining a second copy of the same MCP tools
-		// (task #3bc9f59d).
+		// binary instead of maintaining a second copy of the same MCP tools.
 		fullSrv := mcpserver.NewServer(mcpserver.ServerConfig{
 			RESTClient: sharedRestClient,
 			Profile:    mcpserver.ProfileFull,
@@ -713,7 +712,7 @@ func safeKeyPrefix(key string) string {
 // revoked agent key kept authenticating successfully here indefinitely —
 // GetOrAuthenticate never re-verified a key it had already accepted once,
 // so revocation only took effect on the next process restart. Override via
-// MESH_MCP_SESSION_CACHE_TTL_MIN. Task #887de18a.
+// MESH_MCP_SESSION_CACHE_TTL_MIN.
 const defaultSessionCacheTTL = 15 * time.Minute
 
 // defaultAuthFailCacheTTL bounds how long a FAILED authentication is
@@ -721,7 +720,7 @@ const defaultSessionCacheTTL = 15 * time.Minute
 // doesn't force a fresh GET /api/v1/agents/me on every single request.
 // Streamable HTTP (/mcp, /mcp/core) re-authenticates on every request
 // (WithStateLess(true)), so before this a bad-key loop turned 1:1 into load
-// on Mesh API. Override via MESH_MCP_AUTH_FAIL_CACHE_SEC. Task #887de18a.
+// on Mesh API. Override via MESH_MCP_AUTH_FAIL_CACHE_SEC.
 const defaultAuthFailCacheTTL = 30 * time.Second
 
 // defaultOAuthCacheTTL bounds how long a successfully verified OAuth access

@@ -15,7 +15,7 @@ import (
 // GET /tasks/:id (the task itself) and GET /tasks/:id/vcs-links (the
 // endpoint this test exists to wire up — internal/handler/vcs_link_handler.go
 // List, in evc-mesh, already returns {"vcs_links":[...],"count":N}; nothing
-// in evc-mesh changes for #5a6460b7, only this repo's get_task surface).
+// in evc-mesh changes for this feature, only this repo's get_task surface).
 // vcsLinksHit records whether /vcs-links was ever requested, so the
 // negative control (default get_task call) can assert on the wire, not just
 // on the decoded response.
@@ -94,7 +94,7 @@ func callGetTask(t *testing.T, server *Server, args map[string]any) (*mcpsdk.Cal
 }
 
 // TestHandleGetTask_DefaultResponseDoesNotGrow is the mandatory negative
-// control for #5a6460b7: get_task's default behaviour (no include_* flags)
+// control for include_vcs_links: get_task's default behaviour (no include_* flags)
 // must be byte-for-byte unaffected by adding include_vcs_links. Before this
 // change, /vcs-links wasn't called at all for a bare get_task — this test
 // pins that it still isn't, and that no "vcs_links" key leaks into the
@@ -122,7 +122,7 @@ func TestHandleGetTask_DefaultResponseDoesNotGrow(t *testing.T) {
 
 // TestHandleGetTask_IncludeVCSLinksTrue is the positive control: with the
 // flag set, get_task must surface provider/status per link — the whole
-// point of #5a6460b7 (diagnosing a misclassified/stuck link previously
+// point of include_vcs_links (diagnosing a misclassified/stuck link previously
 // required a raw REST call no MCP tool exposed).
 func TestHandleGetTask_IncludeVCSLinksTrue(t *testing.T) {
 	taskID := uuid.New().String()

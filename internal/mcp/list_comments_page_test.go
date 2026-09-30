@@ -40,7 +40,7 @@ func TestListCommentsTool_ExposesPageParam(t *testing.T) {
 }
 
 // TestListCommentsTool_PageReachesTheRequest is the actual repro from
-// #3a8d3d9c: list_comments(task_id, limit=2, page=4) returned the FIRST page
+// list_comments(task_id, limit=2, page=4) returned the FIRST page
 // every time — the handler read `limit` into `page_size` but never read
 // `page` at all, so the REST call always went out as `page_size=N` with no
 // `page` query param, and the server default (page 1) silently won. The

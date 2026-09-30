@@ -30,7 +30,7 @@ const defaultAuthFailRPM = 20
 // one GET /api/v1/agents/me per request, 1:1, against Mesh API — SSE's
 // agentSessionCache can't absorb that because it only ever caches SUCCESS
 // (see GetOrAuthenticate's negTTL comment for the same problem approached
-// from the caching side). Task #887de18a.
+// from the caching side).
 type ipRateLimiter struct {
 	mu      sync.Mutex
 	buckets map[string]*ipBucket

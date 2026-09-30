@@ -33,7 +33,7 @@ func heartbeatHarness(t *testing.T) (*Server, func()) {
 	return server, srv.Close
 }
 
-// #8f441c40: the only way to tell "feature not deployed" apart from "feature
+// The only way to tell "feature not deployed" apart from "feature
 // absent" used to be `strings` on the installed binary. heartbeat must carry
 // the build's git SHA so an agent session can check this without a shell.
 func TestHandleHeartbeat_ReportsMeshVersion(t *testing.T) {

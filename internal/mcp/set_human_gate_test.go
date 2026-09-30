@@ -7,7 +7,7 @@ import (
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
 
-// Task #4545660b. These cases never reach the network: each one must be refused
+// These cases never reach the network: each one must be refused
 // LOCALLY, with a message that says what to write next.
 //
 // Why local refusal matters even though the server also returns 422: the server can only
@@ -15,13 +15,13 @@ import (
 // and an agent that only learns "recommended_default: required" tends to retry the same
 // call verbatim or conclude it is not allowed to raise a gate at all. That misreading is
 // the documented failure mode this whole card is about.
-// predicateArgs is the four-question block every set_human_gate call must now carry
-// (task #5d3dc714). Merged into the older cases so they keep testing what they were
+// predicateArgs is the four-question block every set_human_gate call must now carry.
+// Merged into the older cases so they keep testing what they were
 // written for instead of silently becoming predicate tests.
 func predicateArgs(extra map[string]any) map[string]any {
 	m := map[string]any{
 		"credential_exists":     true,
-		"credential_reason":     "token is in keys.env",
+		"credential_reason":     "token is already in the agent environment",
 		"reversible":            false,
 		"reversible_reason":     "an outbound payment cannot be un-sent",
 		"blocked_by_other_task": false,
@@ -148,7 +148,7 @@ func TestSetHumanGate_OmittedOptionalsAreEmptyNotGuessed(t *testing.T) {
 	}
 }
 
-// Task #5d3dc714. Each of the four answers needs one line of justification, refused
+// Each of the four answers needs one line of justification, refused
 // LOCALLY so the message can say what to write — the server's 422 can only name the
 // field.
 func TestSetHumanGate_RefusesPredicateAnswerWithNoReason(t *testing.T) {

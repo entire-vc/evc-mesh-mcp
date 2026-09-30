@@ -11,7 +11,7 @@ import (
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
 
-// Independent verification of #5d3dc714 found this gap by mutation: forwarding nil
+// Independent verification of the predicate found this gap by mutation: forwarding nil
 // instead of args.Predicate from handleSetHumanGate left the ENTIRE suite green,
 // because nothing called handleSetHumanGate at all — every existing test exercises
 // parseSetHumanGateArgs in isolation.

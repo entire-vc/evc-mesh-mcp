@@ -9,7 +9,7 @@ import (
 // instruction or a recognisable credential (evc-mesh internal/service/
 // memory_sanitizer.go). That screen is PARTIAL by construction: it keys on
 // prefixes and on field names, so a bare secret value on its own line — the
-// exact shape of the Casdoor client_secret incident (#d2f79c73) — passes it
+// exact shape of a past client_secret leak — passes it
 // untouched.
 //
 // A partial control that is believed to be total is worse than no control,

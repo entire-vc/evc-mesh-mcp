@@ -17,7 +17,7 @@ import (
 
 // TestVersionFlag_PrintsBuildSHA builds the binary with an injected BuildSHA
 // and confirms `--version`/`-version` print exactly that SHA and exit 0
-// without requiring MESH_AGENT_KEY or network access — see task #1c602063
+// without requiring MESH_AGENT_KEY or network access
 // (the flag didn't exist at all, so an agent had no way to tell an installed
 // binary's origin short of `strings` on the host).
 func TestVersionFlag_PrintsBuildSHA(t *testing.T) {
@@ -67,10 +67,10 @@ func TestVersionFlag_DefaultsToDev(t *testing.T) {
 }
 
 // TestAuthenticateWithRetry_RecoversFromTransient502 is the positive control
-// for task #8afc7aba: a transient 502 on the first attempt must not kill the
+// for the startup retry: a transient 502 on the first attempt must not kill the
 // process — the retry must succeed and return the agent info, exactly like a
-// second, healthy spawn would have (the lucky self-heal path task #1f550cee
-// hit by accident).
+// second, healthy spawn would have (the lucky self-heal path
+// that once worked by accident).
 func TestAuthenticateWithRetry_RecoversFromTransient502(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -153,7 +153,7 @@ func TestIsTransientAuthError(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // advertiseOptions — which endpoint URL the SSE handshake hands the client
-// (task #3bc9f59d / #2a0ec14c — dual-profile SSE + MESH_MCP_PUBLIC_URL wiring)
+// (dual-profile SSE + MESH_MCP_PUBLIC_URL wiring)
 // ---------------------------------------------------------------------------
 
 // newTestSSEServer builds an SSE server the way main() does, so the assertions
@@ -168,7 +168,7 @@ func newTestSSEServer(t *testing.T, publicURL, basePath string) *sdkserver.SSESe
 }
 
 // ---------------------------------------------------------------------------
-// agentSessionCache / serverRegistry — forwarded-origin wiring (task #fe507dc9)
+// agentSessionCache / serverRegistry — forwarded-origin wiring
 //
 // A colocated SSE transport dials apiURL over loopback (http://localhost:8005),
 // which is what makes the backend's computeTaskURL/computeDocumentURL echo
@@ -187,7 +187,7 @@ func TestAgentSessionCache_ForwardsPublicOrigin(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":           "11111111-1111-1111-1111-111111111111",
 			"workspace_id": "22222222-2222-2222-2222-222222222222",
-			"name":         "linus",
+			"name":         "agent-a",
 			"agent_type":   "agent",
 		})
 	}))

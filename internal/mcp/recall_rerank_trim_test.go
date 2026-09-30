@@ -305,14 +305,14 @@ func TestHandleRecall_BelowThreshold_ReturnsEmptyWithExplanation(t *testing.T) {
 }
 
 // TestHandleRecall_GenuineLowScoreHit_SurvivesThreshold is a regression guard
-// for the false-negative Garfield flagged on #7771a196 and that the 2026-09-30
+// for the false-negative raised in review of the relevance threshold and that the 2026-09-30
 // live fixture run confirmed: a query whose only real match happens to sit
 // low on the RRF scale (observed as low as 0.01148 against real fleet data)
 // must still come back, not get zeroed by too-aggressive a floor. If this
 // starts failing, the threshold was raised back into genuine-hit territory.
 func TestHandleRecall_GenuineLowScoreHit_SurvivesThreshold(t *testing.T) {
 	items := []any{
-		map[string]any{"key": "episode-bill-openrouter-topup", "content": "openrouter topup not needed", "score": 0.01148},
+		map[string]any{"key": "episode-agent-b-provider-topup", "content": "openrouter topup not needed", "score": 0.01148},
 	}
 	server, closeFn := newRecallTestServer(t, items, nil)
 	defer closeFn()

@@ -27,7 +27,7 @@ func buildCreateSubtaskRequest(parentTaskID, title, statusSlug string) mcpsdk.Ca
 // TestHandleCreateSubtask_StatusSlugOverride verifies that an explicit status_slug
 // is resolved against the PARENT's project and threaded through as status_id on
 // the POST body — never left for the REST API to fall back to the project default.
-// Regression coverage for #60921c52 (explicit status_slug silently ignored).
+// Regression coverage for an explicit status_slug being silently ignored.
 func TestHandleCreateSubtask_StatusSlugOverride(t *testing.T) {
 	parentID := uuid.New().String()
 	projectID := uuid.New().String()

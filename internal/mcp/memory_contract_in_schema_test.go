@@ -7,8 +7,8 @@ import (
 )
 
 // Two contracts govern every memory write, and until this test both lived only
-// in bob/CLAUDE-memory.md — 21,913 bytes of prose about a surface whose own
-// schema said nothing about it (audit-2026-09 §4.1, task #17840d1b).
+// in a separate rules document — 21,913 bytes of prose about a surface whose own
+// schema said nothing about it (found in an internal audit).
 //
 //  1. The key pattern. The server refuses a non-slug key outright
 //     (evc-mesh internal/service/memory_service.go:35, keySlugRegex). The doc

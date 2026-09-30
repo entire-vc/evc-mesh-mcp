@@ -126,7 +126,7 @@ func TestHandleRecordOwnerDecision_PublicDecision(t *testing.T) {
 	req := buildOwnerDecisionRequest(
 		"We will use Redis for all session state going forward.",
 		"Use Redis for sessions",
-		[]string{"linus", "bill"},
+		[]string{"agent-a", "agent-b"},
 		"",
 		"public",
 	)
@@ -163,7 +163,7 @@ func TestHandleRecordOwnerDecision_PublicDecision(t *testing.T) {
 			tagSet[s] = true
 		}
 	}
-	for _, required := range []string{"kind:canonical-decision", "source:owner-decision", "privacy:public", "propagate_to:linus", "propagate_to:bill"} {
+	for _, required := range []string{"kind:canonical-decision", "source:owner-decision", "privacy:public", "propagate_to:agent-a", "propagate_to:agent-b"} {
 		if !tagSet[required] {
 			t.Errorf("missing required tag %q in %v", required, tags)
 		}

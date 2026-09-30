@@ -12,7 +12,7 @@ import (
 
 // countingMeshAPI accepts exactly one agent key on /api/v1/agents/me and
 // counts every call it receives, so a test can assert how many times the
-// cache actually reached the network — the whole point of task #887de18a.
+// cache actually reached the network — the whole point of the auth-failure cache.
 func countingMeshAPI(t *testing.T, goodKey string, calls *int64) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -32,11 +32,11 @@ func countingMeshAPI(t *testing.T, goodKey string, calls *int64) *httptest.Serve
 }
 
 // ---------------------------------------------------------------------------
-// Negative cache — RED CONTROL first (CLAUDE-workflow.md §0x): before the
+// Negative cache — RED CONTROL first: before the
 // fix, N bad-key requests against the same key produced N calls to
 // /api/v1/agents/me. Confirmed below with negTTL=0 (fallback default, still
 // active) vs a deliberately-disabled cache would both show N==attempts; the
-// green case (default TTL active) must show calls==1. Task #887de18a.
+// green case (default TTL active) must show calls==1.
 // ---------------------------------------------------------------------------
 
 func TestAgentSessionCache_NegativeCacheAbsorbsRepeatedBadKey(t *testing.T) {
@@ -115,7 +115,7 @@ func TestAgentSessionCache_TransientErrorNotNegativelyCached(t *testing.T) {
 // Positive-entry TTL — a revoked key must stop working within ttl, without a
 // restart. RED CONTROL: with ttl unset/zero-ish behavior removed (pre-fix),
 // this would never re-check and the second call would keep succeeding
-// forever. Task #887de18a.
+// forever.
 // ---------------------------------------------------------------------------
 
 func TestAgentSessionCache_TTLExpiryRevokesWithoutRestart(t *testing.T) {
@@ -201,8 +201,8 @@ func TestIPRateLimiter_ZeroRPMDisables(t *testing.T) {
 
 // RED CONTROL then GREEN: without checkAuthRateLimit gating the call, N
 // distinct-bad-key requests from one IP would each reach /agents/me (the
-// exact "нагрузку на Mesh API стало проще раскачать" scenario from the task
-// description, task #887de18a). With the limiter, requests beyond the
+// exact "нагрузку на Mesh API стало проще раскачать" scenario from the original
+// request). With the limiter, requests beyond the
 // per-minute budget are rejected 429 and never call GetOrAuthenticate.
 func TestRequireAgentKey_RateLimitsPerIP(t *testing.T) {
 	var calls int64

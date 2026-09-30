@@ -58,8 +58,8 @@ func TestParseVCSURL(t *testing.T) {
 		},
 		{
 			name: "github branch with slash in the name",
-			url:  "https://github.com/entire-vc/evc-mesh/tree/garfield/add-vcs-link",
-			want: vcsURLFacts{Provider: "github", LinkType: "branch", ExternalID: "garfield/add-vcs-link", Repository: "entire-vc/evc-mesh"},
+			url:  "https://github.com/entire-vc/evc-mesh/tree/feature/add-vcs-link",
+			want: vcsURLFacts{Provider: "github", LinkType: "branch", ExternalID: "feature/add-vcs-link", Repository: "entire-vc/evc-mesh"},
 		},
 		{
 			name: "gitlab merge request",
@@ -67,7 +67,7 @@ func TestParseVCSURL(t *testing.T) {
 			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "17", Repository: "group/proj"},
 		},
 		{
-			// #0fbed572: our own self-hosted GitLab (git.entire.host) is an
+			// Our own self-hosted GitLab (git.entire.host) is an
 			// unrecognised host, but its merge-request URLs carry GitLab's
 			// literal "-" resource separator — that alone is enough to tell
 			// it apart from a self-hosted GitHub Enterprise "pull" URL.
@@ -338,7 +338,7 @@ func TestHandleAddVCSLink_SelfHostedWithExplicitExternalID(t *testing.T) {
 	}
 }
 
-// #df734dd9: the whole point of exposing status is linking a PR that was
+// The whole point of exposing status is linking a PR that was
 // already merged before this call — the one case a GitHub webhook can never
 // backfill, since the merge event fired before the link existed.
 func TestHandleAddVCSLink_ExplicitStatusIsForwarded(t *testing.T) {
@@ -382,7 +382,7 @@ func TestHandleAddVCSLink_OmittedStatusIsNotSent(t *testing.T) {
 	}
 }
 
-// #0fbed572: before this fix, a git.entire.host MR URL silently got
+// Before this fix, a git.entire.host MR URL silently got
 // provider=github (parseVCSURL's host switch didn't recognise our own
 // GitLab), and the done-evidence gate could then never verify it live.
 func TestHandleAddVCSLink_SelfHostedGitLabURLInfersGitLabProvider(t *testing.T) {

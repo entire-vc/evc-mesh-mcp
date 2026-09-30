@@ -13,7 +13,7 @@ import (
 
 // teamDirectoryFixture mirrors a real /workspaces/:id/team response closely
 // enough to exercise trimming: one agent with computed_status set (the
-// trustworthy field per §3 fleet registry rules), one agent with only the
+// trustworthy field per the registry's documented semantics), one agent with only the
 // raw (documented-unreliable) status field to check the fallback, and one
 // human.
 func teamDirectoryFixture() map[string]any {
@@ -22,21 +22,21 @@ func teamDirectoryFixture() map[string]any {
 		"agents": []any{
 			map[string]any{
 				"id":                  "agent-1",
-				"name":                "Linus",
-				"slug":                "linus",
+				"name":                "Agent A",
+				"slug":                "agent-a",
 				"role":                "developer",
 				"responsibility_zone": "Mesh — бэкенд и MCP",
 				"computed_status":     "online",
 				"status":              "offline", // stale/misleading — computed_status must win
 				"heartbeat_message":   "Waiting for tasks",
 				"capabilities":        map[string]any{"go": true},
-				"accepts_from":        []any{"garfield"},
+				"accepts_from":        []any{"lead-agent"},
 				"is_home":             true,
 				"is_stale":            false,
 				"last_heartbeat":      "2026-09-30T18:41:57Z",
 				"last_seen_at":        "2026-09-30T18:41:57Z",
 				"working_hours":       "24/7",
-				"escalation_to":       "garfield",
+				"escalation_to":       "lead-agent",
 			},
 			map[string]any{
 				"id":                  "agent-2",
@@ -49,11 +49,11 @@ func teamDirectoryFixture() map[string]any {
 		"humans": []any{
 			map[string]any{
 				"id":                  "human-1",
-				"name":                "Pavel",
+				"name":                "Owner",
 				"role":                "owner",
 				"responsibility_zone": "",
-				"email":               "pavel@entire.vc",
-				"username":            "pavel",
+				"email":               "owner@example.com",
+				"username":            "owner",
 			},
 		},
 	}
@@ -117,7 +117,7 @@ func TestHandleGetTeamDirectory_Default_ReturnsCompactTable(t *testing.T) {
 	if !ok || len(row0) != 5 {
 		t.Fatalf("expected a 5-column row [id,name,role,project,status], got %v", agents[0])
 	}
-	if row0[0] != "agent-1" || row0[1] != "Linus" || row0[2] != "developer" || row0[3] != "Mesh — бэкенд и MCP" {
+	if row0[0] != "agent-1" || row0[1] != "Agent A" || row0[2] != "developer" || row0[3] != "Mesh — бэкенд и MCP" {
 		t.Fatalf("unexpected compact row content: %v", row0)
 	}
 	if row0[4] != "online" {
