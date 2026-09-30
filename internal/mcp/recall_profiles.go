@@ -156,7 +156,7 @@ func GetProfileParams(profile RecallProfile) ProfileParams {
 // recallDefaultMinImportance is this client's fallback when the caller passes no
 // min_importance. It must never exceed the server's own default — see
 // recall_min_importance_default_test.go for why a stricter value here silently
-// replaces the server's instead of deferring to it (#a9752575).
+// replaces the server's instead of deferring to it.
 const recallDefaultMinImportance = 0.3
 
 // resolveProfileMinImportance applies the same precedence rule as
@@ -171,7 +171,7 @@ const recallDefaultMinImportance = 0.3
 // min_importance was the last recall parameter still breaking the rule: the
 // `factual` preset carries 0.5, so a caller who explicitly asked for 0.3 got 0.5
 // and lost every kind:session-checkpoint (scored 0.30) with nothing in the
-// response to say why (#a9752575).
+// response to say why.
 func resolveProfileMinImportance(presetMin, callerMin float64, callerSupplied bool) float64 {
 	if presetMin > 0 && !callerSupplied {
 		return presetMin

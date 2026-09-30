@@ -110,7 +110,7 @@ func TestDoJSON_SurfacesValidationDetail(t *testing.T) {
 	}
 }
 
-// TestDoJSON_NoContentIsNotAnError is the regression test for task #58c27463:
+// TestDoJSON_NoContentIsNotAnError is the regression test for doJSON decoding a 204:
 // a handler that answers 204 No Content on success (rules_handler.go's
 // UpdateAgentProfile is the one that surfaced this) has nothing to decode,
 // but doJSON tried anyway whenever the caller passed a non-nil result
@@ -155,9 +155,9 @@ func TestUpdateAgentProfile_204IsSuccess(t *testing.T) {
 }
 
 // TestRecallWithGraph_SendsScopeAndTagsOnTheWire is the regression test for
-// task #37e9344c: RecallWithGraphParams had no Scope/Tags/TagsAny fields at
+// scoped graph recall: RecallWithGraphParams had no Scope/Tags/TagsAny fields at
 // all, so the graph-boost arm of recall() ran unscoped no matter what the
-// caller asked for — the backend has enforced these since #2c087b2a, but
+// caller asked for — the backend has enforced these for a while, but
 // nothing on this path sent them.
 //
 // It inspects the ACTUAL request the client puts on the wire, not just that
@@ -166,7 +166,7 @@ func TestUpdateAgentProfile_204IsSuccess(t *testing.T) {
 // diagnosis names: "не 'поле добавлено', а фактически доехавшее значение").
 //
 // Two tags in both Tags and TagsAny, specifically, to catch the sibling
-// class of bug #2c087b2a found on the C4 channel: the recall_graph endpoint
+// class of bug found on the same channel: the recall_graph endpoint
 // binds tags/tags_any as plain strings via echo's c.Bind, which keeps only
 // the FIRST occurrence of a repeated query param. Sending repeated
 // tags_any=a&tags_any=b (what params.Add would produce) silently narrows a
@@ -186,8 +186,8 @@ func TestRecallWithGraph_SendsScopeAndTagsOnTheWire(t *testing.T) {
 		Query:       "test query",
 		WorkspaceID: "ws-1",
 		Scope:       "workspace",
-		Tags:        []string{"kind:decision", "owner:linus"},
-		TagsAny:     []string{"pavel-decision", "canonical"},
+		Tags:        []string{"kind:decision", "owner:agent-a"},
+		TagsAny:     []string{"owner-decision", "canonical"},
 	})
 	if err != nil {
 		t.Fatalf("RecallWithGraph returned error: %v", err)
@@ -206,16 +206,16 @@ func TestRecallWithGraph_SendsScopeAndTagsOnTheWire(t *testing.T) {
 	if len(tagsRaw) != 1 {
 		t.Fatalf("tags sent as %d separate query values (want 1 comma-joined value): %v", len(tagsRaw), tagsRaw)
 	}
-	if tagsRaw[0] != "kind:decision,owner:linus" {
-		t.Errorf("tags value = %q, want %q", tagsRaw[0], "kind:decision,owner:linus")
+	if tagsRaw[0] != "kind:decision,owner:agent-a" {
+		t.Errorf("tags value = %q, want %q", tagsRaw[0], "kind:decision,owner:agent-a")
 	}
 
 	tagsAnyRaw := gotQuery["tags_any"]
 	if len(tagsAnyRaw) != 1 {
 		t.Fatalf("tags_any sent as %d separate query values (want 1 comma-joined value): %v", len(tagsAnyRaw), tagsAnyRaw)
 	}
-	if tagsAnyRaw[0] != "pavel-decision,canonical" {
-		t.Errorf("tags_any value = %q, want %q", tagsAnyRaw[0], "pavel-decision,canonical")
+	if tagsAnyRaw[0] != "owner-decision,canonical" {
+		t.Errorf("tags_any value = %q, want %q", tagsAnyRaw[0], "owner-decision,canonical")
 	}
 }
 
@@ -248,8 +248,8 @@ func TestRecallWithGraph_OmitsEmptyScopeAndTags(t *testing.T) {
 }
 
 // TestGetTaskDependencies_DecodesOutgoingIncomingShape is the regression
-// test for #cf78d1f9: the /tasks/{id}/dependencies endpoint moved from a
-// bare JSON array to {"outgoing":[...],"incoming":[...]}, and the old
+// test for the dependencies response shape: the /tasks/{id}/dependencies
+// endpoint moved from a bare JSON array to {"outgoing":[...],"incoming":[...]}, and the old
 // []map[string]any decode target failed on the new shape with "cannot
 // unmarshal object into Go value of type []map[string]interface {}".
 func TestGetTaskDependencies_DecodesOutgoingIncomingShape(t *testing.T) {
@@ -337,7 +337,7 @@ func TestNewRESTClient_UsesEnvTimeout(t *testing.T) {
 	}
 }
 
-// TestSetForwardedOrigin_AddsHeaders reproduces task #fe507dc9: a colocated
+// TestSetForwardedOrigin_AddsHeaders reproduces the loopback-URL problem: a colocated
 // SSE transport dials the backend over loopback, and without a forwarded
 // origin header the backend echoes that loopback address back into every
 // task/doc URL it returns. SetForwardedOrigin exists so the RESTClient can

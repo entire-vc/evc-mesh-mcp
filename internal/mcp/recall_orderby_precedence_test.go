@@ -6,8 +6,8 @@ import (
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
 
-// The same precedence bug as the limit one (`recall_limit_precedence_test.go`,
-// task #4c65d3e2), in the parameter next to it: `order_by`.
+// The same precedence bug as the limit one (`recall_limit_precedence_test.go`),
+// in the parameter next to it: `order_by`.
 //
 // `ProfileFactual` presets "relevance:desc", and the handler applied it
 // unconditionally — so a caller who explicitly asked for

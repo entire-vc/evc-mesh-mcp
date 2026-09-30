@@ -192,7 +192,7 @@ func TestSetProjectKnowledge_AutoPopulatesFromFiddlerFile(t *testing.T) {
 }
 
 // TestRemember_ProjectIDAutoPopulate_APPLIESForProjectScope is the positive
-// control for the #2c0154db/F3 fix: the auto-populate must still fire for the
+// control for the F3 fix: the auto-populate must still fire for the
 // (default) scope=="project" case it was built for.
 func TestRemember_ProjectIDAutoPopulate_APPLIESForProjectScope(t *testing.T) {
 	server, srv, received := setupContextInjectServer(t)
@@ -218,11 +218,11 @@ func TestRemember_ProjectIDAutoPopulate_APPLIESForProjectScope(t *testing.T) {
 	}
 }
 
-// TestRemember_ProjectIDAutoPopulate_NotForWorkspaceScope is the #2c0154db/F3
+// TestRemember_ProjectIDAutoPopulate_NotForWorkspaceScope is the F3
 // regression test: a workspace-scope remember() must NOT get a project_id
 // stamped from the checked-out task, even though one is tracked for the
 // agent. Before the fix this silently partitioned a workspace-wide fact by
-// project, which is exactly the drift the #4edf3fb5 collapse had to clean up
+// project, which is exactly the drift a one-off collapse had to clean up
 // (582 rows) and which started regressing again within 2h of that cleanup
 // because only the server-side twin of this auto-stamp (memory_service.go:488)
 // had been scope-gated.

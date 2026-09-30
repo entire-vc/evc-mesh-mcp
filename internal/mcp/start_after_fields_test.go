@@ -13,7 +13,7 @@ import (
 
 // start_after mirrors due_date field-for-field in all three task-creation/update
 // tools (create_task, update_task, create_subtask): the API accepted the field
-// (evc-mesh #246b8fcc) before any of these three MCP tools carried a parameter to
+// before any of these three MCP tools carried a parameter to
 // set it — the class this repo calls create_task_status_param_silently_ignored,
 // except here the parameter was never in the schema at all, so a caller could not
 // even attempt it. These tests pin that all three now forward it, validate it the
@@ -148,7 +148,7 @@ func TestUpdateTask_OmittedStartAfterIsNotSent(t *testing.T) {
 }
 
 // TestUpdateTask_ClearsStartAfterWithEmptyString pins the actual bug behind
-// #3e4c9f80: before this fix, `!= ""` made an explicit empty string
+// Before this fix, `!= ""` made an explicit empty string
 // indistinguishable from "omitted", so a caller trying to lift a start_after
 // delay got a 200 (or, alone in the body, "no fields to update") with the
 // date left in place — a false success on the one field agents most need to

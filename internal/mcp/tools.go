@@ -225,7 +225,7 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 	// changed; otherwise hand back task_changed=false and a trimmed stub
 	// instead of the full object. 1004 of 4940 get_task calls 23-26.09 were
 	// a repeat of the same task in the same session, paying full price for
-	// zero new information (task #4e60d95c).
+	// zero new information.
 	if !sinceSet {
 		resp["task"] = task
 	} else if taskChangedSince(task, since) {
@@ -507,7 +507,7 @@ func (s *Server) handleUpdateTask(ctx context.Context, request mcpsdk.CallToolRe
 	// due_date/start_after use the presence-check (`args[...]; ok`), not the
 	// `!= ""` pattern the other date-ish fields below still use: an update
 	// that clears a date is a real, agent-reachable action (the whole reason
-	// start_after exists — #3e4c9f80), and `!= ""` cannot represent "caller
+	// start_after exists), and `!= ""` cannot represent "caller
 	// sent an explicit empty value to clear it", only "field omitted". Both
 	// share that requirement, so both share the fix — leaving due_date on the
 	// old pattern right next to a just-fixed start_after would leave the
@@ -888,7 +888,7 @@ func (s *Server) handleAddVCSLink(ctx context.Context, request mcpsdk.CallToolRe
 	// PR that was already merged before this call links it can be recorded
 	// as such immediately: no GitHub webhook will ever arrive for a merge
 	// that predates the link, so without this the row is stuck unresolvable
-	// forever (#df734dd9) and the done-evidence gate blocks the task on it
+	// forever and the done-evidence gate blocks the task on it
 	// permanently.
 	if status := mcpsdk.ParseString(request, "status", ""); status != "" {
 		reqBody["status"] = normalizeVCSLinkStatus(status)
@@ -1675,8 +1675,8 @@ var teamDirectoryColumns = []string{"id", "name", "role", "project", "status"}
 // away.
 //
 // "status" is computed_status, not the raw status field — get_team_directory's
-// own status lies (§3 fleet registry rules: liveness is computed_status +
-// heartbeat age, not status), so surfacing the trustworthy field under a
+// own status lies (liveness is computed_status + heartbeat age, not
+// status), so surfacing the trustworthy field under a
 // plain "status" column here is a deliberate correction, not an oversight.
 func compactTeamDirectory(full map[string]any) map[string]any {
 	out := map[string]any{
@@ -2122,10 +2122,10 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	// branch could never run. Measured on prod 2026-09-06: 89 of 2527 active
 	// memories sat below 0.4 and all 89 were session-checkpoints, i.e. the one
 	// class written for the next session to read was invisible to a plain
-	// recall(). Task #a9752575.
+	// recall().
 	//
 	// ⚠️ This is a SECOND copy of a default that the server also owns, which is
-	// the drift class CLAUDE-workflow §1q warns about. The structural fix is for
+	// a known drift class. The structural fix is for
 	// this client to send nothing when the caller said nothing and let the server
 	// decide; that needs ImportanceMin to become a pointer through the shared
 	// request builder, so it is filed separately rather than smuggled in here.
@@ -2155,7 +2155,7 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	//
 	// Measured through the real stdio path 2026-09-06 on one query: explicit
 	// min_importance=0.3 returned 0 checkpoints (preset won), the same query under
-	// the default profile returned 3. Task #a9752575.
+	// the default profile returned 3.
 	minImportance = resolveProfileMinImportance(pp.MinImportance, minImportance,
 		hasArgument(request, "min_importance"))
 	// Same rule as the limit below, and for the same reason: a preset fills in
@@ -2223,7 +2223,7 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	// relevance signal on its own, and gating on the boosted order would let an
 	// exact key match through even when nothing in the result is actually
 	// relevant. If nothing clears the bar, say so instead of handing back the
-	// weakest candidates padded to a full page (audit #c3a16d5c).
+	// weakest candidates padded to a full page.
 	if best, scored := recallTopScore(items); !scored || best < recallRelevanceThreshold {
 		result["items"] = []any{}
 		result["total"] = 0
@@ -2245,7 +2245,7 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 			ProjectID:   projectID,
 			// Reuse rp's already-parsed Scope/Tags/TagsAny rather than re-reading
 			// them from the request — a second parse is a second place for the
-			// two to silently disagree (task #37e9344c).
+			// two to silently disagree.
 			Scope:           rp.Scope,
 			Tags:            rp.Tags,
 			TagsAny:         rp.TagsAny,
@@ -2283,25 +2283,25 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 //
 //	p10 0.01148  p30 0.01482  p50 0.01570  p60 0.01595  p70 0.01613  p90 0.01639
 //
-// That cut (0.0159) landed the ~50-70% empty-rate target (#65a25c28) on
+// That cut (0.0159) landed the ~50-70% empty-rate target on
 // historical traffic, but historical traffic is not the right reference
 // class — it mixes genuinely-unanswerable exploratory queries with queries
 // that had a real answer in memory, and a single global percentile can't
-// tell them apart. Garfield flagged exactly this on #7771a196: RRF scores
+// tell them apart. Review raised exactly this concern: RRF scores
 // are small and tightly clustered, so an absolute cut calibrated on the
 // whole population risks eating real matches, and argued for a
 // relative/normalized cutoff instead (score/top1_score).
 //
 // Live-validated 2026-09-30: ran the p60 threshold against 10 fixture-style
-// queries built from #7771a196's topics, each with a genuinely on-topic top
+// queries built from representative topics, each with a genuinely on-topic top
 // hit already in memory. 0.0159 would have zeroed out at least 3 of them —
 // e.g. three of them top-scored 0.01148, 0.01393 and 0.01537 on their own
-// on-topic episodes — all real matches, all below the p60 bar. Garfield's
+// on-topic episodes — all real matches, all below the p60 bar. The
 // concern was confirmed empirically, not just in theory.
 //
 // A pure ratio (score/top1_score) can't fix this on its own: top1/top1 is
 // always 1, so a within-call relative cutoff can never empty a response,
-// and requirement #4 explicitly needs it to when nothing is relevant.
+// and the gate must be able to return an empty result when nothing is relevant.
 // Instead this drops the absolute floor well below the weakest genuine hit
 // observed above (0.01148, with margin), and leaves quality/ordering to
 // rerankRecallItems (key/project/scope boost) rather than to the gate. The
@@ -2309,8 +2309,8 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 // showed up via a weak, low-rank coincidence in one retrieval arm), not to
 // hitting a target empty-rate on its own — that rate is now whatever real
 // traffic produces under this lower, safer floor. Formal acceptance against
-// #7771a196's exact fixture (subtask #67adb65a) is the next checkpoint to
-// retune this if needed.
+// a fixed fixture of real queries is the next checkpoint to retune this if
+// needed.
 const recallRelevanceThreshold = 0.0100
 
 // recallFullCount is how many top-ranked items (after reranking) keep their
@@ -2433,7 +2433,7 @@ func keyMatchBoost(key, query string) int {
 // bookkeeping fields, content capped: see compactTopItem) and reduces the rest
 // to key + first-line snippet + score — the response used to
 // carry full content for every item up to limit (10 by default), which is the
-// 25.7k-char average behind audit #c3a16d5c.
+// 25.7k-char average measured in an audit.
 func trimRecallItems(items []any) []any {
 	out := make([]any, len(items))
 	for i, it := range items {
@@ -2542,7 +2542,7 @@ func graphBoostReserve(limit int) int {
 //
 // The merged result NEVER exceeds limit. Graph neighbours take the tail slots of
 // the page, displacing the weakest base hits; they are not appended on top of a
-// full page. Appending (as this did until #4c65d3e2) meant recall(limit=10) handed
+// full page. Appending (as this used to) meant recall(limit=10) handed
 // back 20 rows while the response still echoed "limit": 10 — the caller could not
 // see that it had been overserved, and half of what arrived was not what it asked
 // for. Every agent's mandatory wake-up recall paid that cost on every spawn.
@@ -2673,12 +2673,12 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 	// agent omits it. This fixes the Memory Eval E·P2 issue where 99% of episodic
 	// entries had project_id=NULL because agents didn't pass it explicitly.
 	//
-	// Gated to scope=="project" only (task #2c0154db/F3): identity now follows
+	// Gated to scope=="project" only (F3): identity now follows
 	// declared scope (workspace -> (ws,key), project -> (ws,project,key)) since
 	// evc-mesh#444/memory_service.go:488 narrowed the server-side twin of this
 	// same auto-stamp the same way. Without this gate, a workspace-scope
 	// remember() from inside a checked-out task silently gets a project_id it
-	// never asked for, which is exactly the drift #4edf3fb5's collapse had to
+	// never asked for, which is exactly the drift a one-off collapse had to
 	// clean up once (582 rows) and started regressing again within 2h of that
 	// cleanup (2 rows) because only the server side had been fixed.
 	if projectID == "" && scope == "project" {
@@ -2856,7 +2856,7 @@ func (s *Server) handleForget(ctx context.Context, request mcpsdk.CallToolReques
 // set_human_gate / clear_human_gate
 // ============================================================================
 
-// handleSetHumanGate is the explicit arming path (task #4545660b). It validates the two
+// handleSetHumanGate is the explicit arming path. It validates the two
 // fields locally BEFORE the round trip, not because the server would miss them — it
 // returns 422 naming the field — but because the local message can say what to do next
 // while the HTTP one can only say what was wrong.
@@ -2867,7 +2867,7 @@ type setHumanGateArgs struct {
 	RecommendedDefault string
 	Class              string
 	Deadline           *time.Time
-	// Predicate is the four-question check (task #5d3dc714). Sent to the server, which
+	// Predicate is the four-question check. Sent to the server, which
 	// decides — the client does NOT pre-judge it. Deliberate: two implementations of one
 	// predicate drift, and the server's answer is the one that governs the write.
 	Predicate map[string]any
@@ -3328,7 +3328,7 @@ type canonicalEntry struct {
 
 // slugVariants returns all known slug aliases for a project so that workspace
 // memory queries find records fragmented across multiple slug labels.
-// Source: Phase A audit — one logical project written under 2-3 slug variants.
+// Source: an earlier data audit — one logical project written under 2-3 slug variants.
 var slugVariantTable = map[string][]string{
 	"evc-mesh":       {"evc-mesh", "mesh-dev", "mesh"},
 	"mesh-dev":       {"evc-mesh", "mesh-dev", "mesh"},

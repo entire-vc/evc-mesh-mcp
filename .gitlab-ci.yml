@@ -1,9 +1,8 @@
 # CI for the GitLab canon (git.entire.host/entire-vc/evc-mesh-mcp).
 #
-# Same rollout as entire-vc/evc-mesh (#11421131) — this repo had ZERO
-# .gitlab-ci.yml and zero pipelines since the GitLab move (§0z), even though
-# `~/bin/mesh-mcp` built from it is what every agent lane in the fleet
-# actually runs. Part of the fan-out at #f226e5f0.
+# Same rollout as entire-vc/evc-mesh — this repo had ZERO
+# .gitlab-ci.yml and zero pipelines since the GitLab move, even though
+# the binary built from it is what every agent actually runs.
 #
 # Ported from .github/workflows/ci.yml, not copied from evc-mesh: this repo
 # has no lint step on GitHub (no golangci-lint config in the repo — go vet +
@@ -13,8 +12,8 @@
 # against a stubbed systemctl/HTTP, with its own negative control (a
 # deliberately-mutated copy of the script that must fail the drill).
 #
-# `only_allow_merge_if_pipeline_succeeds` is out of scope here too — #11421131,
-# needs Maintainer.
+# `only_allow_merge_if_pipeline_succeeds` is out of scope here too —
+# it needs Maintainer.
 
 workflow:
   rules:
@@ -109,7 +108,7 @@ deploy-drill:
   script:
     - bash scripts/mesh-mcp-deploy-drill.sh scripts/mesh-mcp-remote-deploy.sh
     # Negative control — the drill must fail on a broken script, or it proves
-    # nothing (§0x: a check that cannot go red is worse than no check).
+    # nothing (a check that cannot go red is worse than no check).
     - |
       sed 's/\[ "\$seq" -ge "\$n" \]/[ "$seq" -eq "$n" ]/' \
         scripts/mesh-mcp-remote-deploy.sh > /tmp/mutant.sh

@@ -12,7 +12,7 @@ import "testing"
 // never be STRICTER than the server's: ParseFloat64 fills the field in, so a
 // stricter value here does not "also apply", it REPLACES the server's default and
 // silently wins. That is exactly how 0.4 here defeated the server-side fix for
-// the whole fleet (#a9752575).
+// the whole fleet.
 const (
 	serverDefaultMinImportance   = 0.3
 	serverSessionCheckpointScore = 0.3

@@ -6,7 +6,7 @@ import (
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
 
-// The third way recall over-served (task #4c65d3e2): the multi-session profile
+// The third way recall over-served: the multi-session profile
 // widened the page to 20 even when the caller had explicitly asked for fewer.
 //
 // It compounded with the graph-boost overflow. recall(limit=6) on a query

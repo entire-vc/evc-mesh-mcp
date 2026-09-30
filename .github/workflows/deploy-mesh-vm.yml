@@ -1,9 +1,8 @@
 name: Deploy MCP server to mesh VM (via hel01)
 
 # Delivery path for THIS repository's binary to the public MCP endpoint.
-# Background: Mesh task #3bc9f59d.
 #
-# ─── The cutover is DONE (2026-08-23, subtask #e85e4e05) ────────────────────
+# ─── The cutover is DONE (2026-08-23) ───────────────────────────
 # evc-mesh/cmd/mcp — the second copy of this server — has been deleted, and
 # with it every pipeline step that built and shipped it:
 #   * evc-mesh/.github/workflows/deploy-backend.yml  (mesh-mcp steps removed)
@@ -115,7 +114,7 @@ jobs:
       # without a token. Fail-closed: an unreadable API answer holds the deploy
       # rather than assuming the coast is clear.
       #
-      # ⚠️ THIS GUARD LOOKS DEAD AND IS NOT. Measured 2026-08-23 (#e85e4e05):
+      # ⚠️ THIS GUARD LOOKS DEAD AND IS NOT. Measured 2026-08-23:
       #   * GitLab canon (origin/main)  — deploy-backend.yml: 0 live mesh-mcp
       #     lines. That half was removed by evc-mesh!763.
       #   * GitHub mirror (showcase/main) — the SAME file still carries 20 live
@@ -123,8 +122,8 @@ jobs:
       #     workflow would build and swap the stale duplicate successfully.
       #     It last did so on 2026-08-22T21:10Z.
       # GitHub Actions run off the MIRROR, not off canon, and the mirror has
-      # been stuck since 2026-08-20 (Mesh #bdd682a4), with PRs still landing on
-      # GitHub main directly (Mesh #3967b15a). So merging the deletion into
+      # been stuck since 2026-08-20, with PRs still landing on
+      # GitHub main directly. So merging the deletion into
       # GitLab does NOT disarm this path — only the mirror catching up does.
       #
       # Remove this step when, and only when, `git show showcase/main:.github/

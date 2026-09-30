@@ -26,7 +26,7 @@ func getTaskSinceDeltaHarness(t *testing.T, taskID, taskUpdatedAt string) *Serve
 				"description":    "a long static description that should not be repeated when nothing changed",
 				"status_id":      "status-1",
 				"assignee_id":    "agent-1",
-				"assignee_name":  "Linus",
+				"assignee_name":  "Agent A",
 				"checked_out_by": "agent-1",
 				"human_gate":     false,
 				"updated_at":     taskUpdatedAt,

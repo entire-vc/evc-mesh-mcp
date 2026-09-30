@@ -4,11 +4,11 @@
 (private address, `secrets.MESH_VM_HOST` — reachable only through the hel01 edge). Today that service runs
 a binary built from a *second copy* of this MCP server that lives in
 `evc-mesh/cmd/mcp`; the two copies have drifted by 37 functions, all in one
-direction — this repository is ahead. Mesh task `#3bc9f59d` removes the copy,
+direction — this repository is ahead. Removing the copy is tracked separately,
 and this document is the delivery half of that.
 
 Nothing here has cut over yet. `deploy-mesh-vm.yml` exists, is runnable, and
-defaults to a dry run. The switch is task `#2bfbff4c`.
+defaults to a dry run. The switch is a separate, tracked change.
 
 ## The parts
 
@@ -48,7 +48,7 @@ on:
 
 is the one-line change that completes the cutover, and it belongs in the same
 change that removes the mesh-mcp build and swap steps from `deploy-backend.yml`
-(task `#e85e4e05`). While both pipelines exist, a `deploy` or `rollback` run
+(a separate change). While both pipelines exist, a `deploy` or `rollback` run
 refuses to start if an evc-mesh backend deploy is in flight — evc-mesh is a
 public repository, so its run list is readable without a token, and the check
 holds the deploy if the API cannot be read rather than assuming it is clear.

@@ -69,7 +69,7 @@ func NewRESTClient(baseURL, agentKey string) *RESTClient {
 // *incoming request's* Host (overridable only via X-Forwarded-Host), not from
 // any of its own config. Without this, a task/doc URL requested by an SSE
 // client comes back as http://localhost:<port>/t/<id> — correct from the
-// backend's point of view, useless to anyone off that VM (task #fe507dc9).
+// backend's point of view, useless to anyone off that VM.
 //
 // A malformed or empty publicURL is a no-op: forwarding stays off and every
 // request keeps behaving exactly as before this method existed. That is
@@ -548,7 +548,7 @@ func (c *RESTClient) AddVCSLink(ctx context.Context, taskID string, body map[str
 // endpoint (internal/handler/vcs_link_handler.go List, in evc-mesh) has no
 // pagination: it returns the full set under the key "vcs_links" (plus a
 // "count"), not "items"/"total_count"/"has_more" — so there is no
-// truncation envelope to propagate here. Added for #5a6460b7: before this,
+// truncation envelope to propagate here. Added because, before this,
 // get_task only ever surfaced vcs_link_count, and diagnosing a
 // misclassified/stuck link required a raw REST call no MCP tool exposed.
 func (c *RESTClient) GetTaskVCSLinks(ctx context.Context, taskID string) (map[string]any, error) {
@@ -1083,11 +1083,11 @@ func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams)
 // RecallWithGraphParams holds parameters for KG-expanded memory recall.
 //
 // Scope/Tags/TagsAny restrict both the seed recall AND the BFS-expanded
-// neighbours server-side (domain.RecallGraphOpts, task #2c087b2a) — graph
+// neighbours server-side (domain.RecallGraphOpts) — graph
 // expansion walks memory_edges, which carry no notion of scope, so without
 // these an out-of-scope memory adjacent to an in-scope seed is returned. The
 // server accepted these fields from day one; nothing on this path sent them
-// until task #37e9344c, so the filter bypass was live on every call.
+// until that was fixed, so the filter bypass was live on every call.
 type RecallWithGraphParams struct {
 	Query           string
 	WorkspaceID     string
@@ -1125,9 +1125,9 @@ func (c *RESTClient) RecallWithGraph(ctx context.Context, p RecallWithGraphParam
 	// echo's c.Bind, which — unlike the repeatable-param handling the regular
 	// /search endpoint uses — keeps only the FIRST occurrence of a repeated
 	// param. Sending repeated tags=a&tags=b here would silently narrow a
-	// two-tag filter to one tag with no error (the exact C4-channel gotcha
-	// from #2c087b2a). The server splits on comma (splitCSV), so a single
-	// comma-joined value is the only encoding that survives intact.
+	// two-tag filter to one tag with no error.
+	// The server splits on comma (splitCSV), so a single comma-joined value is
+	// the only encoding that survives intact.
 	if len(p.Tags) > 0 {
 		params.Set("tags", strings.Join(p.Tags, ","))
 	}
@@ -1215,7 +1215,7 @@ func (c *RESTClient) ExtendCheckout(ctx context.Context, taskID, checkoutToken s
 	return result, nil
 }
 
-// SetHumanGate arms the "this card is waiting on a human" gate (task #4545660b).
+// SetHumanGate arms the "this card is waiting on a human" gate.
 //
 // gate_author is deliberately NOT a parameter: the server takes it from the agent key
 // on this request. Every one of the 21 implementations this replaces read WHO was
@@ -1247,7 +1247,7 @@ func (c *RESTClient) SetHumanGate(ctx context.Context, taskID, reason, recommend
 
 // ClearHumanGate releases the gate. Two callers get through: any user, and the AGENT
 // that armed this gate through the API when it carries no marker comment
-// (human_gate_info.clear_path == "clear_endpoint", server task #f933dc05) — withdrawing
+// (human_gate_info.clear_path == "clear_endpoint", server-side) — withdrawing
 // your own ask has always been a sanctioned exit, and that shape had no other one.
 // Everyone else gets a 403 whose message names the exits it CAN reach — that refusal
 // text is the point, not an obstacle to route around.

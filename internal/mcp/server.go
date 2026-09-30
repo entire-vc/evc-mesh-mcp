@@ -665,11 +665,11 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithNumber("ttl_minutes", mcpsdk.Description("New lock TTL in minutes from now (default 120, server clamps to [1, 240]).")),
 	), s.tracked("extend_checkout", s.handleExtendCheckout))
 
-	// --- Human gate (task #4545660b) ---
+	// --- Human gate ---
 	// The ONE way an agent says "this card is waiting on a human". Before this,
-	// "waiting on Pavel" was re-derived in 21 places by grepping comment text, each
+	// "waiting on a human" was re-derived in 21 places by grepping comment text, each
 	// with its own marker dictionary — which is how a driver came to read its own
-	// instructional boilerplate back as a raised blocker (#84ab54fd).
+	// instructional boilerplate back as a raised blocker.
 	s.addTool(mcpsdk.NewTool("set_human_gate",
 		mcpsdk.WithDescription("Arm the human gate on a task: freeze it and record WHO is waiting, WHAT was asked, and WHAT you will do if nobody answers. Use INSTEAD of writing a '❓ Blocking @<person>' comment by hand — the marker still works, but this path records the whole ask on the task, so nothing has to re-read the thread. recommended_default is REQUIRED: a gate with no stated default can only ever be resolved by finding a human. You must answer four questions (credential_exists / reversible / blocked_by_other_task / customer_visible_now), each with one line of justification. The server REFUSES the arm when your own answers say nobody needs to be asked: if you hold the credential, the action is reversible, and nothing a customer sees or pays changes right now, capture a rollback anchor and just do it. If the blocker is another card, the server tells you to use add_dependency instead."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to gate.")),
@@ -677,10 +677,10 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithString("recommended_default", mcpsdk.Required(), mcpsdk.Description("What you will do if nobody answers. Required — an ask with no default cannot time out.")),
 		mcpsdk.WithString("class", mcpsdk.Description("'hard' (default, never auto-released) or 'soft' (released by timeout — the release does NOT answer the question).")),
 		mcpsdk.WithString("deadline", mcpsdk.Description("RFC3339 timestamp when recommended_default applies. Omit for no deadline.")),
-		// The four-question predicate (task #5d3dc714). The audit measured that 40-45% of
-		// asks to Pavel were decidable from a rule already written down — an access
-		// already in keys.env, the agent's own 403 read as a human's decision, an approval
-		// Pavel had already declined, or waiting on someone else's card. Each answer needs
+		// The four-question predicate. Measured on real traffic: 40-45% of
+		// asks to a human were decidable from a rule already written down — an access
+		// already held in the agent's environment, the agent's own 403 read as a human's decision, an approval
+		// the human had already declined, or waiting on someone else's card. Each answer needs
 		// one line of justification: a bare bool is unreviewable, and answering these four
 		// implicitly, in your head, is exactly how they got answered wrongly.
 		mcpsdk.WithBoolean("credential_exists", mcpsdk.Required(), mcpsdk.Description("Do you ALREADY hold the credential or access this needs? Check your team's credential store before answering false — a service account your team created for its agents is yours to use.")),
@@ -691,7 +691,7 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithString("blocked_reason", mcpsdk.Required(), mcpsdk.Description("One line: which card, or why none.")),
 		mcpsdk.WithBoolean("customer_visible_now", mcpsdk.Required(), mcpsdk.Description("Does this change what a customer SEES or PAYS right now? A disabled gateway, an inactive flag or a reversible migration is NOT customer-visible; a rate that prints on invoices people already download is.")),
 		mcpsdk.WithString("customer_reason", mcpsdk.Required(), mcpsdk.Description("One line: what the customer would see, or why nothing changes for them now.")),
-		// copy_tier (task 1.17a, §1r.A). Optional in general, but the server REFUSES the
+		// copy_tier. Optional in general, but the server REFUSES the
 		// arm with no copy_tier when `reason` reads like a copy-approval question — an
 		// agent that hits that refusal should answer it and retry, not treat it as a
 		// second unrelated field to fill in.

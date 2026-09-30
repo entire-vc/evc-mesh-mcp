@@ -165,7 +165,7 @@ func (st *commentStore) handleCreate(w http.ResponseWriter, r *http.Request) {
 		"id":                uuid.New().String(),
 		"document_id":       st.docID,
 		"parent_comment_id": req["parent_comment_id"],
-		"author_name":       "Bill",
+		"author_name":       "Agent B",
 		"author_type":       "agent",
 		"body":              req["body"],
 		"resolved_at":       nil,

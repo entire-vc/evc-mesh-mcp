@@ -13,7 +13,7 @@ import (
 // still echoed "limit": 10. TestMergeGraphResults_CapEnforced below asserted
 // exactly that (3 base + 3 boost = 6 items), which is why the overflow survived a
 // green suite: the test encoded the defect as the contract. It now asserts the
-// bound instead. See task #4c65d3e2.
+// bound instead.
 
 func makeItems(ids []string, hop float64) []any {
 	items := make([]any, len(ids))
