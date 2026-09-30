@@ -309,6 +309,7 @@ func (s *Server) registerCoreTools() {
 	s.addTool(mcpsdk.NewTool("get_task",
 		mcpsdk.WithDescription("Get full task details with optional comments, artifacts, dependencies, and VCS links."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID (full UUID or 6–12 char hex short-ID prefix).")),
+		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 timestamp from an earlier call in this session (e.g. that response's task.updated_at, or your own last-call time). With it: include_comments returns only comments created after it, and the full task body (description and the rest) is included only if the task's own updated_at is after it too — the response then carries task_changed=true/false so you always know which you got, and a trimmed stub (id/status_id/assignee/updated_at) instead of the full task when nothing changed, to avoid re-paying for the same ~5k tokens on a repeat call. Omit for the unfiltered default (full task, all comments).")),
 		mcpsdk.WithBoolean("include_comments", mcpsdk.Description("Include comments."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_artifacts", mcpsdk.Description("Include artifacts."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_dependencies", mcpsdk.Description("Include dependencies."), mcpsdk.DefaultBool(false)),
