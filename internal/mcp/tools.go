@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1992,6 +1993,7 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	orderBy := mcpsdk.ParseString(request, "order_by", "")
 	includeExpired := mcpsdk.ParseBoolean(request, "include_expired", false)
 	includeArchived := mcpsdk.ParseBoolean(request, "include_archived", false)
+	full := mcpsdk.ParseBoolean(request, "full", false)
 
 	// Classify the query and apply profile-specific parameter presets.
 	// An explicit recall_profile param overrides the auto-classifier.
@@ -2065,6 +2067,34 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 		return errResult("recall failed: %v", err)
 	}
 
+	// Rerank before anything else touches result["items"]: the graph-merge step
+	// below cuts the WEAKEST base items to make room for neighbours, and the
+	// trim step keeps only the first recallFullCount full — both need the
+	// boosted order, not the server's raw score order.
+	items, _ := result["items"].([]any)
+	if len(items) > 0 {
+		items = rerankRecallItems(items, query, projectID, scope)
+		result["items"] = items
+	}
+
+	// Gate on the server's own score, not the boost above: the boost is a
+	// structural tie-breaker (this looks like what you asked for), not a
+	// relevance signal on its own, and gating on the boosted order would let an
+	// exact key match through even when nothing in the result is actually
+	// relevant. If nothing clears the bar, say so instead of handing back the
+	// weakest candidates padded to a full page (audit #c3a16d5c).
+	if best, scored := recallTopScore(items); !scored || best < recallRelevanceThreshold {
+		result["items"] = []any{}
+		result["total"] = 0
+		result["explanation"] = fmt.Sprintf(
+			"no candidate cleared the relevance threshold (best score %.5f, threshold %.5f) — "+
+				"returning empty instead of the weakest matches; try a more specific query, or widen scope/project_id",
+			best, recallRelevanceThreshold,
+		)
+		s.recordMemoryRead(ctx, "recall")
+		return jsonResult(result)
+	}
+
 	// When RECALL_GRAPH_ENABLED=true, fire a secondary KG-expanded recall and
 	// append any hop>0 items not already present in the base results.
 	if os.Getenv("RECALL_GRAPH_ENABLED") == "true" {
@@ -2087,8 +2117,201 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 		}
 	}
 
+	// Full text for the top recallFullCount items (as before); beyond that, key
+	// + first-line snippet + score only, unless the caller asked for everything
+	// with full=true. This is the backward-compat default: a caller that never
+	// sets full=true gets exactly this shape, which is the change itself — old
+	// callers do not regress to a missing field, they regress to a smaller one.
+	if !full {
+		if items, ok := result["items"].([]any); ok {
+			result["items"] = trimRecallItems(items)
+		}
+	}
+
 	s.recordMemoryRead(ctx, "recall")
 	return jsonResult(result)
+}
+
+// recallRelevanceThreshold gates whether recall returns anything at all: below
+// it, the best candidate is noise for this query, and the honest answer is an
+// empty list with an explanation rather than the 8 weakest matches padded onto
+// the page.
+//
+// First calibration (2026-09-30, superseded) picked the p60 mark of the
+// per-call top-score distribution over 2288 historical recall calls:
+//
+//	p10 0.01148  p30 0.01482  p50 0.01570  p60 0.01595  p70 0.01613  p90 0.01639
+//
+// That cut (0.0159) landed the ~50-70% empty-rate target (#65a25c28) on
+// historical traffic, but historical traffic is not the right reference
+// class — it mixes genuinely-unanswerable exploratory queries with queries
+// that had a real answer in memory, and a single global percentile can't
+// tell them apart. Garfield flagged exactly this on #7771a196: RRF scores
+// are small and tightly clustered, so an absolute cut calibrated on the
+// whole population risks eating real matches, and argued for a
+// relative/normalized cutoff instead (score/top1_score).
+//
+// Live-validated 2026-09-30: ran the p60 threshold against 10 fixture-style
+// queries built from #7771a196's topics, each with a genuinely on-topic top
+// hit already in memory. 0.0159 would have zeroed out at least 3 of them —
+// e.g. "openrouter topup limit" top-scored 0.01148 on its own on-topic
+// episode, "spark seo drift baseline" scored 0.01393, "MeshMcpAuthFailure"
+// scored 0.01537 — all real matches, all below the p60 bar. Garfield's
+// concern was confirmed empirically, not just in theory.
+//
+// A pure ratio (score/top1_score) can't fix this on its own: top1/top1 is
+// always 1, so a within-call relative cutoff can never empty a response,
+// and requirement #4 explicitly needs it to when nothing is relevant.
+// Instead this drops the absolute floor well below the weakest genuine hit
+// observed above (0.01148, with margin), and leaves quality/ordering to
+// rerankRecallItems (key/project/scope boost) rather than to the gate. The
+// floor's job is narrowed to catching genuine noise (a result that only
+// showed up via a weak, low-rank coincidence in one retrieval arm), not to
+// hitting a target empty-rate on its own — that rate is now whatever real
+// traffic produces under this lower, safer floor. Formal acceptance against
+// #7771a196's exact fixture (subtask #67adb65a) is the next checkpoint to
+// retune this if needed.
+const recallRelevanceThreshold = 0.0100
+
+// recallFullCount is how many top-ranked items (after reranking) keep their
+// full content in a recall response; the rest are trimmed to key+snippet+score.
+const recallFullCount = 3
+
+// recallSnippetChars caps the first-line preview kept for a trimmed item.
+const recallSnippetChars = 120
+
+// recallTopScore returns the highest "score" field among items, and whether any
+// item carried a numeric score at all (items missing "score" are not evidence
+// of irrelevance — they just cannot be judged, which is treated the same as
+// "gate failed" by the caller).
+func recallTopScore(items []any) (float64, bool) {
+	best := 0.0
+	found := false
+	for _, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		score, ok := m["score"].(float64)
+		if !ok {
+			continue
+		}
+		if !found || score > best {
+			best = score
+			found = true
+		}
+	}
+	return best, found
+}
+
+// rerankRecallItems moves candidates that match the query's own key, or the
+// caller's project/scope, ahead of items the server scored higher on text/
+// vector similarity alone. It is a stable sort on a small integer boost, so two
+// items with the same boost (including boost 0, the common case) keep the
+// server's original relevance order — this only ever reorders across boost
+// tiers, never within one.
+//
+// The boost is intentionally coarse (an int, not a score blend): the "score"
+// field is an RRF fusion value on its own scale, and folding a structural match
+// into it invites exactly the kind of silent cross-scale arithmetic that has
+// broken ranking here before (see graphBoostReserve's comment on base vs.
+// composite_score). Keeping the two separate means the threshold gate above can
+// keep judging actual relevance while this only judges "is this what the
+// caller is clearly pointing at".
+func rerankRecallItems(items []any, query, projectID, scope string) []any {
+	if len(items) == 0 {
+		return items
+	}
+	type ranked struct {
+		item  any
+		boost int
+	}
+	qLower := strings.ToLower(query)
+	out := make([]ranked, len(items))
+	for i, it := range items {
+		boost := 0
+		if m, ok := it.(map[string]any); ok {
+			if key, _ := m["key"].(string); key != "" {
+				boost += keyMatchBoost(strings.ToLower(key), qLower)
+			}
+			if projectID != "" {
+				if pid, _ := m["project_id"].(string); pid == projectID {
+					boost++
+				}
+			}
+			if scope != "" {
+				if sc, _ := m["scope"].(string); sc == scope {
+					boost++
+				}
+			}
+		}
+		out[i] = ranked{item: it, boost: boost}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].boost > out[j].boost })
+	result := make([]any, len(out))
+	for i, r := range out {
+		result[i] = r.item
+	}
+	return result
+}
+
+// keyMatchBoost scores how strongly a memory's key matches the query text:
+// exact match highest, one containing the other next, a shared hyphen/
+// underscore-delimited token (4+ chars, to skip noise like "the" or "p2a")
+// last. All inputs are expected already lower-cased by the caller.
+func keyMatchBoost(key, query string) int {
+	switch {
+	case key == query:
+		return 3
+	case strings.Contains(query, key) || strings.Contains(key, query):
+		return 2
+	}
+	for _, tok := range strings.FieldsFunc(key, func(r rune) bool { return r == '-' || r == '_' }) {
+		if len(tok) >= 4 && strings.Contains(query, tok) {
+			return 1
+		}
+	}
+	return 0
+}
+
+// trimRecallItems keeps full content for the first recallFullCount items and
+// reduces the rest to key + first-line snippet + score — the response used to
+// carry full content for every item up to limit (10 by default), which is the
+// 25.7k-char average behind audit #c3a16d5c.
+func trimRecallItems(items []any) []any {
+	out := make([]any, len(items))
+	for i, it := range items {
+		if i < recallFullCount {
+			out[i] = it
+			continue
+		}
+		m, ok := it.(map[string]any)
+		if !ok {
+			out[i] = it
+			continue
+		}
+		trimmed := map[string]any{"key": m["key"]}
+		if score, ok := m["score"]; ok {
+			trimmed["score"] = score
+		}
+		content, _ := m["content"].(string)
+		trimmed["snippet"] = firstLineTruncated(content, recallSnippetChars)
+		out[i] = trimmed
+	}
+	return out
+}
+
+// firstLineTruncated returns the first line of s, truncated to at most maxChars
+// runes.
+func firstLineTruncated(s string, maxChars int) string {
+	if nl := strings.IndexByte(s, '\n'); nl >= 0 {
+		s = s[:nl]
+	}
+	r := []rune(s)
+	if len(r) > maxChars {
+		return string(r[:maxChars])
+	}
+	return s
 }
 
 // graphBoostReserve returns how many of the caller's `limit` slots may be spent on
