@@ -1,60 +1,34 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
+	"strings"
+	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
 
-// recallFixtureCase is one saved recall query plus the memory keys the session
-// actually used afterwards (ground truth), from the 23-30.09 audit of agent
-// session logs (#7771a196).
-type recallFixtureCase struct {
-	query string
-	used  []string
-}
-
-var recallFixture = []recallFixtureCase{
-	{"test account service token", []string{"canon-no-owner-account-in-agent-tests", "pavel-decision-merge-approval-scope-billing"}},
-	{"HarnessFreshnessStall fleet-tests harness prod journal isolation", []string{"sol-fleet-tests-move-status-split-and-noise-gate-01a8f26b"}},
-	{"grey zone review record_auto_publish auto-publish queue Spark", []string{"spark-second-autopublish-path-bypasses-grey-zone"}},
-	{"openrouter topup пополнение лимит $100", []string{"canon-leads-maintainer-openrouter-topup-limit"}},
-	{"job token allowlist evc-brandkit project 9", []string{"gitlab-ci-job-token-allowlist-is-per-consumer-project"}},
-	{"spark seo drift baseline", []string{"spark-drift-cwv-rules-base-rate", "learning-seo-drift-cwv-percent-threshold-no-absolute-floor"}},
-	{"undershoot fix batch regeneration", []string{"episode-spark-gen-2026-09-22-undershoot-3cbcb039", "episode-spark-gen-2026-09-23-undershoot-a58fc43e"}},
-	{"MeshMcpAuthFailure riker", []string{"solution-mesh-mcp-startup-auth-no-retry-silent-blackout"}},
-	{"gate_service_token gate_cabinet_token internal.py периметр verified-by", []string{"decision-quinn-gitlab-account-not-workaround-47bcba25"}},
-	{"spark-gen agent BROKEN stale spawn", []string{"solution-agent-broken-wave-grouping-ed6603fb"}},
-}
-
-// recallReplayCase is a REAL logged recall call (query + the parameters the
-// agent actually sent) that returned one of the fixture's used keys, found by
-// scanning ~/.claude/projects session logs 23-30.09 for result bodies that
-// contain the key. The fixture's own query strings are paraphrases and carry no
-// tags/scope/limit, which is why they cannot reproduce the logged ranks.
-type recallReplayCase struct {
-	query string
-	args  map[string]any
-	want  string
-	logRk int // 0-based rank the key had in the logged response
-}
-
-var recallReplay = []recallReplayCase{
-	{"undershoot fix batch regeneration", map[string]any{}, "episode-spark-gen-2026-09-22-undershoot-3cbcb039", 3},
-	{"undershoot fix batch regeneration", map[string]any{}, "episode-spark-gen-2026-09-23-undershoot-a58fc43e", 4},
-	{"undershoot regeneration batch", map[string]any{}, "episode-spark-gen-2026-09-23-undershoot-a58fc43e", 3},
-	{"pavel decision billing receipt email", map[string]any{"tags_any": []any{"pavel-decision"}, "scope": "workspace"}, "pavel-decision-merge-approval-scope-billing", 1},
-	{"pavel decision billing CI allow_failure", map[string]any{"tags_any": []any{"pavel-decision"}, "scope": "workspace", "limit": 10}, "pavel-decision-merge-approval-scope-billing", 3},
-	{"pavel decision grey zone", map[string]any{"tags_any": []any{"pavel-decision"}, "scope": "workspace"}, "pavel-decision-merge-approval-scope-billing", 6},
-	{"SEO drift check spark.entire.vc", map[string]any{"tags_any": []any{"pavel-decision", "solution"}}, "learning-seo-drift-cwv-percent-threshold-no-absolute-floor", 4},
-	{"authed e2e drag board filters Mesh web", map[string]any{"tags_any": []any{"pavel-decision", "solution"}}, "solution-mesh-mcp-startup-auth-no-retry-silent-blackout", 4},
-	{"mesh-mcp limiter X-Forwarded-For nginx trusted proxies", map[string]any{"min_importance": 0.3}, "solution-mesh-mcp-startup-auth-no-retry-silent-blackout", 7},
-	{"KidCash receipt_email format", map[string]any{"tags_any": []any{"pavel-decision"}, "scope": "workspace"}, "canon-no-owner-account-in-agent-tests", 5},
-	{"gate_service_token gate_cabinet_token internal.py периметр verified-by", map[string]any{"min_importance": 0, "limit": 10}, "decision-quinn-gitlab-account-not-workaround-47bcba25", 8},
+// recallTriple is one real recall call: the query, every other argument the
+// caller sent, and the memory keys the session went on to use (the ground
+// truth). The data file is deliberately not in this repository — it holds real
+// queries and memory keys of a private workspace — and is loaded from
+// MESH_LIVE_FIXTURE_FILE.
+type recallTriple struct {
+	Query string         `json:"query"`
+	Args  map[string]any `json:"args"`
+	Used  []string       `json:"used"`
+	Split string         `json:"split"` // "tune" or "holdout", fixed by hash of the call
 }
 
 func keysOf(items []any) []string {
@@ -77,171 +51,215 @@ func rankOf(keys []string, want string) int {
 	return 0
 }
 
-// TestRecallFixtureLive measures the fixture against a live Mesh server. It is
-// skipped unless MESH_LIVE_FIXTURE_URL and MESH_AGENT_KEY are both set, so it
-// never runs in CI; the output is what the acceptance comment on #67adb65a
-// quotes.
+// recallCapture sits between the handler and the live server and keeps the
+// last recall response body untouched, so "before" is the server's own order
+// for exactly the request handleRecall built (profile, limit, filters included)
+// instead of a re-implementation of that parameter mapping.
+type recallCapture struct {
+	mu   sync.Mutex
+	last []byte
+}
+
+func (c *recallCapture) take() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := c.last
+	c.last = nil
+	return b
+}
+
+type splitStats struct {
+	calls, empties, used, measurable, hitBefore, hitAfter, sumBefore, sumAfter int
+}
+
+// TestRecallFixtureLive replays real logged recall calls against a live Mesh
+// server through the real handler and reports per-item top-3 hit rate before
+// (server order) and after (rerank + trim) and the average response size. It
+// is skipped unless MESH_LIVE_FIXTURE_URL, _WORKSPACE, _FILE and MESH_AGENT_KEY
+// are all set, so it never runs in CI.
+//
+// A used key that the live server no longer returns at all (corpus drift since
+// the call was logged) cannot say anything about ranking; it is counted and
+// left out of the rates rather than counted as a miss.
 func TestRecallFixtureLive(t *testing.T) {
 	baseURL := os.Getenv("MESH_LIVE_FIXTURE_URL")
 	key := os.Getenv("MESH_AGENT_KEY")
 	wsID := os.Getenv("MESH_LIVE_FIXTURE_WORKSPACE")
-	if baseURL == "" || key == "" || wsID == "" {
-		t.Skip("live fixture needs MESH_LIVE_FIXTURE_URL, MESH_LIVE_FIXTURE_WORKSPACE and MESH_AGENT_KEY")
+	file := os.Getenv("MESH_LIVE_FIXTURE_FILE")
+	if baseURL == "" || key == "" || wsID == "" || file == "" {
+		t.Skip("live fixture needs MESH_LIVE_FIXTURE_URL, MESH_LIVE_FIXTURE_WORKSPACE, MESH_LIVE_FIXTURE_FILE and MESH_AGENT_KEY")
 	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var triples []recallTriple
+	if err := json.Unmarshal(data, &triples); err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	if len(triples) == 0 {
+		t.Fatal("fixture is empty")
+	}
+
+	target, err := url.Parse(strings.TrimRight(baseURL, "/"))
+	if err != nil {
+		t.Fatalf("bad MESH_LIVE_FIXTURE_URL: %v", err)
+	}
+	capture := &recallCapture{}
+	proxy := &httputil.ReverseProxy{
+		Director: func(r *http.Request) {
+			r.URL.Scheme, r.URL.Host, r.Host = target.Scheme, target.Host, target.Host
+			r.Header.Del("Accept-Encoding")
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			if strings.HasSuffix(resp.Request.URL.Path, "/memories/search") {
+				b, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return err
+				}
+				_ = resp.Body.Close()
+				resp.Body = io.NopCloser(bytes.NewReader(b))
+				capture.mu.Lock()
+				capture.last = b
+				capture.mu.Unlock()
+			}
+			return nil
+		},
+	}
+	srv := httptest.NewServer(proxy)
+	defer srv.Close()
+
 	ws := uuid.MustParse(wsID)
-	rc := NewRESTClient(baseURL, key)
-	s := &Server{restClient: rc, tracker: NewSessionTracker(), session: &AgentSession{AgentID: uuid.New(), WorkspaceID: ws}}
+	s := &Server{restClient: NewRESTClient(srv.URL, key), tracker: NewSessionTracker(), session: &AgentSession{AgentID: uuid.New(), WorkspaceID: ws}}
 	ctx := context.Background()
 
-	call := func(q string, full bool, extra map[string]any) (map[string]any, int) {
+	stats := map[string]*splitStats{"tune": {}, "holdout": {}}
+	// MESH_LIVE_FIXTURE_DUMP=<path> also writes every call's raw server response
+	// there, so ranking changes can be tried offline without hitting the server.
+	type dumpRow struct {
+		Query string          `json:"query"`
+		Args  map[string]any  `json:"args"`
+		Used  []string        `json:"used"`
+		Split string          `json:"split"`
+		Raw   json.RawMessage `json:"raw"`
+	}
+	var dump []dumpRow
+	for _, tr := range triples {
+		st := stats["tune"]
+		if tr.Split == "holdout" {
+			st = stats["holdout"]
+		}
 		req := mcpsdk.CallToolRequest{}
-		args := map[string]any{"query": q, "full": full}
-		for k, v := range extra {
+		args := map[string]any{"query": tr.Query}
+		for k, v := range tr.Args {
 			args[k] = v
 		}
 		req.Params.Arguments = args
 		res, err := s.handleRecall(ctx, req)
 		if err != nil {
-			t.Fatalf("handleRecall(%q): %v", q, err)
-		}
-		if len(res.Content) == 0 {
-			t.Fatalf("handleRecall(%q): empty content", q)
+			t.Fatalf("handleRecall(%q): %v", tr.Query, err)
 		}
 		txt := res.Content[0].(mcpsdk.TextContent).Text
-		var m map[string]any
-		if err := json.Unmarshal([]byte(txt), &m); err != nil {
-			t.Fatalf("handleRecall(%q): not JSON: %v (%.200s)", q, err, txt)
+		var after map[string]any
+		if err := json.Unmarshal([]byte(txt), &after); err != nil {
+			t.Fatalf("handleRecall(%q): not JSON: %v (%.200s)", tr.Query, err, txt)
 		}
-		return m, len(txt)
-	}
-
-	var items, hitBefore, hitAfter, sumBefore, sumAfter, sumFull, empties int
-	for _, c := range recallFixture {
-		// Before: the server's own order, as the old handler returned it.
-		profile := ClassifyQuery(c.query)
-		pp := GetProfileParams(profile)
-		limit := 10
-		if pp.Limit > 0 {
-			limit = pp.Limit
+		rawBody := capture.take()
+		dump = append(dump, dumpRow{tr.Query, tr.Args, tr.Used, tr.Split, rawBody})
+		var raw map[string]any
+		if err := json.Unmarshal(rawBody, &raw); err != nil {
+			t.Fatalf("captured raw response for %q: %v", tr.Query, err)
 		}
-		raw, err := rc.RecallMemories(ctx, RecallMemoriesParams{
-			Query: c.query, WorkspaceID: ws.String(), ImportanceMin: recallDefaultMinImportance,
-			ApplyRecencyDecay: pp.ApplyDecay, HalfLifeDays: pp.HalfLifeDays, OrderBy: pp.OrderBy, Limit: limit,
-		})
-		if err != nil {
-			t.Fatalf("raw recall %q: %v", c.query, err)
-		}
-		rawBytes, _ := json.Marshal(raw)
-		rawItems, _ := raw["items"].([]any)
-		beforeKeys := keysOf(rawItems)
-
-		after, afterLen := call(c.query, false, nil)
-		_, fullLen := call(c.query, true, nil)
-		afterItems, _ := after["items"].([]any)
+		beforeKeys := keysOf(asItems(raw["items"]))
+		afterItems := asItems(after["items"])
 		afterKeys := keysOf(afterItems)
-		if len(afterItems) == 0 {
-			empties++
-		}
-		sumBefore += len(rawBytes)
-		sumAfter += afterLen
-		sumFull += fullLen
 
-		for _, want := range c.used {
-			items++
-			rb, ra := rankOf(beforeKeys, want), rankOf(afterKeys, want)
-			if rb >= 1 && rb <= 3 {
-				hitBefore++
+		st.calls++
+		st.sumBefore += utf8.RuneCountInString(string(rawBody))
+		st.sumAfter += utf8.RuneCountInString(txt)
+		if len(afterItems) == 0 {
+			st.empties++
+		}
+		for _, want := range tr.Used {
+			st.used++
+			rb := rankOf(beforeKeys, want)
+			if rb == 0 {
+				continue // drifted out of the live corpus/page
+			}
+			st.measurable++
+			ra := rankOf(afterKeys, want)
+			if rb <= 3 {
+				st.hitBefore++
 			}
 			if ra >= 1 && ra <= 3 {
-				hitAfter++
+				st.hitAfter++
 			}
-			t.Logf("q=%q want=%s rank_before=%d rank_after=%d (raw n=%d after n=%d)", c.query, want, rb, ra, len(beforeKeys), len(afterKeys))
-		}
-		t.Logf("q=%q chars raw=%d after_default=%d after_full=%d", c.query, len(rawBytes), afterLen, fullLen)
-	}
-	n := len(recallFixture)
-	t.Logf("RESULT per-item top3 before=%d/%d after=%d/%d | avg chars raw=%d default=%d full=%d | empty responses %d/%d",
-		hitBefore, items, hitAfter, items, sumBefore/n, sumAfter/n, sumFull/n, empties, n)
-
-	// --- where the characters go (default, non-full responses) ---
-	var topChars, tailChars, topContent, nTop, nTail int
-	for _, c := range recallFixture {
-		after, _ := call(c.query, false, nil)
-		its, _ := after["items"].([]any)
-		for i, it := range its {
-			b, _ := json.Marshal(it)
-			if i < recallFullCount {
-				topChars += len(b)
-				nTop++
-				if m, ok := it.(map[string]any); ok {
-					cs, _ := m["content"].(string)
-					topContent += len(cs)
-				}
-			} else {
-				tailChars += len(b)
-				nTail++
+			if ra == 0 || ra > 3 {
+				t.Logf("MISS q=%q want=%s before=%d after=%d", tr.Query, want, rb, ra)
 			}
 		}
 	}
-	if nTop > 0 && nTail > 0 {
-		t.Logf("SIZE top-%d items: avg %d chars/item (of which content %d); trimmed tail: avg %d chars/item",
-			recallFullCount, topChars/nTop, topContent/nTop, tailChars/nTail)
+
+	if p := os.Getenv("MESH_LIVE_FIXTURE_DUMP"); p != "" {
+		b, _ := json.Marshal(dump)
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatalf("write dump: %v", err)
+		}
 	}
 
-	// --- faithful replay: logged calls with their real parameters ---
-	var rItems, rBefore, rAfter int
-	for _, c := range recallReplay {
-		pp := GetProfileParams(ClassifyQuery(c.query))
-		rp := RecallMemoriesParams{Query: c.query, WorkspaceID: ws.String(), ImportanceMin: recallDefaultMinImportance,
-			ApplyRecencyDecay: pp.ApplyDecay, HalfLifeDays: pp.HalfLifeDays, OrderBy: pp.OrderBy, Limit: 10}
-		if v, ok := c.args["limit"].(int); ok {
-			rp.Limit = v
-		}
-		if v, ok := c.args["min_importance"].(float64); ok {
-			rp.ImportanceMin = v
-		}
-		if v, ok := c.args["min_importance"].(int); ok {
-			rp.ImportanceMin = float64(v)
-		}
-		if v, ok := c.args["scope"].(string); ok {
-			rp.Scope = v
-		}
-		if v, ok := c.args["tags_any"].([]any); ok {
-			for _, x := range v {
-				rp.TagsAny = append(rp.TagsAny, x.(string))
-			}
-		}
-		raw, err := rc.RecallMemories(ctx, rp)
-		if err != nil {
-			t.Fatalf("replay raw %q: %v", c.query, err)
-		}
-		rawItems, _ := raw["items"].([]any)
-		after, _ := call(c.query, false, c.args)
-		afterItems, _ := after["items"].([]any)
-		rb, ra := rankOf(keysOf(rawItems), c.want), rankOf(keysOf(afterItems), c.want)
-		rItems++
-		if rb >= 1 && rb <= 3 {
-			rBefore++
-		}
-		if ra >= 1 && ra <= 3 {
-			rAfter++
-		}
-		t.Logf("REPLAY q=%q want=%s logged_rank=%d live_before=%d live_after=%d", c.query, c.want, c.logRk+1, rb, ra)
+	all := splitStats{}
+	for name, st := range stats {
+		t.Logf("%-7s calls=%d used=%d measurable=%d top3 before=%d after=%d | avg chars(runes) raw=%d default=%d | empty=%d",
+			name, st.calls, st.used, st.measurable, st.hitBefore, st.hitAfter,
+			div(st.sumBefore, st.calls), div(st.sumAfter, st.calls), st.empties)
+		all.calls += st.calls
+		all.used += st.used
+		all.measurable += st.measurable
+		all.hitBefore += st.hitBefore
+		all.hitAfter += st.hitAfter
+		all.sumBefore += st.sumBefore
+		all.sumAfter += st.sumAfter
+		all.empties += st.empties
 	}
-	t.Logf("REPLAY RESULT per-item top3 before=%d/%d after=%d/%d (logged calls, real params)", rBefore, rItems, rAfter, rItems)
+	t.Logf("ALL     calls=%d used=%d measurable=%d top3 before=%d/%d (%d%%) after=%d/%d (%d%%) | avg chars(runes) raw=%d default=%d | empty=%d",
+		all.calls, all.used, all.measurable, all.hitBefore, all.measurable, pct(all.hitBefore, all.measurable),
+		all.hitAfter, all.measurable, pct(all.hitAfter, all.measurable),
+		div(all.sumBefore, all.calls), div(all.sumAfter, all.calls), all.empties)
 
-	// MESH_LIVE_FIXTURE_ENFORCE=1 turns the acceptance thresholds of epic
-	// c3a16d5c into assertions: per-item top-3 >= 60% and default-response
-	// average <= 9000 chars. Off by default so the harness can be used to measure.
+	// MESH_LIVE_FIXTURE_ENFORCE=1 turns the acceptance thresholds into
+	// assertions: per-item top-3 >= 60% (on all calls and on the hold-out half
+	// alone) and average default response <= 9000 chars.
 	if os.Getenv("MESH_LIVE_FIXTURE_ENFORCE") == "1" {
-		if hitAfter*100 < 60*items {
-			t.Errorf("fixture top-3 %d/%d is below 60%%", hitAfter, items)
+		if all.measurable == 0 {
+			t.Fatal("no measurable used keys: fixture does not match this corpus")
 		}
-		if rAfter*100 < 60*rItems {
-			t.Errorf("replay top-3 %d/%d is below 60%%", rAfter, rItems)
+		if pct(all.hitAfter, all.measurable) < 60 {
+			t.Errorf("top-3 %d/%d below 60%%", all.hitAfter, all.measurable)
 		}
-		if avg := sumAfter / n; avg > 9000 {
+		if h := stats["holdout"]; h.measurable > 0 && pct(h.hitAfter, h.measurable) < 60 {
+			t.Errorf("hold-out top-3 %d/%d below 60%%", h.hitAfter, h.measurable)
+		}
+		if avg := div(all.sumAfter, all.calls); avg > 9000 {
 			t.Errorf("average default response %d chars exceeds 9000", avg)
 		}
 	}
+}
+
+func asItems(v any) []any {
+	items, _ := v.([]any)
+	return items
+}
+
+func div(a, b int) int {
+	if b == 0 {
+		return 0
+	}
+	return a / b
+}
+
+func pct(a, b int) int {
+	if b == 0 {
+		return 0
+	}
+	return a * 100 / b
 }

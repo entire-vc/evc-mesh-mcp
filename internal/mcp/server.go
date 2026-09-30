@@ -423,7 +423,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithBoolean("include_archived", mcpsdk.Description("Include archived memories in results (default false)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 10, max 50). This is a hard bound: the response never contains more than limit items. When knowledge-graph boost is enabled, a share of the page (limit/4, at least 1 when limit>=2) may be filled with graph-expanded neighbours, marked graph_boost=true and provenance=via:graph — they take the tail slots instead of being added on top. Rows that fail scope/tags are dropped, never returned unmarked, whether they arrived by retrieval, by pinning, or by graph expansion.")),
 		mcpsdk.WithNumber("offset", mcpsdk.Description("Pagination offset (default 0).")),
-		mcpsdk.WithBoolean("full", mcpsdk.Description("Return full content for every item instead of just the top 3 after reranking (default false). A second identical call with full=true returns items in the same order, so it works as an on-demand full-text fetch for anything past rank 3."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return every item in full, with all stored fields and uncut content (default false: only the top 3 carry content, cut at 2000 chars with content_truncated/content_chars set, and bookkeeping fields such as agent_id, workspace_id, simhash and decay scores are left out; the rest are key+snippet+score). A second identical call with full=true returns items in the same order, so it works as an on-demand full-text fetch for anything past rank 3 or for a cut item."), mcpsdk.DefaultBool(false)),
 	), s.tracked("recall", s.handleRecall))
 
 	s.addTool(mcpsdk.NewTool("recall_with_graph",

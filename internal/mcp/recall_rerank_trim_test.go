@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
@@ -18,10 +20,13 @@ func TestKeyMatchBoost(t *testing.T) {
 		name, key, query string
 		want             int
 	}{
-		{"exact match", "spark-outcome-ranking-design", "spark-outcome-ranking-design", 3},
-		{"query contains key", "spark-outcome-ranking-design", "tell me about spark-outcome-ranking-design please", 2},
-		{"key contains query", "recall-graph-kpi-2026-06-13", "recall-graph-kpi", 2},
-		{"shared token", "recall-graph-kpi-baseline", "what was the graph kpi baseline", 1},
+		{"exact match", "alpha-outcome-ranking-design", "alpha-outcome-ranking-design", 3},
+		{"query contains key", "alpha-outcome-ranking-design", "tell me about alpha-outcome-ranking-design please", 2},
+		{"key contains query", "beta-graph-kpi-2026-01-01", "beta-graph-kpi", 2},
+		{"three shared tokens", "beta-graph-threshold-baseline", "what was the beta graph threshold baseline", 1},
+		{"two shared tokens are not a pointer", "beta-graph-kpi-baseline", "what was the graph baseline", 0},
+		{"one shared token is not a pointer", "alpha-seo-drift-rules", "alpha anything else", 0},
+		{"repeated token counts once", "mesh-mesh-mesh-mesh", "mesh topic", 0},
 		{"short token ignored", "p2a-bm25-rrf", "p2a and a fix", 0},
 		{"no overlap", "unrelated-key-name", "totally different topic", 0},
 	}
@@ -154,6 +159,58 @@ func TestTrimRecallItems_KeepsTopFullRestTrimmed(t *testing.T) {
 		if snippet != "full content that should only survive for the top items" {
 			t.Errorf("snippet should be the first line only, got %q", snippet)
 		}
+	}
+}
+
+func TestCompactTopItem_DropsServiceFieldsKeepsRest(t *testing.T) {
+	in := map[string]any{
+		"id": "i", "key": "k", "content": "body", "score": 0.01, "tags": []any{"t"}, "scope": "workspace",
+		"updated_at": "2026-09-30", "project_id": "p", "hop": 1, "graph_boost": true,
+		"agent_id": "a", "workspace_id": "w", "content_simhash": 7, "freshness_score": 1.0,
+		"recency_score": 1.0, "relevance": 1.0, "created_at": "c", "expires_at": "e",
+		"last_accessed_at": "l", "source_type": "agent", "version": 3,
+		"archived": false, "status": "active",
+	}
+	out := compactTopItem(in)
+	for _, f := range []string{"agent_id", "workspace_id", "content_simhash", "freshness_score", "recency_score",
+		"relevance", "created_at", "expires_at", "last_accessed_at", "source_type", "archived", "status"} {
+		if _, has := out[f]; has {
+			t.Errorf("service field %q must be dropped", f)
+		}
+	}
+	for _, f := range []string{"id", "key", "content", "score", "tags", "scope", "updated_at", "project_id", "hop", "graph_boost", "version"} {
+		if _, has := out[f]; !has {
+			t.Errorf("field %q must be kept", f)
+		}
+	}
+	if _, has := in["agent_id"]; !has {
+		t.Error("input map must not be mutated")
+	}
+}
+
+func TestCompactTopItem_KeepsNonDefaultArchivedAndStatus(t *testing.T) {
+	out := compactTopItem(map[string]any{"key": "k", "archived": true, "status": "review_needed"})
+	if out["archived"] != true || out["status"] != "review_needed" {
+		t.Errorf("non-default archived/status must survive, got %v", out)
+	}
+}
+
+func TestCompactTopItem_CapsContentByRunes(t *testing.T) {
+	long := strings.Repeat("ж", recallTopContentChars+500)
+	out := compactTopItem(map[string]any{"key": "k", "content": long})
+	got, _ := out["content"].(string)
+	if n := len([]rune(got)); n != recallTopContentChars {
+		t.Errorf("content cut to %d runes, want %d", n, recallTopContentChars)
+	}
+	if !utf8.ValidString(got) {
+		t.Error("cut content must stay valid UTF-8")
+	}
+	if out["content_truncated"] != true || out["content_chars"] != recallTopContentChars+500 {
+		t.Errorf("truncation must be announced with the full length, got %v / %v", out["content_truncated"], out["content_chars"])
+	}
+	short := compactTopItem(map[string]any{"key": "k", "content": "short"})
+	if _, has := short["content_truncated"]; has {
+		t.Error("content under the cap must not be flagged")
 	}
 }
 
