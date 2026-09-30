@@ -771,7 +771,8 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Team & Rules ---
 	s.addTool(mcpsdk.NewTool("get_team_directory",
-		mcpsdk.WithDescription("Get the workspace team directory listing all agents and human members with their profiles."),
+		mcpsdk.WithDescription("Get the workspace team directory listing all agents and human members. Default: a compact row-array table (columns id/name/role/project/status) instead of full profiles — pass full=true for the complete dump (capabilities, heartbeat, escalation_to, timestamps, ...)."),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the full per-member profile dump instead of the compact table (default false)."), mcpsdk.DefaultBool(false)),
 	), s.tracked("get_team_directory", s.handleGetTeamDirectory))
 
 	s.addTool(mcpsdk.NewTool("get_project_rules",
