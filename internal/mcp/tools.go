@@ -200,13 +200,40 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		return errResult("task_id is required")
 	}
 
+	var since time.Time
+	sinceSet := false
+	if sinceStr := mcpsdk.ParseString(request, "since", ""); sinceStr != "" {
+		t, err := time.Parse(time.RFC3339, sinceStr)
+		if err != nil {
+			return errResult("invalid since format, expected RFC3339 (e.g. 2026-09-30T12:00:00Z): %v", err)
+		}
+		since = t
+		sinceSet = true
+	}
+
 	task, err := s.getRESTClient(ctx).GetTask(ctx, taskID)
 	if err != nil {
 		return errResult("failed to get task: %v", err)
 	}
 
-	resp := map[string]any{
-		"task": task,
+	resp := map[string]any{}
+
+	// Without `since`, behave exactly as before: the full task, every call.
+	// With it, the caller already paid for the static fields (description
+	// and the rest) in an earlier call this session — only repay that cost
+	// when the task's own updated_at proves something on it actually
+	// changed; otherwise hand back task_changed=false and a trimmed stub
+	// instead of the full object. 1004 of 4940 get_task calls 23-26.09 were
+	// a repeat of the same task in the same session, paying full price for
+	// zero new information (task #4e60d95c).
+	if !sinceSet {
+		resp["task"] = task
+	} else if taskChangedSince(task, since) {
+		resp["task"] = task
+		resp["task_changed"] = true
+	} else {
+		resp["task"] = taskDeltaStub(task)
+		resp["task_changed"] = false
 	}
 
 	if mcpsdk.ParseBoolean(request, "include_comments", false) {
@@ -216,10 +243,12 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		}
 		var itemCount int
 		if items, ok := page["items"]; ok {
-			resp["comments"] = items
-			if arr, ok := items.([]any); ok {
-				itemCount = len(arr)
+			arr, _ := items.([]any)
+			if sinceSet {
+				arr = commentsSince(arr, since)
 			}
+			resp["comments"] = arr
+			itemCount = len(arr)
 		} else {
 			resp["comments"] = []any{}
 		}
@@ -297,6 +326,66 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 	}
 
 	return jsonResult(resp)
+}
+
+// taskChangedSince reports whether task's own updated_at is after since. A
+// missing or unparsable updated_at fails open (returns true): never suppress
+// data we can't actually judge as stale, only ever suppress data we can
+// positively confirm is unchanged.
+func taskChangedSince(task map[string]any, since time.Time) bool {
+	raw, _ := task["updated_at"].(string)
+	if raw == "" {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return true
+	}
+	return t.After(since)
+}
+
+// taskDeltaStub is what get_task(since=...) returns in place of the full task
+// when taskChangedSince says nothing changed: enough to confirm identity and
+// re-anchor the caller's next `since`, without repaying for the static
+// fields (description, custom_fields, ...) it already has from an earlier
+// call this session.
+func taskDeltaStub(task map[string]any) map[string]any {
+	stub := map[string]any{}
+	for _, f := range []string{"id", "status_id", "assignee_id", "assignee_name", "checked_out_by", "human_gate", "updated_at"} {
+		if v, ok := task[f]; ok {
+			stub[f] = v
+		}
+	}
+	return stub
+}
+
+// commentsSince keeps only comments created after since. A comment with a
+// missing or unparsable created_at fails open (kept, not dropped) — the same
+// asymmetry as taskChangedSince: a filter that silently drops content it
+// couldn't judge is worse than one that over-returns.
+func commentsSince(items []any, since time.Time) []any {
+	out := make([]any, 0, len(items))
+	for _, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok {
+			out = append(out, it)
+			continue
+		}
+		raw, _ := m["created_at"].(string)
+		if raw == "" {
+			out = append(out, it)
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			out = append(out, it)
+			continue
+		}
+		if t.After(since) {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // ============================================================================
