@@ -2295,9 +2295,8 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 // Live-validated 2026-09-30: ran the p60 threshold against 10 fixture-style
 // queries built from #7771a196's topics, each with a genuinely on-topic top
 // hit already in memory. 0.0159 would have zeroed out at least 3 of them —
-// e.g. "openrouter topup limit" top-scored 0.01148 on its own on-topic
-// episode, "spark seo drift baseline" scored 0.01393, "MeshMcpAuthFailure"
-// scored 0.01537 — all real matches, all below the p60 bar. Garfield's
+// e.g. three of them top-scored 0.01148, 0.01393 and 0.01537 on their own
+// on-topic episodes — all real matches, all below the p60 bar. Garfield's
 // concern was confirmed empirically, not just in theory.
 //
 // A pure ratio (score/top1_score) can't fix this on its own: top1/top1 is
@@ -2396,10 +2395,19 @@ func rerankRecallItems(items []any, query, projectID, scope string) []any {
 	return result
 }
 
+// recallKeyTokenMinShared is how many distinct 4+ char key tokens must appear
+// in the query before a key counts as "pointed at". One shared token is not a
+// pointer: replayed over 222 real logged recall calls the old
+// any-one-token rule demoted used memories out of the top 3 (per-item top-3
+// 60% in server order -> 53% reranked) because common tokens such as "spark",
+// "mesh" or "decision" lift whatever key happens to contain them.
+const recallKeyTokenMinShared = 3
+
 // keyMatchBoost scores how strongly a memory's key matches the query text:
-// exact match highest, one containing the other next, a shared hyphen/
-// underscore-delimited token (4+ chars, to skip noise like "the" or "p2a")
-// last. All inputs are expected already lower-cased by the caller.
+// exact match highest, one containing the other next, then several shared
+// hyphen/underscore-delimited tokens (4+ chars each, recallKeyTokenMinShared of
+// them, to skip noise like "the" or "p2a"). All inputs are expected already
+// lower-cased by the caller.
 func keyMatchBoost(key, query string) int {
 	switch {
 	case key == query:
@@ -2407,28 +2415,35 @@ func keyMatchBoost(key, query string) int {
 	case strings.Contains(query, key) || strings.Contains(key, query):
 		return 2
 	}
+	shared := 0
+	seen := map[string]bool{}
 	for _, tok := range strings.FieldsFunc(key, func(r rune) bool { return r == '-' || r == '_' }) {
-		if len(tok) >= 4 && strings.Contains(query, tok) {
-			return 1
+		if len(tok) >= 4 && !seen[tok] && strings.Contains(query, tok) {
+			seen[tok] = true
+			shared++
 		}
+	}
+	if shared >= recallKeyTokenMinShared {
+		return 1
 	}
 	return 0
 }
 
-// trimRecallItems keeps full content for the first recallFullCount items and
-// reduces the rest to key + first-line snippet + score — the response used to
+// trimRecallItems keeps content for the first recallFullCount items (minus
+// bookkeeping fields, content capped: see compactTopItem) and reduces the rest
+// to key + first-line snippet + score — the response used to
 // carry full content for every item up to limit (10 by default), which is the
 // 25.7k-char average behind audit #c3a16d5c.
 func trimRecallItems(items []any) []any {
 	out := make([]any, len(items))
 	for i, it := range items {
-		if i < recallFullCount {
-			out[i] = it
-			continue
-		}
 		m, ok := it.(map[string]any)
 		if !ok {
 			out[i] = it
+			continue
+		}
+		if i < recallFullCount {
+			out[i] = compactTopItem(m)
 			continue
 		}
 		trimmed := map[string]any{"key": m["key"]}
@@ -2438,6 +2453,50 @@ func trimRecallItems(items []any) []any {
 		content, _ := m["content"].(string)
 		trimmed["snippet"] = firstLineTruncated(content, recallSnippetChars)
 		out[i] = trimmed
+	}
+	return out
+}
+
+// recallServiceFields are bookkeeping fields of a stored memory that a reader of
+// the recall text does not need: ids of who wrote it and where, the dedup hash,
+// decay scores that only restate the order, timestamps of the write path.
+// Measured on live top-3 items they are ~775 of ~3080 chars each.
+// Unknown fields are kept (this is a deny-list): only what is named here goes.
+var recallServiceFields = []string{
+	"agent_id", "workspace_id", "content_simhash", "freshness_score", "recency_score",
+	"relevance", "created_at", "expires_at", "last_accessed_at", "source_type",
+}
+
+// recallTopContentChars caps the content of a top item. Median memory content is
+// ~2k chars; with the metadata gone, three uncapped items still leave the
+// average response at ~9.5k, over the 9k response-size target. A cut item says
+// so and carries its full length, and full=true returns it whole.
+const recallTopContentChars = 2000
+
+// compactTopItem returns a copy of a top-ranked item without service fields and
+// with over-long content cut (rune-safe). archived/status are dropped only while
+// they carry the default (false / "active"), so include_archived callers still
+// see the ones that matter.
+func compactTopItem(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	for _, f := range recallServiceFields {
+		delete(out, f)
+	}
+	if a, ok := out["archived"].(bool); ok && !a {
+		delete(out, "archived")
+	}
+	if st, _ := out["status"].(string); st == "active" {
+		delete(out, "status")
+	}
+	if content, ok := out["content"].(string); ok {
+		if r := []rune(content); len(r) > recallTopContentChars {
+			out["content"] = string(r[:recallTopContentChars])
+			out["content_truncated"] = true
+			out["content_chars"] = len(r)
+		}
 	}
 	return out
 }
