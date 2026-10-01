@@ -388,6 +388,27 @@ func commentsSince(items []any, since time.Time) []any {
 	return out
 }
 
+// statusArgPresent reports whether the caller passed a non-empty `status`
+// argument. No task tool accepts `status` — create_task/update_task read only
+// status_slug — but it's the shorter, more natural name for an LLM caller to
+// type. It used to be dropped silently, so create_task(status="backlog")
+// reported success while the card landed in the project's default status: the
+// call looked executed and wasn't. An empty string counts as absent, matching
+// how these handlers treat every other optional string; a non-string value
+// (number, object) counts as present — the caller clearly meant something.
+func statusArgPresent(request mcpsdk.CallToolRequest) bool {
+	args := request.GetArguments()
+	if args == nil {
+		return false
+	}
+	v, ok := args["status"]
+	if !ok || v == nil {
+		return false
+	}
+	s, isString := v.(string)
+	return !isString || s != ""
+}
+
 // ============================================================================
 // 5. create_task
 // ============================================================================
@@ -412,6 +433,14 @@ func (s *Server) handleCreateTask(ctx context.Context, request mcpsdk.CallToolRe
 		"title":         title,
 		"assignee_type": mcpsdk.ParseString(request, "assignee_type", "unassigned"),
 		"priority":      mcpsdk.ParseString(request, "priority", "medium"),
+	}
+
+	// `status` is not a parameter of this tool — refuse it loudly instead of
+	// dropping it (see statusArgPresent). Not accepted as an alias either: a
+	// caller that means status_slug should send status_slug, and an explicit
+	// status_slug wins over a stray `status` sent alongside it.
+	if statusArgPresent(request) && mcpsdk.ParseString(request, "status_slug", "") == "" {
+		return errResult(`unknown parameter "status": use status_slug`)
 	}
 
 	// Resolve status slug to status_id, and guard against creating in review status.
@@ -485,6 +514,17 @@ func (s *Server) handleUpdateTask(ctx context.Context, request mcpsdk.CallToolRe
 
 	args := request.GetArguments()
 	body := map[string]any{}
+
+	// Same refusal as create_task (see statusArgPresent), but without
+	// create_task's status_slug carve-out: update_task has no status_slug
+	// parameter at all — status transitions are move_task's job — so there is
+	// nothing for a stray `status` to lose to, and a caller hedging with both
+	// spellings must be stopped just as hard. Checked before the field loop
+	// below so the other fields cannot be patched while the status change is
+	// quietly dropped.
+	if statusArgPresent(request) {
+		return errResult(`unknown parameter "status": use status_slug via move_task (update_task cannot change status)`)
+	}
 
 	if _, ok := args["title"]; ok {
 		body["title"] = mcpsdk.ParseString(request, "title", "")
