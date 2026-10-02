@@ -1321,7 +1321,24 @@ func (s *Server) handleGetTaskContext(ctx context.Context, request mcpsdk.CallTo
 		return errResult("task_id is required")
 	}
 
-	result, err := s.getRESTClient(ctx).GetTaskContext(ctx, taskID)
+	// Resolve a 6–12 hex short-ID prefix onto the task first, exactly like
+	// get_task: the /tasks/:id/context route parses the path id as a strict
+	// UUID and answers 400 "invalid task_id" for the short form (live red
+	// 02.10, #e143d391: get_task_context('06d0c6d8')). Full UUIDs skip the
+	// extra hop; unknown and ambiguous prefixes surface the resolver's own
+	// verdict as a normal tool error without any context read.
+	resolvedID := taskID
+	if len(taskID) != 36 {
+		resolved, err := s.getRESTClient(ctx).GetTask(ctx, taskID)
+		if err != nil {
+			return errResult("failed to get task context: %v", err)
+		}
+		if id, _ := resolved["id"].(string); id != "" {
+			resolvedID = id
+		}
+	}
+
+	result, err := s.getRESTClient(ctx).GetTaskContext(ctx, resolvedID)
 	if err != nil {
 		return errResult("failed to get task context: %v", err)
 	}

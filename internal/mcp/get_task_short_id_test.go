@@ -21,6 +21,11 @@ import (
 type shortIDFixture struct {
 	shortID string
 	fullID  string
+	// scheduleID is optional: when set, the /context task carries recurring
+	// fields and the harness serves the schedule's history — that is what
+	// get_task_context's recurring enrichment reads. Empty (the default
+	// newShortIDFixture) means no recurring wiring at all.
+	scheduleID string
 }
 
 func newShortIDFixture() shortIDFixture {
@@ -84,6 +89,25 @@ func getTaskShortIDHarness(t *testing.T, fx shortIDFixture, resolve func(short s
 			},
 			"incoming": []map[string]any{},
 		}
+		// The /context payload mirrors the task object (plus recurring fields
+		// when the fixture carries a schedule) and bundles the child
+		// collections the get_task_context contract promises in one call.
+		contextTask := map[string]any{
+			"id":         fx.fullID,
+			"title":      "short id child reads",
+			"updated_at": "2026-10-02T12:00:00Z",
+		}
+		if fx.scheduleID != "" {
+			contextTask["recurring_schedule_id"] = fx.scheduleID
+			contextTask["recurring_instance_number"] = float64(2)
+		}
+		contextPayload := map[string]any{
+			"task":         contextTask,
+			"comments":     comments["items"],
+			"artifacts":    artifacts["items"],
+			"dependencies": deps["outgoing"],
+			"activity":     []map[string]any{{"id": "ev1", "event_type": "status_change"}},
+		}
 		vcsLinks := map[string]any{
 			"vcs_links": []map[string]any{
 				{"id": "v1", "task_id": fx.fullID, "provider": "gitlab", "link_type": "pr", "external_id": "14", "status": "merged"},
@@ -130,6 +154,24 @@ func getTaskShortIDHarness(t *testing.T, fx shortIDFixture, resolve func(short s
 			// path id as a strict UUID; a 6-hex prefix is a 400, not a lookup.
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 400, "message": "invalid task_id"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/tasks/"+fx.fullID+"/context":
+			_ = json.NewEncoder(w).Encode(contextPayload)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/tasks/"+fx.shortID+"/context":
+			// Faithful to the live backend: the context route parses the path
+			// id as a strict UUID too (live red 02.10 on #e143d391:
+			// get_task_context('06d0c6d8') → "Bad Request: invalid task_id").
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 400, "message": "invalid task_id"})
+		case fx.scheduleID != "" && r.Method == http.MethodGet && r.URL.Path == "/api/v1/recurring/"+fx.scheduleID+"/history":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				// Newest-first: instance 2 is the current one the fixture task
+				// points at, instance 1 is the previous get_task_context must
+				// surface as previous_instance.
+				"items": []map[string]any{
+					{"instance_number": float64(2), "summary": "current instance"},
+					{"instance_number": float64(1), "summary": "previous instance"},
+				},
+			})
 		default:
 			// Unknown path (including an unresolvable prefix hitting /tasks/<short>
 			// directly): never fall through to serving the fixture task.

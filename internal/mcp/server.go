@@ -370,7 +370,7 @@ func (s *Server) registerCoreTools() {
 
 	s.addTool(mcpsdk.NewTool("get_task_context",
 		mcpsdk.WithDescription("Get EVERYTHING about ONE TASK in a single call: full details + comments + artifacts + dependencies + activity. Use when working on a specific task instead of calling get_task + list_comments + list_artifacts separately."),
-		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
+		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID (full UUID or 6–12 char hex short-ID prefix).")),
 	), s.tracked("get_task_context", s.handleGetTaskContext))
 
 	// --- Communication ---
