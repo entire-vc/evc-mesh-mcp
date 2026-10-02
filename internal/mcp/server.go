@@ -257,6 +257,8 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("status", mcpsdk.Description("Agent status: online, busy, error.")),
 		mcpsdk.WithString("message", mcpsdk.Description("Short human-readable status message (e.g. 'running tests', 'waiting for review').")),
 		mcpsdk.WithObject("metadata", mcpsdk.Description("Arbitrary JSON metadata to store with the heartbeat.")),
+		mcpsdk.WithString("agent_type", mcpsdk.Description("Optional self-report of the harness this agent runs in: claude_code, codex, cursor, copilot, gemini_cli, openclaw, cline, aider, hermes, custom.")),
+		mcpsdk.WithString("model", mcpsdk.Description("Optional self-report of the model this agent runs on (max 128 chars). Empty string clears it.")),
 	), s.tracked("heartbeat", s.handleHeartbeat))
 
 	s.addTool(mcpsdk.NewTool("get_project_knowledge",
@@ -801,6 +803,8 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithString("working_hours", mcpsdk.Description("Working hours description (e.g. 24/7, 9-17 UTC).")),
 		mcpsdk.WithString("description", mcpsdk.Description("Human-readable description of the agent's purpose.")),
 		mcpsdk.WithString("callback_url", mcpsdk.Description("URL where Mesh will POST task events (task.assigned, task.status_changed, task.commented). Set to empty string to disable.")),
+		mcpsdk.WithString("agent_type", mcpsdk.Description("Harness this agent runs in: claude_code, codex, cursor, copilot, gemini_cli, openclaw, cline, aider, hermes, custom.")),
+		mcpsdk.WithString("model", mcpsdk.Description("Model this agent runs on (max 128 chars). Empty string clears it.")),
 	), s.tracked("update_agent_profile", s.handleUpdateAgentProfile))
 
 	// --- Config ---

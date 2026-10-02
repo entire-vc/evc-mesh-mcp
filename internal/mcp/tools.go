@@ -1394,6 +1394,50 @@ func (s *Server) handleSubscribeEvents(ctx context.Context, request mcpsdk.CallT
 	})
 }
 
+// validAgentTypes mirrors the agent_type enum on the Mesh API. The API is the
+// authority; this list only lets a bad value fail before any request is sent
+// (update_agent_profile makes up to two writes, a late failure would leave the
+// first one applied).
+var validAgentTypes = map[string]bool{
+	"claude_code": true, "openclaw": true, "cline": true, "aider": true, "custom": true,
+	"hermes": true, "codex": true, "cursor": true, "copilot": true, "gemini_cli": true,
+}
+
+// agentModelMaxLen mirrors the API limit on the self-reported model string.
+// Like the API it is a byte limit (model ids are ASCII); keep the two in step.
+const agentModelMaxLen = 128
+
+// parseHarnessModel reads the optional agent_type / model self-report params.
+// A supplied agent_type must be a valid enum value (blank included: the
+// harness cannot be reset). A blank model is passed through
+// as "" (the API clears it back to "not reported").
+//
+// The model limit is checked AFTER TrimSpace, mirroring the API's
+// normalizeAgentModel (evc-mesh agent_handler.go): the value sent is the
+// trimmed one, so nothing over the limit ever leaves this client, and raw
+// input that trims to size is accepted here exactly as the API accepts it
+// over REST. Checking the raw length first would reject values the API
+// itself stores — keep this order in sync with the API instead.
+func parseHarnessModel(request mcpsdk.CallToolRequest) (fields map[string]any, err error) {
+	args := request.GetArguments()
+	fields = map[string]any{}
+	if _, ok := args["agent_type"]; ok {
+		at := strings.TrimSpace(mcpsdk.ParseString(request, "agent_type", ""))
+		if !validAgentTypes[at] {
+			return nil, fmt.Errorf("invalid agent_type %q", at)
+		}
+		fields["agent_type"] = at
+	}
+	if _, ok := args["model"]; ok {
+		m := strings.TrimSpace(mcpsdk.ParseString(request, "model", ""))
+		if len(m) > agentModelMaxLen {
+			return nil, fmt.Errorf("model must be <=%d chars", agentModelMaxLen)
+		}
+		fields["model"] = m
+	}
+	return fields, nil
+}
+
 // ============================================================================
 // 21. heartbeat
 // ============================================================================
@@ -1419,6 +1463,13 @@ func (s *Server) handleHeartbeat(ctx context.Context, request mcpsdk.CallToolReq
 		if md, ok := args["metadata"]; ok && md != nil {
 			body["metadata"] = md
 		}
+	}
+	selfReport, perr := parseHarnessModel(request)
+	if perr != nil {
+		return errResult("%v", perr)
+	}
+	for k, v := range selfReport {
+		body[k] = v
 	}
 
 	_, err := s.getRESTClient(ctx).Heartbeat(ctx, body)
@@ -1832,7 +1883,14 @@ func (s *Server) handleUpdateAgentProfile(ctx context.Context, request mcpsdk.Ca
 		callbackURLUpdate = true
 	}
 
-	if len(body) == 0 && !callbackURLUpdate {
+	// agent_type / model also go to PATCH /agents/me. Validated here, before
+	// the first write, so a bad value cannot leave the profile half-applied.
+	selfReport, perr := parseHarnessModel(request)
+	if perr != nil {
+		return errResult("%v", perr)
+	}
+
+	if len(body) == 0 && !callbackURLUpdate && len(selfReport) == 0 {
 		return errResult("no profile fields to update")
 	}
 
@@ -1845,16 +1903,29 @@ func (s *Server) handleUpdateAgentProfile(ctx context.Context, request mcpsdk.Ca
 		}
 	}
 
-	// Persist callback_url via PATCH /agents/me.
+	// Persist callback_url / agent_type / model via PATCH /agents/me.
+	meBody := map[string]any{}
+	for k, v := range selfReport {
+		meBody[k] = v
+	}
+	var cbURL string
 	if callbackURLUpdate {
-		cbURL := mcpsdk.ParseString(request, "callback_url", "")
-		if _, err := s.getRESTClient(ctx).UpdateMe(ctx, map[string]any{"callback_url": cbURL}); err != nil {
-			return errResult("failed to update callback_url: %v", err)
+		cbURL = mcpsdk.ParseString(request, "callback_url", "")
+		meBody["callback_url"] = cbURL
+	}
+	if len(meBody) > 0 {
+		if _, err := s.getRESTClient(ctx).UpdateMe(ctx, meBody); err != nil {
+			return errResult("failed to update agent profile (agent_type/model/callback_url): %v", err)
 		}
 		if profileResult == nil {
 			profileResult = map[string]any{}
 		}
-		profileResult["callback_url"] = cbURL
+		if callbackURLUpdate {
+			profileResult["callback_url"] = cbURL
+		}
+		for k, v := range selfReport {
+			profileResult[k] = v
+		}
 	}
 
 	return jsonResult(profileResult)
