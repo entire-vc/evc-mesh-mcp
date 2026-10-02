@@ -395,3 +395,55 @@ func TestHandleRecall_Full_ReturnsEverythingFull(t *testing.T) {
 		}
 	}
 }
+
+// #858f3a13: nonsense query -> dense arm returns neighbours at ~0.0115 (above
+// the absolute floor) but the sparse arm matched nothing. Must come back empty.
+func TestHandleRecall_NoLexicalMatchLowScore_ReturnsEmpty(t *testing.T) {
+	items := []any{
+		map[string]any{"key": "noise-a", "content": "x", "score": 0.01148},
+		map[string]any{"key": "noise-b", "content": "y", "score": 0.0111},
+	}
+	server, closeFn := newRecallTestServer(t, items, map[string]any{"dense_rows": 30, "sparse_rows": 0})
+	defer closeFn()
+	req := mcpsdk.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"query": "qqqqzzzzxxxx"}
+	result, err := server.handleRecall(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleRecall: %v", err)
+	}
+	out := decodeRecallResult(t, result)
+	if got, _ := out["items"].([]any); len(got) != 0 {
+		t.Errorf("expected empty items, got %d", len(got))
+	}
+	if e, _ := out["explanation"].(string); e == "" {
+		t.Error("expected explanation")
+	}
+}
+
+// Positive control: same scores but the sparse arm matched -> survives.
+func TestHandleRecall_LexicalMatchLowScore_Survives(t *testing.T) {
+	items := []any{map[string]any{"key": "real", "content": "x", "score": 0.01148}}
+	server, closeFn := newRecallTestServer(t, items, map[string]any{"dense_rows": 30, "sparse_rows": 3})
+	defer closeFn()
+	req := mcpsdk.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"query": "openrouter topup"}
+	result, _ := server.handleRecall(context.Background(), req)
+	out := decodeRecallResult(t, result)
+	if got, _ := out["items"].([]any); len(got) != 1 {
+		t.Errorf("expected 1 item, got %d", len(got))
+	}
+}
+
+// A high-ranking dense-only hit (paraphrase, no keyword overlap) must survive.
+func TestHandleRecall_NoLexicalMatchHighScore_Survives(t *testing.T) {
+	items := []any{map[string]any{"key": "para", "content": "x", "score": 0.0164}}
+	server, closeFn := newRecallTestServer(t, items, map[string]any{"dense_rows": 30, "sparse_rows": 0})
+	defer closeFn()
+	req := mcpsdk.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"query": "paraphrase"}
+	result, _ := server.handleRecall(context.Background(), req)
+	out := decodeRecallResult(t, result)
+	if got, _ := out["items"].([]any); len(got) != 1 {
+		t.Errorf("expected 1 item, got %d", len(got))
+	}
+}
