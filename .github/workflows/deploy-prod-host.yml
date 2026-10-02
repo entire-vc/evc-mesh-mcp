@@ -1,4 +1,4 @@
-name: Deploy MCP server to mesh VM (via hel01)
+name: Deploy MCP server to mesh VM (via gateway)
 
 # Delivery path for THIS repository's binary to the public MCP endpoint.
 #
@@ -54,7 +54,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy to mesh-vm
+    name: Deploy to prod-host
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -86,24 +86,26 @@ jobs:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
       # CI runners reach the mesh VM (private address, secrets.MESH_VM_HOST) only
-      # through the hel01 forwarding-only jump user `ghdeploy`. This repository
+      # through the gateway forwarding-only jump user `<jump-user>`. This repository
       # has its own deploy key, not a copy of evc-mesh's: revoking one must not
-      # break the other. On hel01 it is pinned to
-      # permitopen="<mesh VM's private address>:22"; on mesh-vm it carries
+      # break the other. On gateway it is pinned to
+      # permitopen="<mesh VM's private address>:22"; on prod-host it carries
       # `restrict`.
-      - name: Configure hel01 jump
+      - name: Configure SSH jump host
+        env:
+          DEPLOY_JUMP_USER: ${{ vars.DEPLOY_JUMP_USER }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keyscan -H ${{ secrets.HEL01_JUMP_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
           {
-            echo "Host mesh-vm"
+            echo "Host prod-host"
             echo "  HostName ${{ secrets.MESH_VM_HOST }}"
             echo "  User root"
-            echo "  ProxyJump hel01-jump"
+            echo "  ProxyJump deploy-jump"
             echo "  StrictHostKeyChecking accept-new"
-            echo "Host hel01-jump"
+            echo "Host deploy-jump"
             echo "  HostName ${{ secrets.HEL01_JUMP_HOST }}"
-            echo "  User ghdeploy"
+            echo "  User ${DEPLOY_JUMP_USER}"
             echo "  StrictHostKeyChecking accept-new"
           } >> ~/.ssh/config
           chmod 600 ~/.ssh/config
@@ -147,7 +149,7 @@ jobs:
       - name: Burst-deploy guard
         if: inputs.mode == 'deploy' && !inputs.force
         run: |
-          LAST=$(ssh mesh-vm 'cat /opt/evc-mesh/.last-mesh-mcp-deploy 2>/dev/null || echo 0')
+          LAST=$(ssh prod-host 'cat /opt/evc-mesh/.last-mesh-mcp-deploy 2>/dev/null || echo 0')
           DIFF=$(( $(date +%s) - LAST ))
           if [ "$DIFF" -lt 300 ]; then
             echo "::error::Burst-deploy guard: last mesh-mcp deploy was ${DIFF}s ago (< 5 min). Re-dispatch with force=true to override."
@@ -158,29 +160,29 @@ jobs:
       # commit — a host-side copy cannot drift from the reviewed one.
       - name: Upload remote deploy script
         run: |
-          rsync -avz --checksum scripts/mesh-mcp-remote-deploy.sh mesh-vm:/opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh
-          ssh mesh-vm 'chmod +x /opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh'
+          rsync -avz --checksum scripts/mesh-mcp-remote-deploy.sh prod-host:/opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh
+          ssh prod-host 'chmod +x /opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh'
 
       - name: Upload binary
         if: inputs.mode != 'rollback'
         run: |
-          rsync -avz --checksum mesh-mcp mesh-vm:/opt/evc-mesh/bin/mesh-mcp.new
-          rsync -avz mesh-mcp.sha256 mesh-vm:/opt/evc-mesh/bin/mesh-mcp.new.sha256
+          rsync -avz --checksum mesh-mcp prod-host:/opt/evc-mesh/bin/mesh-mcp.new
+          rsync -avz mesh-mcp.sha256 prod-host:/opt/evc-mesh/bin/mesh-mcp.new.sha256
 
       - name: Run ${{ inputs.mode }}
         env:
           MODE: ${{ inputs.mode }}
           SHA: ${{ github.sha }}
         run: |
-          ssh mesh-vm "EXPECTED_SHA=$SHA /opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh $MODE"
+          ssh prod-host "EXPECTED_SHA=$SHA /opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh $MODE"
 
       - name: Status after
         if: always()
-        run: ssh mesh-vm '/opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh status' || true
+        run: ssh prod-host '/opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh status' || true
 
       # Written only after the swap, restart and smoke all came back clean —
       # this is what the burst guard reads, so it must mean "a verified deploy
       # happened", not "an upload finished".
       - name: Record deploy timestamp
         if: inputs.mode == 'deploy'
-        run: ssh mesh-vm 'date +%s > /opt/evc-mesh/.last-mesh-mcp-deploy'
+        run: ssh prod-host 'date +%s > /opt/evc-mesh/.last-mesh-mcp-deploy'

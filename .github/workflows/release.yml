@@ -51,7 +51,7 @@ jobs:
 
   # Re-runs the suite before anything ships. A workflow_dispatch (or a tag
   # pushed at an old commit) can target a ref whose CI never ran — same
-  # fail-closed reasoning as deploy-mesh-vm.yml's "Test (fail-closed gate)".
+  # fail-closed reasoning as deploy-prod-host.yml's "Test (fail-closed gate)".
   test:
     name: Test
     runs-on: ubuntu-latest
