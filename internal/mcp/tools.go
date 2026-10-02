@@ -2352,13 +2352,13 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	// relevant. If nothing clears the bar, say so instead of handing back the
 	// weakest candidates padded to a full page.
 	best, scored := recallTopScore(items)
-	noLexicalMatch := recallNoLexicalMatch(result, best, scored)
-	if !scored || best < recallRelevanceThreshold || noLexicalMatch {
+	noisy := recallNoisyResult(result, best, scored)
+	if !scored || best < recallRelevanceThreshold || noisy {
 		reason := fmt.Sprintf("no candidate cleared the relevance threshold (best score %.5f, threshold %.5f)",
 			best, recallRelevanceThreshold)
-		if noLexicalMatch {
-			reason = fmt.Sprintf("no meaningful keyword match in memory (sparse_rows=%d, at most %d counts as none) and the best semantic score %.5f is below %.5f",
-				int(result["sparse_rows"].(float64)), recallWeakSparseRows, best, recallNoLexicalCeiling)
+		if noisy {
+			reason = fmt.Sprintf("best score %.5f is below the noise ceiling %.5f (sparse_rows=%d, dense_rows=%d): nothing ranked near the top of either arm",
+				best, recallNoiseCeiling, int(result["sparse_rows"].(float64)), int(result["dense_rows"].(float64)))
 		}
 		result["items"] = []any{}
 		result["total"] = 0
@@ -2445,32 +2445,25 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 // needed.
 const recallRelevanceThreshold = 0.0100
 
-// recallNoLexicalCeiling is the second gate signal (#858f3a13). The dense arm
+// recallNoiseCeiling is the second gate signal (#858f3a13). The dense arm
 // always returns its nearest neighbours, so on a nonsense query the fused score
 // still lands at ~0.0115 — above recallRelevanceThreshold — and the gate never
-// fired. What distinguishes nonsense is the sparse (BM25) arm: it matched
-// nothing (sparse_rows=0) while dense_rows>0. A response with no keyword match
-// AND a fused score below this ceiling is treated as noise. Genuine
-// paraphrase-only hits that rank high in the dense arm score above the ceiling
-// and survive; a missing sparse_rows field (older server) disables the signal.
-const recallNoLexicalCeiling = 0.0120
+// fired. A fused score below this ceiling means no row ranked near the top of
+// either arm (one arm's rank-1 alone is 1/61 = 0.0164), which is what noise
+// looks like. The sparse_rows COUNT is deliberately not used: live acceptance
+// showed it drifting on the same garbage string (0, then 1, then 3), so any
+// "sparse_rows <= N" cut only catches part of the noise. A missing sparse_rows
+// field (older server) disables the signal; dense_rows must be > 0.
+const recallNoiseCeiling = 0.0120
 
-// recallWeakSparseRows is the most sparse (BM25) rows still counted as "no
-// keyword match". Live acceptance (#858f3a13, qqqqzzzzxxxx) showed one stray
-// sparse row on a meaningless string — a single hit is not evidence that the
-// answer is in memory, so sparse_rows<=1 is treated like 0. Two or more rows,
-// or any score at/above recallNoLexicalCeiling, still survive.
-const recallWeakSparseRows = 1
-
-// recallNoLexicalMatch reports whether the server said the sparse arm found
-// nothing while the dense arm returned rows, and the best score is below
-// recallNoLexicalCeiling.
-func recallNoLexicalMatch(result map[string]any, best float64, scored bool) bool {
-	if !scored || best >= recallNoLexicalCeiling {
+// recallNoisyResult reports whether the response looks like dense-arm noise:
+// best fused score below recallNoiseCeiling on a server that reports arm
+// counts and returned dense rows.
+func recallNoisyResult(result map[string]any, best float64, scored bool) bool {
+	if !scored || best >= recallNoiseCeiling {
 		return false
 	}
-	sparse, ok := result["sparse_rows"].(float64)
-	if !ok || sparse > recallWeakSparseRows {
+	if _, ok := result["sparse_rows"].(float64); !ok {
 		return false
 	}
 	dense, _ := result["dense_rows"].(float64)

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -420,20 +421,6 @@ func TestHandleRecall_NoLexicalMatchLowScore_ReturnsEmpty(t *testing.T) {
 	}
 }
 
-// Positive control: same scores but the sparse arm matched -> survives.
-func TestHandleRecall_LexicalMatchLowScore_Survives(t *testing.T) {
-	items := []any{map[string]any{"key": "real", "content": "x", "score": 0.01148}}
-	server, closeFn := newRecallTestServer(t, items, map[string]any{"dense_rows": 30, "sparse_rows": 3})
-	defer closeFn()
-	req := mcpsdk.CallToolRequest{}
-	req.Params.Arguments = map[string]any{"query": "openrouter topup"}
-	result, _ := server.handleRecall(context.Background(), req)
-	out := decodeRecallResult(t, result)
-	if got, _ := out["items"].([]any); len(got) != 1 {
-		t.Errorf("expected 1 item, got %d", len(got))
-	}
-}
-
 // A high-ranking dense-only hit (paraphrase, no keyword overlap) must survive.
 func TestHandleRecall_NoLexicalMatchHighScore_Survives(t *testing.T) {
 	items := []any{map[string]any{"key": "para", "content": "x", "score": 0.0164}}
@@ -448,37 +435,46 @@ func TestHandleRecall_NoLexicalMatchHighScore_Survives(t *testing.T) {
 	}
 }
 
-// #858f3a13 live acceptance: one stray sparse row on a nonsense string
-// (sparse_rows=1, top 0.011475) must still come back empty.
-func TestHandleRecall_OneSparseRowLowScore_ReturnsEmpty(t *testing.T) {
-	items := []any{map[string]any{"key": "noise", "content": "x", "score": 0.011475}}
-	server, closeFn := newRecallTestServer(t, items, map[string]any{"dense_rows": 30, "sparse_rows": 1})
-	defer closeFn()
-	req := mcpsdk.CallToolRequest{}
-	req.Params.Arguments = map[string]any{"query": "qqqqzzzzxxxx"}
-	result, err := server.handleRecall(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleRecall: %v", err)
-	}
-	out := decodeRecallResult(t, result)
-	if got, _ := out["items"].([]any); len(got) != 0 {
-		t.Errorf("expected empty items, got %d", len(got))
-	}
-	if e, _ := out["explanation"].(string); e == "" {
-		t.Error("expected explanation")
+// #858f3a13 live acceptance: the sparse_rows count drifts on the same garbage
+// string (0, 1, 3), so the gate must hold for any count when the score is low.
+func TestHandleRecall_LowScoreAnySparseCount_ReturnsEmpty(t *testing.T) {
+	for _, sparse := range []int{0, 1, 3, 15} {
+		t.Run(fmt.Sprintf("sparse-%d", sparse), func(t *testing.T) {
+			items := []any{map[string]any{"key": "noise", "content": "x", "score": 0.011475}}
+			server, closeFn := newRecallTestServer(t, items, map[string]any{"dense_rows": 30, "sparse_rows": sparse})
+			defer closeFn()
+			req := mcpsdk.CallToolRequest{}
+			req.Params.Arguments = map[string]any{"query": "qqqqzzzzxxxx"}
+			result, err := server.handleRecall(context.Background(), req)
+			if err != nil {
+				t.Fatalf("handleRecall: %v", err)
+			}
+			out := decodeRecallResult(t, result)
+			if got, _ := out["items"].([]any); len(got) != 0 {
+				t.Errorf("expected empty items, got %d", len(got))
+			}
+			if e, _ := out["explanation"].(string); e == "" {
+				t.Error("expected explanation")
+			}
+		})
 	}
 }
 
-// Positive controls: one sparse row with a high fused score, and two sparse
-// rows at the low score, both survive.
-func TestHandleRecall_OneSparseRowHighScoreOrTwoRows_Survive(t *testing.T) {
+// Positive controls: a score at/above the ceiling survives at any sparse count,
+// and a server that does not report sparse_rows keeps the old behaviour.
+func TestHandleRecall_HighScoreOrNoArmCounts_Survive(t *testing.T) {
 	for name, tc := range map[string]struct {
-		score  float64
-		sparse int
-	}{"one-row-high-score": {0.0164, 1}, "two-rows-low-score": {0.01148, 2}} {
+		score float64
+		extra map[string]any
+	}{
+		"high-score-sparse-0":  {0.0164, map[string]any{"dense_rows": 30, "sparse_rows": 0}},
+		"high-score-sparse-3":  {0.0164, map[string]any{"dense_rows": 30, "sparse_rows": 3}},
+		"at-ceiling":           {0.0120, map[string]any{"dense_rows": 30, "sparse_rows": 1}},
+		"old-server-no-counts": {0.01148, map[string]any{}},
+	} {
 		t.Run(name, func(t *testing.T) {
 			items := []any{map[string]any{"key": "real", "content": "x", "score": tc.score}}
-			server, closeFn := newRecallTestServer(t, items, map[string]any{"dense_rows": 30, "sparse_rows": tc.sparse})
+			server, closeFn := newRecallTestServer(t, items, tc.extra)
 			defer closeFn()
 			req := mcpsdk.CallToolRequest{}
 			req.Params.Arguments = map[string]any{"query": "openrouter topup"}
