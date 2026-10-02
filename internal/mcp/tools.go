@@ -2335,14 +2335,19 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	// exact key match through even when nothing in the result is actually
 	// relevant. If nothing clears the bar, say so instead of handing back the
 	// weakest candidates padded to a full page.
-	if best, scored := recallTopScore(items); !scored || best < recallRelevanceThreshold {
+	best, scored := recallTopScore(items)
+	noLexicalMatch := recallNoLexicalMatch(result, best, scored)
+	if !scored || best < recallRelevanceThreshold || noLexicalMatch {
+		reason := fmt.Sprintf("no candidate cleared the relevance threshold (best score %.5f, threshold %.5f)",
+			best, recallRelevanceThreshold)
+		if noLexicalMatch {
+			reason = fmt.Sprintf("no keyword match in any memory (sparse_rows=0) and the best semantic score %.5f is below %.5f",
+				best, recallNoLexicalCeiling)
+		}
 		result["items"] = []any{}
 		result["total"] = 0
-		result["explanation"] = fmt.Sprintf(
-			"no candidate cleared the relevance threshold (best score %.5f, threshold %.5f) — "+
-				"returning empty instead of the weakest matches; try a more specific query, or widen scope/project_id",
-			best, recallRelevanceThreshold,
-		)
+		result["explanation"] = reason + " — returning empty instead of the weakest matches; " +
+			"try a more specific query, or widen scope/project_id"
 		s.recordMemoryRead(ctx, "recall")
 		return jsonResult(result)
 	}
@@ -2423,6 +2428,31 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 // a fixed fixture of real queries is the next checkpoint to retune this if
 // needed.
 const recallRelevanceThreshold = 0.0100
+
+// recallNoLexicalCeiling is the second gate signal (#858f3a13). The dense arm
+// always returns its nearest neighbours, so on a nonsense query the fused score
+// still lands at ~0.0115 — above recallRelevanceThreshold — and the gate never
+// fired. What distinguishes nonsense is the sparse (BM25) arm: it matched
+// nothing (sparse_rows=0) while dense_rows>0. A response with no keyword match
+// AND a fused score below this ceiling is treated as noise. Genuine
+// paraphrase-only hits that rank high in the dense arm score above the ceiling
+// and survive; a missing sparse_rows field (older server) disables the signal.
+const recallNoLexicalCeiling = 0.0120
+
+// recallNoLexicalMatch reports whether the server said the sparse arm found
+// nothing while the dense arm returned rows, and the best score is below
+// recallNoLexicalCeiling.
+func recallNoLexicalMatch(result map[string]any, best float64, scored bool) bool {
+	if !scored || best >= recallNoLexicalCeiling {
+		return false
+	}
+	sparse, ok := result["sparse_rows"].(float64)
+	if !ok || sparse != 0 {
+		return false
+	}
+	dense, _ := result["dense_rows"].(float64)
+	return dense > 0
+}
 
 // recallFullCount is how many top-ranked items (after reranking) keep their
 // full content in a recall response; the rest are trimmed to key+snippet+score.
