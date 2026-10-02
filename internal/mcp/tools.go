@@ -216,6 +216,22 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		return errResult("failed to get task: %v", err)
 	}
 
+	// Child reads below must go through the canonical UUID from the resolved
+	// task object, not the caller's raw task_id. GetTask maps a 6-12 hex
+	// short-ID prefix onto the task via /tasks/by-short-id/:prefix, but the
+	// sub-resource routes are not uniform in what they accept: /dependencies
+	// parses the path id as a strict UUID and answers 400 "invalid task_id"
+	// for the short form (live red 02.10: get_task('06d0c6d8',
+	// include_dependencies=true) on a task whose UUID form works). Using the
+	// resolved id everywhere makes every include_* uniform no matter what
+	// each backend route tolerates on its own.
+	resolvedID, _ := task["id"].(string)
+	if resolvedID == "" {
+		// Malformed backend response (no id on the task object): keep the
+		// historical behaviour for full-UUID callers rather than fail closed.
+		resolvedID = taskID
+	}
+
 	resp := map[string]any{}
 
 	// Without `since`, behave exactly as before: the full task, every call.
@@ -237,7 +253,7 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 	}
 
 	if mcpsdk.ParseBoolean(request, "include_comments", false) {
-		page, err := s.getRESTClient(ctx).GetTaskComments(ctx, taskID)
+		page, err := s.getRESTClient(ctx).GetTaskComments(ctx, resolvedID)
 		if err != nil {
 			return errResult("failed to list comments: %v", err)
 		}
@@ -270,7 +286,7 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 	}
 
 	if mcpsdk.ParseBoolean(request, "include_artifacts", false) {
-		page, err := s.getRESTClient(ctx).GetTaskArtifacts(ctx, taskID)
+		page, err := s.getRESTClient(ctx).GetTaskArtifacts(ctx, resolvedID)
 		if err != nil {
 			return errResult("failed to list artifacts: %v", err)
 		}
@@ -300,7 +316,7 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 	}
 
 	if mcpsdk.ParseBoolean(request, "include_dependencies", false) {
-		deps, err := s.getRESTClient(ctx).GetTaskDependencies(ctx, taskID)
+		deps, err := s.getRESTClient(ctx).GetTaskDependencies(ctx, resolvedID)
 		if err != nil {
 			return errResult("failed to list dependencies: %v", err)
 		}
@@ -311,7 +327,7 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 	}
 
 	if mcpsdk.ParseBoolean(request, "include_vcs_links", false) {
-		page, err := s.getRESTClient(ctx).GetTaskVCSLinks(ctx, taskID)
+		page, err := s.getRESTClient(ctx).GetTaskVCSLinks(ctx, resolvedID)
 		if err != nil {
 			return errResult("failed to list vcs links: %v", err)
 		}
