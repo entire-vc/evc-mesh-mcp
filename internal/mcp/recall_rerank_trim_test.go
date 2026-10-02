@@ -486,3 +486,45 @@ func TestHandleRecall_HighScoreOrNoArmCounts_Survive(t *testing.T) {
 		})
 	}
 }
+
+// #858f3a13 acceptance fixture 9: a real identifier-only query lands at the
+// same 0.01148 / sparse_rows=0 as garbage. A shared query word in an entry
+// (here "verified" via the key/content) must keep it; garbage must not.
+func TestHandleRecall_LowScoreWithQueryWordInEntry_Survives(t *testing.T) {
+	items := []any{
+		map[string]any{"key": "other", "content": "unrelated text", "score": 0.01148},
+		map[string]any{"key": "decision-quinn", "content": "the verified-by label was forged", "score": 0.0112,
+			"tags": []any{"kind:decision"}},
+	}
+	server, closeFn := newRecallTestServer(t, items, map[string]any{"dense_rows": 30, "sparse_rows": 0})
+	defer closeFn()
+	req := mcpsdk.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"query": "gate_service_token internal.py периметр verified-by"}
+	result, _ := server.handleRecall(context.Background(), req)
+	out := decodeRecallResult(t, result)
+	if got, _ := out["items"].([]any); len(got) != 2 {
+		t.Errorf("expected 2 items, got %d", len(got))
+	}
+}
+
+// Same shape but the entries share no word with the query: still noise. Also a
+// query of only short words cannot be judged lexically and must not be gated.
+func TestHandleRecall_LowScoreNoQueryWordInEntry(t *testing.T) {
+	items := []any{map[string]any{"key": "noise", "content": "unrelated text", "score": 0.01148}}
+	for query, wantItems := range map[string]int{
+		"zxqvbn wlkjhg qpzmxn 9f8e7d6c5b4a": 0,
+		"mcp rls":                           1,
+	} {
+		t.Run(query, func(t *testing.T) {
+			server, closeFn := newRecallTestServer(t, items, map[string]any{"dense_rows": 30, "sparse_rows": 0})
+			defer closeFn()
+			req := mcpsdk.CallToolRequest{}
+			req.Params.Arguments = map[string]any{"query": query}
+			result, _ := server.handleRecall(context.Background(), req)
+			out := decodeRecallResult(t, result)
+			if got, _ := out["items"].([]any); len(got) != wantItems {
+				t.Errorf("expected %d items, got %d", wantItems, len(got))
+			}
+		})
+	}
+}

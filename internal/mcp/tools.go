@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
@@ -2352,7 +2353,7 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	// relevant. If nothing clears the bar, say so instead of handing back the
 	// weakest candidates padded to a full page.
 	best, scored := recallTopScore(items)
-	noisy := recallNoisyResult(result, best, scored)
+	noisy := recallNoisyResult(result, items, query, best, scored)
 	if !scored || best < recallRelevanceThreshold || noisy {
 		reason := fmt.Sprintf("no candidate cleared the relevance threshold (best score %.5f, threshold %.5f)",
 			best, recallRelevanceThreshold)
@@ -2452,14 +2453,19 @@ const recallRelevanceThreshold = 0.0100
 // either arm (one arm's rank-1 alone is 1/61 = 0.0164), which is what noise
 // looks like. The sparse_rows COUNT is deliberately not used: live acceptance
 // showed it drifting on the same garbage string (0, then 1, then 3), so any
-// "sparse_rows <= N" cut only catches part of the noise. A missing sparse_rows
+// "sparse_rows <= N" cut only catches part of the noise. The ceiling alone
+// also ate a real identifier-only query (same 0.01148, sparse_rows=0), so it
+// only fires when no query word occurs in any returned entry. A missing sparse_rows
 // field (older server) disables the signal; dense_rows must be > 0.
 const recallNoiseCeiling = 0.0120
 
 // recallNoisyResult reports whether the response looks like dense-arm noise:
 // best fused score below recallNoiseCeiling on a server that reports arm
-// counts and returned dense rows.
-func recallNoisyResult(result map[string]any, best float64, scored bool) bool {
+// counts and returned dense rows, AND no word of the query appears anywhere in
+// the returned entries. The fused score is rank-only, so a garbage query and a
+// real identifier-only query (acceptance #858f3a13, fixture 9) both land at
+// 0.01148 with sparse_rows=0; the lexical overlap is what tells them apart.
+func recallNoisyResult(result map[string]any, items []any, query string, best float64, scored bool) bool {
 	if !scored || best >= recallNoiseCeiling {
 		return false
 	}
@@ -2467,7 +2473,64 @@ func recallNoisyResult(result map[string]any, best float64, scored bool) bool {
 		return false
 	}
 	dense, _ := result["dense_rows"].(float64)
-	return dense > 0
+	if dense <= 0 {
+		return false
+	}
+	return !recallQueryOverlapsItems(query, items)
+}
+
+// recallMinOverlapTokenLen: shorter words ("the", "mcp", "py") are too common
+// to count as evidence that an entry answers the query.
+const recallMinOverlapTokenLen = 4
+
+// recallQueryOverlapsItems reports whether any query word of at least
+// recallMinOverlapTokenLen characters appears as a whole word in the key,
+// content or tags of any item. A query with no such word cannot be judged
+// lexically, so it counts as overlapping (the gate stays off).
+func recallQueryOverlapsItems(query string, items []any) bool {
+	split := func(s string) []string {
+		return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		})
+	}
+	var qTokens []string
+	for _, t := range split(query) {
+		if len([]rune(t)) >= recallMinOverlapTokenLen {
+			qTokens = append(qTokens, t)
+		}
+	}
+	if len(qTokens) == 0 {
+		return true
+	}
+	have := map[string]struct{}{}
+	for _, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, f := range []string{"key", "content", "snippet"} {
+			if str, ok := m[f].(string); ok {
+				for _, t := range split(str) {
+					have[t] = struct{}{}
+				}
+			}
+		}
+		if tags, ok := m["tags"].([]any); ok {
+			for _, tg := range tags {
+				if str, ok := tg.(string); ok {
+					for _, t := range split(str) {
+						have[t] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	for _, t := range qTokens {
+		if _, ok := have[t]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // recallFullCount is how many top-ranked items (after reranking) keep their
