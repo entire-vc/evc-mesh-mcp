@@ -2341,8 +2341,8 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 		reason := fmt.Sprintf("no candidate cleared the relevance threshold (best score %.5f, threshold %.5f)",
 			best, recallRelevanceThreshold)
 		if noLexicalMatch {
-			reason = fmt.Sprintf("no keyword match in any memory (sparse_rows=0) and the best semantic score %.5f is below %.5f",
-				best, recallNoLexicalCeiling)
+			reason = fmt.Sprintf("no meaningful keyword match in memory (sparse_rows=%d, at most %d counts as none) and the best semantic score %.5f is below %.5f",
+				int(result["sparse_rows"].(float64)), recallWeakSparseRows, best, recallNoLexicalCeiling)
 		}
 		result["items"] = []any{}
 		result["total"] = 0
@@ -2439,6 +2439,13 @@ const recallRelevanceThreshold = 0.0100
 // and survive; a missing sparse_rows field (older server) disables the signal.
 const recallNoLexicalCeiling = 0.0120
 
+// recallWeakSparseRows is the most sparse (BM25) rows still counted as "no
+// keyword match". Live acceptance (#858f3a13, qqqqzzzzxxxx) showed one stray
+// sparse row on a meaningless string — a single hit is not evidence that the
+// answer is in memory, so sparse_rows<=1 is treated like 0. Two or more rows,
+// or any score at/above recallNoLexicalCeiling, still survive.
+const recallWeakSparseRows = 1
+
 // recallNoLexicalMatch reports whether the server said the sparse arm found
 // nothing while the dense arm returned rows, and the best score is below
 // recallNoLexicalCeiling.
@@ -2447,7 +2454,7 @@ func recallNoLexicalMatch(result map[string]any, best float64, scored bool) bool
 		return false
 	}
 	sparse, ok := result["sparse_rows"].(float64)
-	if !ok || sparse != 0 {
+	if !ok || sparse > recallWeakSparseRows {
 		return false
 	}
 	dense, _ := result["dense_rows"].(float64)
