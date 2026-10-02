@@ -107,10 +107,10 @@ func (l *ipRateLimiter) evictIdleLoop() {
 }
 
 // clientIP resolves the real client address for a request that reached this
-// process through Caddy on mesh-vm's loopback interface — r.RemoteAddr is
+// process through Caddy on prod-host's loopback interface — r.RemoteAddr is
 // always 127.0.0.1 there, never the actual caller. Caddy's own
-// `trusted_proxies` config (deploy/caddy/mesh-vm.Caddyfile in evc-mesh)
-// resolves the true client at the edge from hel01's X-Forwarded-For and
+// `trusted_proxies` config (deploy/caddy/mesh.Caddyfile in evc-mesh)
+// resolves the true client at the edge from gateway's X-Forwarded-For and
 // forwards it downstream; this reads the FIRST entry (the original client,
 // per the standard leftmost-is-origin convention for X-Forwarded-For — each
 // hop appends itself, none of them prepend). Falls back to RemoteAddr for a

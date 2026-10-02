@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Remote half of the mesh-vm deploy for this repository's SSE binary.
+# Remote half of the prod-host deploy for this repository's SSE binary.
 #
 # This file lives in the repo and is re-uploaded by the workflow on EVERY run,
 # so the copy that executes on prod is the copy that was reviewed here. That is

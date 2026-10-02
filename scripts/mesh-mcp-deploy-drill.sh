@@ -5,8 +5,8 @@
 # makes "the rollback anchor works" a re-runnable claim instead of a sentence.
 #
 # Run it on the deploy target:
-#   scp scripts/mesh-mcp-remote-deploy.sh scripts/mesh-mcp-deploy-drill.sh mesh-vm:/tmp/
-#   ssh mesh-vm 'bash /tmp/mesh-mcp-deploy-drill.sh /tmp/mesh-mcp-remote-deploy.sh'
+#   scp scripts/mesh-mcp-remote-deploy.sh scripts/mesh-mcp-deploy-drill.sh prod-host:/tmp/
+#   ssh prod-host 'bash /tmp/mesh-mcp-deploy-drill.sh /tmp/mesh-mcp-remote-deploy.sh'
 #
 # Every case below failed at least once during development; three real defects
 # in the anchor naming were found this way and are described at new_anchor_name.

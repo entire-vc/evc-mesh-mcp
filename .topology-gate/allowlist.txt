@@ -1,0 +1,4 @@
+# Topology-gate exceptions. Every line needs a reason after '#'. No inline markers, no skip flag.
+# Syntax: path <glob> <rule|*> | value <ipv4> | tokenhash <sha256 of lowercased token>
+tokenhash 98666b88e92e8847307ca2bc694a856c04ab32913926f9d617817d70772cfee2  # legacy GitHub secret name; renaming means re-creating the secret and secret rotation is on hold
+path oauth_resource_test.go ip-private  # SSRF/host-validation test vector (private address must be rejected)

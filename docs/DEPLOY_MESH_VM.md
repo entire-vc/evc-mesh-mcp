@@ -1,21 +1,21 @@
-# Deploying this binary to mesh-vm
+# Deploying this binary to prod-host
 
-`https://mesh.entire.host/mcp` is served by `mesh-mcp.service` on **mesh-vm**
-(private address, `secrets.MESH_VM_HOST` — reachable only through the hel01 edge). Today that service runs
+`https://mesh.entire.host/mcp` is served by `mesh-mcp.service` on **prod-host**
+(private address, `secrets.MESH_VM_HOST` — reachable only through the gateway edge). Today that service runs
 a binary built from a *second copy* of this MCP server that lives in
 `evc-mesh/cmd/mcp`; the two copies have drifted by 37 functions, all in one
 direction — this repository is ahead. Removing the copy is tracked separately,
 and this document is the delivery half of that.
 
-Nothing here has cut over yet. `deploy-mesh-vm.yml` exists, is runnable, and
+Nothing here has cut over yet. `deploy-prod-host.yml` exists, is runnable, and
 defaults to a dry run. The switch is a separate, tracked change.
 
 ## The parts
 
 | | |
 |---|---|
-| `.github/workflows/deploy-mesh-vm.yml` | builds `linux/amd64`, ships it, calls the remote script |
-| `scripts/mesh-mcp-remote-deploy.sh` | everything that happens **on** mesh-vm: anchor, swap, restart, smoke, rollback |
+| `.github/workflows/deploy-prod-host.yml` | builds `linux/amd64`, ships it, calls the remote script |
+| `scripts/mesh-mcp-remote-deploy.sh` | everything that happens **on** prod-host: anchor, swap, restart, smoke, rollback |
 | `scripts/mesh-mcp-deploy-drill.sh` | exercises the remote script against a scratch directory; runs on every CI build |
 
 The remote script is re-uploaded on every run, so the code executing on prod is
@@ -26,9 +26,9 @@ the code in that commit. A host-side copy cannot drift from the reviewed one.
 The workflow is **dispatch-only** and has three modes:
 
 ```bash
-gh workflow run deploy-mesh-vm.yml --repo entire-vc/evc-mesh-mcp -f mode=dry-run
-gh workflow run deploy-mesh-vm.yml --repo entire-vc/evc-mesh-mcp -f mode=deploy
-gh workflow run deploy-mesh-vm.yml --repo entire-vc/evc-mesh-mcp -f mode=rollback
+gh workflow run deploy-prod-host.yml --repo entire-vc/evc-mesh-mcp -f mode=dry-run
+gh workflow run deploy-prod-host.yml --repo entire-vc/evc-mesh-mcp -f mode=deploy
+gh workflow run deploy-prod-host.yml --repo entire-vc/evc-mesh-mcp -f mode=rollback
 ```
 
 `dry-run` verifies the uploaded artifact, prints the exact plan including the
@@ -69,10 +69,10 @@ A failed smoke test rolls back on its own and *then* fails the job. To roll back
 by hand:
 
 ```bash
-gh workflow run deploy-mesh-vm.yml --repo entire-vc/evc-mesh-mcp -f mode=rollback
+gh workflow run deploy-prod-host.yml --repo entire-vc/evc-mesh-mcp -f mode=rollback
 # or, on the host:
-ssh mesh-vm '/opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh rollback'
-ssh mesh-vm '/opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh status'
+ssh prod-host '/opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh rollback'
+ssh prod-host '/opt/evc-mesh/bin/mesh-mcp-remote-deploy.sh status'
 ```
 
 `rollback` restores the newest anchor and asserts afterwards that the running
@@ -102,24 +102,24 @@ The workflow uses `secrets.DEPLOY_SSH_KEY` — this repository's **own** jump-us
 key, distinct from evc-mesh's. Revoking one must not break the other. It is
 scoped on both hops, and both restrictions were verified rather than assumed.
 (General jump-host mechanism and how to register a new product's key: see
-evc-mesh's `docs/DEPLOY_HEL01.md`, same pattern.)
+evc-mesh's `docs/deploy-via-jump-host.md`, same pattern.)
 
-* hel01 `ghdeploy`: `restrict,port-forwarding,permitopen="<mesh VM's private address>:22"`,
+* gateway `<jump-user>`: `restrict,port-forwarding,permitopen="<mesh VM's private address>:22"`,
   shell `/usr/sbin/nologin` — a shell attempt answers *"This account is currently not
   available"*, and a tunnel to any other internal host is refused with
   *"administratively prohibited"*.
-* mesh-vm `root`: `restrict` — no pty, no forwarding.
+* prod-host `root`: `restrict` — no pty, no forwarding.
 
 To revoke: delete the secret, then drop this repository's deploy-key line from
-the jump user's `authorized_keys` on hel01 and from `root`'s on mesh-vm — the
+the jump user's `authorized_keys` on gateway and from `root`'s on prod-host — the
 exact key comment/path is operational data, not published here. A pre-change
 backup of both `authorized_keys` files is kept beside each original.
 
 ## The drill
 
 ```bash
-scp scripts/mesh-mcp-remote-deploy.sh scripts/mesh-mcp-deploy-drill.sh mesh-vm:/tmp/
-ssh mesh-vm 'bash /tmp/mesh-mcp-deploy-drill.sh /tmp/mesh-mcp-remote-deploy.sh'
+scp scripts/mesh-mcp-remote-deploy.sh scripts/mesh-mcp-deploy-drill.sh prod-host:/tmp/
+ssh prod-host 'bash /tmp/mesh-mcp-deploy-drill.sh /tmp/mesh-mcp-remote-deploy.sh'
 ```
 
 22 assertions: dry-run inertness, refusal of a corrupt upload before the swap,
