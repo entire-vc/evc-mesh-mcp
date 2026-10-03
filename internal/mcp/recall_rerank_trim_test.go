@@ -92,6 +92,139 @@ func TestRerankRecallItems_EmptyInput(t *testing.T) {
 	}
 }
 
+// --- bandUnboostedByImportance --------------------------------------------------
+
+// keysOfItems returns the key sequence of an item slice, for order assertions.
+func keysOfItems(items []any) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		m, _ := it.(map[string]any)
+		out[i], _ = m["key"].(string)
+	}
+	return out
+}
+
+func assertOrder(t *testing.T, items []any, want ...string) {
+	t.Helper()
+	got := keysOfItems(items)
+	if len(got) != len(want) || strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("order = %v, want %v", got, want)
+	}
+}
+
+// Within one score band (fused scores within recallScoreBandEps of the band
+// head) the more important item goes first; across bands nothing moves.
+func TestBandUnboostedByImportance_ReordersOnlyScoreTies(t *testing.T) {
+	tail := []any{
+		map[string]any{"key": "episode-low-imp", "score": 0.0120, "importance_score": 0.3},
+		map[string]any{"key": "solution-high-imp", "score": 0.0116, "importance_score": 0.7},
+		map[string]any{"key": "decision-mid-imp", "score": 0.0112, "importance_score": 0.8},
+		// 0.0012 below the head: outside the band, must not move even though it
+		// is the most important item on the page.
+		map[string]any{"key": "pinned-outside-band", "score": 0.0108, "importance_score": 1.0},
+	}
+	bandUnboostedByImportance(tail)
+	assertOrder(t, tail, "decision-mid-imp", "solution-high-imp", "episode-low-imp", "pinned-outside-band")
+}
+
+// Head-anchoring, not adjacent-gap chaining: a ladder of within-eps ADJACENT
+// gaps must not merge into one band. Regression guard for the first Go port,
+// whose chaining dropped the replay tune top-3 from 63 to 57.
+func TestBandUnboostedByImportance_HeadAnchoredNotChained(t *testing.T) {
+	tail := []any{
+		map[string]any{"key": "head", "score": 0.0120, "importance_score": 0.3},
+		map[string]any{"key": "step1", "score": 0.0116, "importance_score": 0.3},
+		map[string]any{"key": "step2", "score": 0.0112, "importance_score": 0.3},
+		// each adjacent gap is 0.0004 (< eps) but the cumulative gap from the
+		// head is 0.0012 (> eps): its own band, so its importance cannot vault
+		// it over the head's band no matter how high.
+		map[string]any{"key": "step3-most-important", "score": 0.0108, "importance_score": 1.0},
+	}
+	bandUnboostedByImportance(tail)
+	if got := keysOfItems(tail)[3]; got != "step3-most-important" {
+		t.Errorf("item 1.2*eps below the head must stay 4th, got %q first-page %v", got, keysOfItems(tail))
+	}
+}
+
+// Scores far apart are not a tie: server order wins regardless of importance.
+func TestBandUnboostedByImportance_FarScoresUntouched(t *testing.T) {
+	tail := []any{
+		map[string]any{"key": "high-score-low-imp", "score": 0.0200, "importance_score": 0.3},
+		map[string]any{"key": "low-score-high-imp", "score": 0.0150, "importance_score": 1.0},
+	}
+	bandUnboostedByImportance(tail)
+	assertOrder(t, tail, "high-score-low-imp", "low-score-high-imp")
+}
+
+// Equal importance inside a band keeps server order (stable sort).
+func TestBandUnboostedByImportance_StableWithinBand(t *testing.T) {
+	tail := []any{
+		map[string]any{"key": "first", "score": 0.0120, "importance_score": 0.7},
+		map[string]any{"key": "second", "score": 0.0118, "importance_score": 0.7},
+	}
+	bandUnboostedByImportance(tail)
+	assertOrder(t, tail, "first", "second")
+}
+
+// An item without a score cannot be judged into a band: it forms its own and
+// never merges, so a high importance on an unscored row reorders nothing.
+func TestBandUnboostedByImportance_MissingScoreOwnBand(t *testing.T) {
+	tail := []any{
+		map[string]any{"key": "scored-a", "score": 0.0120, "importance_score": 0.9},
+		map[string]any{"key": "unscored", "importance_score": 1.0},
+		map[string]any{"key": "scored-b", "score": 0.0119, "importance_score": 0.5},
+	}
+	bandUnboostedByImportance(tail)
+	// scored-a/scored-b share a band by score; "unscored" sorts last (the
+	// pre-sort puts unscored rows behind every scored one) and must not merge
+	// into that band even though its importance would top both.
+	assertOrder(t, tail, "scored-a", "scored-b", "unscored")
+}
+
+// Missing importance_score sorts as 0: an ungraded item loses a band
+// tie-break, it does not win one.
+func TestBandUnboostedByImportance_MissingImportanceSortsLast(t *testing.T) {
+	tail := []any{
+		map[string]any{"key": "ungraded-first", "score": 0.0120},
+		map[string]any{"key": "graded", "score": 0.0119, "importance_score": 0.5},
+	}
+	bandUnboostedByImportance(tail)
+	assertOrder(t, tail, "graded", "ungraded-first")
+}
+
+// The tail may arrive out of score order (ties, legacy rows): banding
+// pre-sorts by score first, so a band head is always the band's highest score
+// even when the server page is not monotonic.
+func TestBandUnboostedByImportance_NonMonotonicTailPreSorted(t *testing.T) {
+	tail := []any{
+		map[string]any{"key": "top", "score": 0.0120, "importance_score": 0.3},
+		map[string]any{"key": "distant", "score": 0.0100, "importance_score": 0.9},
+		// 0.0119 sits AFTER 0.0100 in server order: without the pre-sort the
+		// banding would chain it onto 0.0100 (head gap negative) and let it be
+		// reordered against an item 0.0019 away.
+		map[string]any{"key": "near-top", "score": 0.0119, "importance_score": 0.6},
+	}
+	bandUnboostedByImportance(tail)
+	assertOrder(t, tail, "near-top", "top", "distant")
+}
+
+// Boosted items are never re-judged by the tie-bands: a structural match
+// (here an exact key hit) outranks the band argument entirely.
+func TestRerankRecallItems_BoostedItemsNeverBanded(t *testing.T) {
+	items := []any{
+		// exact key match: boost 3, but lowest importance and near the band.
+		map[string]any{"key": "exact-query-match", "score": 0.0121, "importance_score": 0.3},
+		map[string]any{"key": "episode-tail-a", "score": 0.0120, "importance_score": 1.0},
+		map[string]any{"key": "episode-tail-b", "score": 0.0116, "importance_score": 0.9},
+	}
+	out := rerankRecallItems(items, "exact-query-match", "", "")
+	// If banding ran over the whole list, importance 1.0 would sink the exact
+	// match to third. The boost tier must shield it.
+	assertOrder(t, out, "exact-query-match", "episode-tail-a", "episode-tail-b")
+}
+
+
+
 // --- recallTopScore -----------------------------------------------------------
 
 func TestRecallTopScore(t *testing.T) {

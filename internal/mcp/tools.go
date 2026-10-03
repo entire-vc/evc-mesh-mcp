@@ -2745,6 +2745,9 @@ func recallTopScore(items []any) (float64, bool) {
 // composite_score). Keeping the two separate means the threshold gate above can
 // keep judging actual relevance while this only judges "is this what the
 // caller is clearly pointing at".
+//
+// Since 2026-10-03 the boost-0 tail additionally gets importance tie-bands:
+// see bandUnboostedByImportance.
 func rerankRecallItems(items []any, query, projectID, scope string) []any {
 	if len(items) == 0 {
 		return items
@@ -2776,10 +2779,125 @@ func rerankRecallItems(items []any, query, projectID, scope string) []any {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].boost > out[j].boost })
 	result := make([]any, len(out))
+	// The boost sort is stable, so every boost tier keeps server order inside
+	// it; the boost-0 items therefore form one contiguous tail starting at the
+	// first unboosted position. Only that tail is eligible for the importance
+	// tie-bands below — a structural match (key/project/scope) is a stronger
+	// statement than any score-band argument and must not be re-judged.
+	tailStart := len(out)
+	for i, r := range out {
+		if r.boost == 0 {
+			tailStart = i
+			break
+		}
+	}
 	for i, r := range out {
 		result[i] = r.item
 	}
+	if tailStart < len(result) {
+		bandUnboostedByImportance(result[tailStart:])
+	}
 	return result
+}
+
+// recallScoreBandEps is how close two fused server scores must be for the pair
+// to count as a server tie. RRF fusion values on a page of results are small
+// and tightly clustered (p10 adjacent gap 0.39%, median 2.3% of ~0.011), so an
+// absolute epsilon is a usable "same band" test. 0.001 ≈ 9% of a typical fused
+// score: wide enough to cover the cluster noise the tie-band is aimed at,
+// narrow enough that it can never vault an item across a real relevance gap.
+// The value sits in the middle of a measured plateau (0.0008 and 0.0012 give
+// the same replay top-3; 0.002 and above collapse the gain entirely), so it is
+// not a knife-edge tuning point.
+const recallScoreBandEps = 0.001
+
+// bandUnboostedByImportance reorders only the score-TIES among unboosted items.
+//
+// Why: the 2026-10-03 replay fixture (222 real logged recall calls, 188
+// measurable used keys) showed per-item top-3 of 62% with the plain boost sort
+// — 71 misses, and in most of them the used key sat at server rank 4-9 behind
+// items the fused score put within a fraction of a percent of it. The used
+// keys are overwhelmingly curated knowledge (solution-*, decision-*,
+// learning-*, doc-*), while the near-tied items crowding them out are
+// frequently episodic (episode-*, session-checkpoint-*), and importance_score
+// is exactly the server-curated field that encodes that distinction (pinned
+// 1.0 > incident 0.85 > decision 0.80 > learning 0.70 > fact 0.60 > none 0.50
+// > checkpoint 0.30). So within a score band — where the server itself
+// expresses no meaningful preference — the more important item goes first.
+//
+// Blast radius is bounded by construction: it only ever swaps items the server
+// scored within recallScoreBandEps of each other, only within the boost-0
+// tail, and it is a stable sort, so equal importance keeps server order. It
+// cannot touch the gate (recallTopScore and the noise/overlap checks read all
+// items regardless of order) and cannot change response size beyond which
+// three items get full content. On the replay fixture: tune split 58/96 ->
+// 63/96 (+6 gains, 1 loss), gate-loss 0, garbage queries unaffected.
+func bandUnboostedByImportance(tail []any) {
+	if len(tail) < 2 {
+		return
+	}
+	scoreOf := func(it any) (float64, bool) {
+		m, ok := it.(map[string]any)
+		if !ok {
+			return 0, false
+		}
+		s, ok := m["score"].(float64)
+		return s, ok
+	}
+	// Band construction needs the tail in fused-score order so a band head is
+	// the band's highest score. Server pages arrive score-descending in
+	// practice, but ties and legacy rows without a score make that an
+	// assumption, not a contract — one stable pre-sort removes it (equal or
+	// missing scores keep server order; unscored rows sort last).
+	sort.SliceStable(tail, func(i, j int) bool {
+		si, okI := scoreOf(tail[i])
+		sj, okJ := scoreOf(tail[j])
+		switch {
+		case !okI && !okJ:
+			return false
+		case !okI:
+			return false // unscored sorts after scored
+		case !okJ:
+			return true
+		default:
+			return si > sj
+		}
+	})
+	// A band is anchored at its HIGHEST score: every following item whose score
+	// is within recallScoreBandEps of the band head joins it, and the first item
+	// further away starts the next band. Head-anchoring, not adjacent-gap
+	// chaining: a chain of within-eps ADJACENT gaps (0.0120, 0.0115, 0.0110,
+	// 0.0105, ...) would let one band grow unboundedly and vault items across a
+	// cumulative gap the server did express a preference over (measured on the
+	// replay fixture: chaining drops the tune top-3 from 63 to 57).
+	// Items without a score start their own band and never merge.
+	start := 0
+	headScore, hasHead := scoreOf(tail[0])
+	flush := func(end int) {
+		sort.SliceStable(tail[start:end], func(i, j int) bool {
+			impI, _ := tail[start+i].(map[string]any)
+			impJ, _ := tail[start+j].(map[string]any)
+			// missing importance_score sorts as 0: an item the server never
+			// graded loses a band tie-break, it does not win one.
+			vi, vj := 0.0, 0.0
+			if impI != nil {
+				vi, _ = impI["importance_score"].(float64)
+			}
+			if impJ != nil {
+				vj, _ = impJ["importance_score"].(float64)
+			}
+			return vi > vj
+		})
+	}
+	for i := 1; i < len(tail); i++ {
+		s, ok := scoreOf(tail[i])
+		if !ok || !hasHead || headScore-s > recallScoreBandEps {
+			flush(i)
+			start = i
+			headScore, hasHead = s, ok
+		}
+	}
+	flush(len(tail))
 }
 
 // recallKeyTokenMinShared is how many distinct 4+ char key tokens must appear
