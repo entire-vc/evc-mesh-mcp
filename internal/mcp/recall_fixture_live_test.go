@@ -97,7 +97,7 @@ func newReplayHandler(raws [][]byte, capture *recallCapture) http.Handler {
 }
 
 type splitStats struct {
-	calls, empties, used, measurable, hitBefore, hitAfter, sumBefore, sumAfter int
+	calls, empties, used, measurable, hitBefore, hitAfter, sumBefore, sumAfter, gateLosses int
 }
 
 // TestRecallFixtureLive replays real logged recall calls against a live Mesh
@@ -243,6 +243,17 @@ func TestRecallFixtureLive(t *testing.T) {
 		st.sumAfter += utf8.RuneCountInString(txt)
 		if len(afterItems) == 0 {
 			st.empties++
+			// A gate loss is an empty answer to a call whose raw server response
+			// DID carry at least one key the session went on to use: ranking is
+			// not the suspect — before-rank is known — so the gate (threshold
+			// floor or noise ceiling) dropped it (2026-10-03 fixture acceptance).
+			for _, want := range tr.Used {
+				if rb := rankOf(beforeKeys, want); rb > 0 {
+					st.gateLosses++
+					t.Logf("GATE-LOSS q=%q want=%s before=%d", tr.Query, want, rb)
+					break
+				}
+			}
 		}
 		for _, want := range tr.Used {
 			st.used++
@@ -273,9 +284,9 @@ func TestRecallFixtureLive(t *testing.T) {
 
 	all := splitStats{}
 	for name, st := range stats {
-		t.Logf("%-7s calls=%d used=%d measurable=%d top3 before=%d after=%d | avg chars(runes) raw=%d default=%d | empty=%d",
+		t.Logf("%-7s calls=%d used=%d measurable=%d top3 before=%d after=%d | avg chars(runes) raw=%d default=%d | empty=%d gate-loss=%d",
 			name, st.calls, st.used, st.measurable, st.hitBefore, st.hitAfter,
-			div(st.sumBefore, st.calls), div(st.sumAfter, st.calls), st.empties)
+			div(st.sumBefore, st.calls), div(st.sumAfter, st.calls), st.empties, st.gateLosses)
 		all.calls += st.calls
 		all.used += st.used
 		all.measurable += st.measurable
@@ -284,11 +295,12 @@ func TestRecallFixtureLive(t *testing.T) {
 		all.sumBefore += st.sumBefore
 		all.sumAfter += st.sumAfter
 		all.empties += st.empties
+		all.gateLosses += st.gateLosses
 	}
-	t.Logf("ALL     calls=%d used=%d measurable=%d top3 before=%d/%d (%d%%) after=%d/%d (%d%%) | avg chars(runes) raw=%d default=%d | empty=%d",
+	t.Logf("ALL     calls=%d used=%d measurable=%d top3 before=%d/%d (%d%%) after=%d/%d (%d%%) | avg chars(runes) raw=%d default=%d | empty=%d gate-loss=%d",
 		all.calls, all.used, all.measurable, all.hitBefore, all.measurable, pct(all.hitBefore, all.measurable),
 		all.hitAfter, all.measurable, pct(all.hitAfter, all.measurable),
-		div(all.sumBefore, all.calls), div(all.sumAfter, all.calls), all.empties)
+		div(all.sumBefore, all.calls), div(all.sumAfter, all.calls), all.empties, all.gateLosses)
 
 	// MESH_LIVE_FIXTURE_ENFORCE=1 turns the acceptance thresholds into
 	// assertions: per-item top-3 >= 60% (on all calls and on the hold-out half
@@ -305,6 +317,12 @@ func TestRecallFixtureLive(t *testing.T) {
 		}
 		if avg := div(all.sumAfter, all.calls); avg > 9000 {
 			t.Errorf("average default response %d chars exceeds 9000", avg)
+		}
+		// Fixture acceptance (2026-10-03): an empty answer to a call whose raw server
+		// response carried a key the session then used is a gate loss — the
+		// gate dropped a real hit, whatever the average top-3 says.
+		if all.gateLosses != 0 {
+			t.Errorf("gate emptied %d call(s) whose used key was in the raw response", all.gateLosses)
 		}
 	}
 }

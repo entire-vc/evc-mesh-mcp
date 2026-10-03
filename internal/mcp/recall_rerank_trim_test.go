@@ -528,3 +528,76 @@ func TestHandleRecall_LowScoreNoQueryWordInEntry(t *testing.T) {
 		})
 	}
 }
+
+// Measured on the re-recorded 2026-10-03 snapshot + live garbage probes:
+// the lost real queries sit at fused 0.0078–0.0098 — BELOW garbage's 0.011475
+// (dense-arm rank 1 alone) — and their dense cosines (tops ~0.86) overlap the
+// garbage band (0.839–0.864), so neither the noise ceiling nor any dense floor
+// can separate the classes. What separates them: a query token occurs in a
+// returned entry ("gotcha-verify-driver-…", "fiddlersessiondead-…",
+// "solution-checkout-…"). The unconditional relevance threshold killed exactly
+// those before the overlap check could run; it must respect the overlap below
+// the ceiling, and still gate servers that report no arm counts.
+func TestHandleRecall_ThresholdRespectsOverlapBelowCeiling(t *testing.T) {
+	for name, tc := range map[string]struct {
+		query     string
+		items     []any
+		meta      map[string]any
+		wantItems int
+	}{
+		// The three lost fixture cases, distilled: real query, very low fused,
+		// query token inside a compound key, arm counts present -> rescued.
+		"rare-token-query-survives": {
+			"verify driver status",
+			[]any{map[string]any{"key": "gotcha-verify-driver-no-record-means-rights-gap", "content": "harness entry point", "score": 0.00782}},
+			map[string]any{"dense_rows": 30, "sparse_rows": 30}, 1,
+		},
+		"identifier-query-survives": {
+			"FiddlerSessionDead occurrence root cause",
+			[]any{map[string]any{"key": "fiddlersessiondead-fleetwide-mesh-poll-gap-22sep", "content": "fleetwide poll gap", "score": 0.00978}},
+			map[string]any{"dense_rows": 15, "sparse_rows": 3}, 1,
+		},
+		// Garbage: below the ceiling, no lexical overlap -> still empty.
+		"garbage-stays-empty": {
+			"qqqqzzzzxxxx",
+			[]any{map[string]any{"key": "noise-a", "content": "x", "score": 0.011475}},
+			map[string]any{"dense_rows": 30, "sparse_rows": 4}, 0,
+		},
+		"garbage-multiword-stays-empty": {
+			"blorptangle fnurgle wibbleswoosh 7731",
+			[]any{map[string]any{"key": "noise-b", "content": "y", "score": 0.011475}},
+			map[string]any{"dense_rows": 30, "sparse_rows": 0}, 0,
+		},
+		// No arm counts -> the legacy threshold gates alone, as before.
+		"no-arm-counts-below-threshold-empty": {
+			"checkout metadata front security",
+			[]any{map[string]any{"key": "solution-checkout-refresh-does-not-detect", "content": "checkout refresh", "score": 0.001}},
+			nil, 0,
+		},
+		"no-arm-counts-above-threshold-survives": {
+			"openrouter topup limit",
+			[]any{map[string]any{"key": "episode-agent-b-provider-topup", "content": "openrouter topup not needed", "score": 0.01148}},
+			nil, 1,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, closeFn := newRecallTestServer(t, tc.items, tc.meta)
+			defer closeFn()
+			req := mcpsdk.CallToolRequest{}
+			req.Params.Arguments = map[string]any{"query": tc.query}
+			result, err := server.handleRecall(context.Background(), req)
+			if err != nil {
+				t.Fatalf("handleRecall: %v", err)
+			}
+			out := decodeRecallResult(t, result)
+			if got, _ := out["items"].([]any); len(got) != tc.wantItems {
+				t.Errorf("expected %d items, got %d (explanation: %v)", tc.wantItems, len(got), out["explanation"])
+			}
+			if tc.wantItems == 0 {
+				if e, _ := out["explanation"].(string); e == "" {
+					t.Error("expected explanation on a gated-empty result")
+				}
+			}
+		})
+	}
+}
