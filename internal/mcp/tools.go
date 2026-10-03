@@ -273,7 +273,18 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 	}
 
 	if mcpsdk.ParseBoolean(request, "include_comments", false) {
-		page, err := s.getRESTClient(ctx).GetTaskComments(ctx, resolvedID)
+		// The default tail length is small on purpose: self-reports of 20
+		// lanes (03.10) named re-reading whole threads as the top context cost
+		// — one get_task(include_comments=true) on a busy card handed back the
+		// newest 50 comments whole (~100KB on the worst cards measured). The
+		// last few comments carry the state an agent needs before acting; the
+		// full thread stays one explicit comments_limit away, and
+		// comments_total_count/comments_has_more always say how much is hidden.
+		commentsLimit := mcpsdk.ParseInt(request, "comments_limit", defaultTaskCommentsLimit)
+		if commentsLimit < 1 || commentsLimit > maxTaskCommentsLimit {
+			return errResult("comments_limit must be between 1 and %d, got %d", maxTaskCommentsLimit, commentsLimit)
+		}
+		page, err := s.getRESTClient(ctx).GetTaskComments(ctx, resolvedID, commentsLimit)
 		if err != nil {
 			return errResult("failed to list comments: %v", err)
 		}
@@ -300,8 +311,8 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		if hasMore {
 			resp["comments_truncated"] = true
 			resp["comments_note"] = fmt.Sprintf(
-				"showing the last %d of %d comments; call list_comments(task_id, page_size=200) or page through /comments for the rest",
-				itemCount, int(totalCount))
+				"showing the last %d of %d comments; raise comments_limit (max %d) for more of the tail, or read the rest by paging list_comments(task_id, order=desc, page=N) — a thread longer than %d cannot be fetched in one call",
+				itemCount, int(totalCount), maxTaskCommentsLimit, maxTaskCommentsLimit)
 		}
 	}
 
@@ -393,6 +404,63 @@ func taskDeltaStub(task map[string]any) map[string]any {
 		}
 	}
 	return stub
+}
+
+// defaultTaskCommentsLimit is how many of the newest comments
+// get_task(include_comments=true) inlines by default. Self-reports of 20 lanes
+// (03.10, #4094eeb1) named re-reading whole threads as the top context cost:
+// the previous default (the server's 50, whole) put ~100KB into a lane's
+// context on the worst cards. The tail is where an acting agent looks first;
+// comments_total_count/comments_has_more keep the hidden rest visible.
+const defaultTaskCommentsLimit = 5
+
+// maxTaskCommentsLimit bounds the explicit "give me more of the tail" escape
+// hatch to what the API's own page cap serves in one request — a thread
+// longer than this is only readable end-to-end by paging list_comments,
+// never by one get_task call.
+const maxTaskCommentsLimit = 200
+
+// leanMutationTaskFields is what a mutation response keeps by default: enough
+// to confirm the write landed and see where the card now routes (status,
+// assignee — including move-to-review's auto-reassign), nothing else. The
+// description and the other static fields are the fat the caller either just
+// sent (update_task) or can get with one get_task — echoing them on every
+// mutation cost ~1.5k chars per call fleet-wide (Jacques, 03.10).
+var leanMutationTaskFields = []string{
+	"id", "status_id", "assignee_id", "assignee_type", "assignee_name", "updated_at",
+}
+
+// leanMutationTask projects a full task object onto the fields above.
+func leanMutationTask(task map[string]any) map[string]any {
+	lean := map[string]any{}
+	for _, f := range leanMutationTaskFields {
+		if v, ok := task[f]; ok {
+			lean[f] = v
+		}
+	}
+	return lean
+}
+
+// leanCommentFields is what an add_comment response keeps by default. The fat
+// part of a comment echo is the body — the one thing the caller provably
+// already has, having just written it. delivery/hint stay: they are the
+// mention-delivery contract (did the @-mention actually reach a path its
+// target consumes) and are both small and un-derivable.
+var leanCommentFields = []string{
+	"id", "task_id", "parent_comment_id",
+	"author_id", "author_name", "author_type",
+	"is_internal", "created_at", "delivery", "hint",
+}
+
+// leanCommentResult projects a created comment onto the fields above.
+func leanCommentResult(comment map[string]any) map[string]any {
+	lean := map[string]any{}
+	for _, f := range leanCommentFields {
+		if v, ok := comment[f]; ok {
+			lean[f] = v
+		}
+	}
+	return lean
 }
 
 // commentsSince keeps only comments created after since. A comment with a
@@ -633,6 +701,9 @@ func (s *Server) handleUpdateTask(ctx context.Context, request mcpsdk.CallToolRe
 		return errResult("failed to update task: %v", err)
 	}
 
+	if !mcpsdk.ParseBoolean(request, "full", false) {
+		return jsonResult(leanMutationTask(result))
+	}
 	return jsonResult(result)
 }
 
@@ -700,12 +771,17 @@ func (s *Server) handleMoveTask(ctx context.Context, request mcpsdk.CallToolRequ
 		})
 	}
 
-	// Return updated task.
+	// Return updated task. The reload stays even in the lean view: the move
+	// endpoint answers only {"status":"ok"}, so the post-move assignee — which
+	// move-to-review's auto-reassign can change — is unknowable without it.
 	updatedTask, err := s.getRESTClient(ctx).GetTask(ctx, taskID)
 	if err != nil {
 		return errResult("task moved but failed to reload: %v", err)
 	}
 
+	if !mcpsdk.ParseBoolean(request, "full", false) {
+		updatedTask = leanMutationTask(updatedTask)
+	}
 	return jsonResult(map[string]any{
 		"task":       updatedTask,
 		"new_status": map[string]any{"id": stID, "slug": statusSlug, "name": stName},
@@ -851,6 +927,9 @@ func (s *Server) handleAssignTask(ctx context.Context, request mcpsdk.CallToolRe
 		return errResult("failed to assign task: %v", err)
 	}
 
+	if !mcpsdk.ParseBoolean(request, "full", false) {
+		return jsonResult(leanMutationTask(result))
+	}
 	return jsonResult(result)
 }
 
@@ -895,6 +974,9 @@ func (s *Server) handleAddComment(ctx context.Context, request mcpsdk.CallToolRe
 		return errResult("failed to create comment: %v", err)
 	}
 
+	if !mcpsdk.ParseBoolean(request, "full", false) {
+		return jsonResult(leanCommentResult(result))
+	}
 	return jsonResult(result)
 }
 
@@ -997,6 +1079,30 @@ func (s *Server) handleListComments(ctx context.Context, request mcpsdk.CallTool
 	limit := mcpsdk.ParseInt(request, "limit", 50)
 	if limit > 0 {
 		params["page_size"] = strconv.Itoa(limit)
+	}
+
+	// The server's own default (sort_dir=asc) made limit=N return the OLDEST N
+	// comments — an agent asking for "the last 3" of a thread got the wrong end
+	// (live red 03.10: limit=2 on a 17-comment thread returned comments 1-2),
+	// so the only safe way to catch up on a thread was reading all of it.
+	// Default to the newest end; an explicit order still wins, and a non-empty
+	// garbage value is forwarded for the API to refuse (the list_tasks `order`
+	// precedent — never silently normalize a direction the caller named).
+	// An EXPLICIT order="" is refused HERE rather than forwarded: at the HTTP
+	// boundary `sort_dir=` is indistinguishable from an absent sort_dir, and
+	// the backend gate (evc-mesh rejectBadSortDir) deliberately reads an empty
+	// direction as "caller declined" and defaults to asc — the OLDEST end
+	// again, silently. hasArgument is the only place left that can tell
+	// explicit-empty from absent, so the refusal lives in this layer (the
+	// get_task comments_limit local-refusal precedent).
+	if hasArgument(request, "order") {
+		order := mcpsdk.ParseString(request, "order", "")
+		if order == "" {
+			return errResult("order must be \"asc\" or \"desc\"")
+		}
+		params["sort_dir"] = order
+	} else {
+		params["sort_dir"] = "desc"
 	}
 
 	// `page` was declared nowhere and read nowhere: every call landed on page 1

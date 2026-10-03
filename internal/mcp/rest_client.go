@@ -698,26 +698,32 @@ func (c *RESTClient) GetTaskContext(ctx context.Context, taskID string) (map[str
 	return result, nil
 }
 
-// GetTaskComments returns the most recent DefaultPageSize comments for a
-// task, in chronological order (last element = newest).
+// GetTaskComments returns the pageSize most recent comments for a task, in
+// chronological order (last element = newest).
 //
 // get_task(include_comments=true) is the call the READ-BEFORE-ACT gate tells
 // every agent to trust as "the whole thread, read to the end". For a task
-// with more than DefaultPageSize comments, the server's untouched default
+// with more comments than requested, the server's untouched default
 // (sort_dir=asc) makes "the end" mean the OLDEST comments — an agent reading
-// a long-running task's thread would see it stop at whenever the 50th
-// comment landed and never learn the thread kept going. Requesting
+// a long-running task's thread would see it stop at whenever the last
+// requested comment landed and never learn the thread kept going. Requesting
 // sort_dir=desc gets the newest page instead, then reversing it back to
 // chronological order preserves the reading experience while fixing which N
 // comments are shown. Ported from the same fix in entire-vc/evc-mesh
 // (internal/mcp/rest_client.go, task 4222c17d / D1) — this repo's
 // RESTClient hits the same evc-mesh REST API but is a separately maintained
 // copy, so the fix does not propagate on its own.
-func (c *RESTClient) GetTaskComments(ctx context.Context, taskID string) (map[string]any, error) {
-	result, err := c.ListComments(ctx, taskID, map[string]string{
+//
+// pageSize <= 0 leaves page_size unset, letting the server default apply.
+func (c *RESTClient) GetTaskComments(ctx context.Context, taskID string, pageSize int) (map[string]any, error) {
+	params := map[string]string{
 		"include_internal": "true",
 		"sort_dir":         "desc",
-	})
+	}
+	if pageSize > 0 {
+		params["page_size"] = strconv.Itoa(pageSize)
+	}
+	result, err := c.ListComments(ctx, taskID, params)
 	if err != nil {
 		return nil, err
 	}

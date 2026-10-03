@@ -311,10 +311,11 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("list_tasks", s.handleListTasks))
 
 	s.addTool(mcpsdk.NewTool("get_task",
-		mcpsdk.WithDescription("Get full task details with optional comments, artifacts, dependencies, and VCS links."),
+		mcpsdk.WithDescription("Get full task details with optional comments, artifacts, dependencies, and VCS links. With include_comments=true, only the newest comments_limit comments come back (default 5 — the tail is what you act on; comments_total_count/comments_has_more always say how much is hidden; comments_limit raises the tail up to 200, and a longer thread is read by paging list_comments with order=desc)."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID (full UUID or 6–12 char hex short-ID prefix).")),
-		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 timestamp from an earlier call in this session (e.g. that response's task.updated_at, or your own last-call time). With it: include_comments returns only comments created after it, and the full task body (description and the rest) is included only if the task's own updated_at is after it too — the response then carries task_changed=true/false so you always know which you got, and a trimmed stub (id/status_id/assignee/updated_at) instead of the full task when nothing changed, to avoid re-paying for the same ~5k tokens on a repeat call. Omit for the unfiltered default (full task, all comments).")),
-		mcpsdk.WithBoolean("include_comments", mcpsdk.Description("Include comments."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 timestamp from an earlier call in this session (e.g. that response's task.updated_at, or your own last-call time). With it: include_comments returns only comments created after it, and the full task body (description and the rest) is included only if the task's own updated_at is after it too — the response then carries task_changed=true/false so you always know which you got, and a trimmed stub (id/status_id/assignee/updated_at) instead of the full task when nothing changed, to avoid re-paying for the same ~5k tokens on a repeat call. Omit for the unfiltered default: full task body, but the comment tail still obeys comments_limit (default 5, max 200) — a longer thread needs list_comments paging.")),
+		mcpsdk.WithBoolean("include_comments", mcpsdk.Description("Include the task's most recent comments (see comments_limit for how many; the response carries comments_total_count and comments_has_more so a longer thread is never silently hidden)."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithNumber("comments_limit", mcpsdk.Description("How many of the NEWEST comments to include when include_comments=true (default 5, max 200). The tail is where an acting agent looks first; raise it when you need more of it. The API caps any single request at 200 — a longer thread is only readable end-to-end by paging list_comments (order=desc, page=N), never by one call here.")),
 		mcpsdk.WithBoolean("include_artifacts", mcpsdk.Description("Include artifacts."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_dependencies", mcpsdk.Description("Include dependencies."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_vcs_links", mcpsdk.Description("Include linked PRs/MRs/commits/branches (id, provider, link_type, external_id, url, status, created_at) — use this instead of a raw REST call to diagnose a misclassified or stuck-status link."), mcpsdk.DefaultBool(false)),
@@ -339,7 +340,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("create_task", s.handleCreateTask))
 
 	s.addTool(mcpsdk.NewTool("update_task",
-		mcpsdk.WithDescription("Update task fields."),
+		mcpsdk.WithDescription("Update task fields. Returns a lean confirmation by default (id, status_id, assignee, updated_at) — the card's static fields are not echoed back; pass full=true or call get_task when you need them."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("title", mcpsdk.Description("New title.")),
 		mcpsdk.WithString("description", mcpsdk.Description("New description.")),
@@ -351,23 +352,26 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours.")),
 		mcpsdk.WithString("delegation_level", mcpsdk.Description("Routing after work: auto, review, or supervised.")),
 		mcpsdk.WithBoolean("completion_signal", mcpsdk.Description("Mark agent-side work as finished.")),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the complete updated task (all fields, verbatim) instead of the lean confirmation (id, status_id, assignee, updated_at)."), mcpsdk.DefaultBool(false)),
 	), s.tracked("update_task", s.handleUpdateTask))
 
 	s.addTool(mcpsdk.NewTool("move_task",
-		mcpsdk.WithDescription("Change task status (e.g. todo → in_progress → done). Use status SLUGS (not UUIDs). On move to 'review', task auto-reassigns to creator unless assignee_id is provided."),
+		mcpsdk.WithDescription("Change task status (e.g. todo → in_progress → done). Use status SLUGS (not UUIDs). On move to 'review', task auto-reassigns to creator unless assignee_id is provided. Returns {task, new_status} with a lean task by default (id, status_id, assignee, updated_at — the post-move assignee is always included so an auto-reassign is visible); full=true returns the whole reloaded task."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("status_slug", mcpsdk.Required(), mcpsdk.Description("Target status slug (e.g. 'in_progress', 'done').")),
 		mcpsdk.WithString("comment", mcpsdk.Description("Optional comment to add when moving.")),
 		mcpsdk.WithString("assignee_id", mcpsdk.Description("Reassign to this agent/user on move. Overrides auto-reassign to creator on review.")),
 		mcpsdk.WithString("assignee_type", mcpsdk.Description("Assignee type if assignee_id is set: user or agent."), mcpsdk.DefaultString("agent")),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the whole reloaded task instead of the lean confirmation."), mcpsdk.DefaultBool(false)),
 	), s.tracked("move_task", s.handleMoveTask))
 
 	s.addTool(mcpsdk.NewTool("assign_task",
-		mcpsdk.WithDescription("Assign a task to a user or agent."),
+		mcpsdk.WithDescription("Assign a task to a user or agent. Returns a lean confirmation by default (id, status_id, assignee, updated_at); full=true returns the whole task."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("assignee_id", mcpsdk.Description("Assignee UUID. Omit to unassign.")),
 		mcpsdk.WithString("assignee_type", mcpsdk.Description("Assignee type: user, agent."), mcpsdk.DefaultString("agent")),
 		mcpsdk.WithBoolean("assign_to_self", mcpsdk.Description("Assign to the calling agent."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the complete task (all fields, verbatim) instead of the lean confirmation."), mcpsdk.DefaultBool(false)),
 	), s.tracked("assign_task", s.handleAssignTask))
 
 	s.addTool(mcpsdk.NewTool("get_task_context",
@@ -377,12 +381,13 @@ func (s *Server) registerCoreTools() {
 
 	// --- Communication ---
 	s.addTool(mcpsdk.NewTool("add_comment",
-		mcpsdk.WithDescription("Add a comment to a task. If the body @-mentions someone, the response carries a `delivery` array — one entry per mentioned handle — reporting whether it actually reached a path they consume (their task queue, a notification) or was skipped/failed and why; a `hint` field suggests the fix when there is one (e.g. assign the task). Omitted entirely when the comment mentions nobody."),
+		mcpsdk.WithDescription("Add a comment to a task. Response is lean by default: id/author/created_at and the `delivery` report, without echoing the body you just sent; full=true returns the whole comment. If the body @-mentions someone, the response carries a `delivery` array — one entry per mentioned handle — reporting whether it actually reached a path they consume (their task queue, a notification) or was skipped/failed and why; a `hint` field suggests the fix when there is one (e.g. assign the task). Omitted entirely when the comment mentions nobody."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("body", mcpsdk.Required(), mcpsdk.Description("Comment body (markdown supported).")),
 		mcpsdk.WithBoolean("is_internal", mcpsdk.Description("Mark as internal (agent-only visible)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithString("parent_comment_id", mcpsdk.Description("Parent comment ID for threading.")),
 		mcpsdk.WithObject("metadata", mcpsdk.Description("Additional metadata as key-value pairs. Set {\"informational\": true} on a comment you write on a task that is ALREADY done/cancelled when your comment needs no action from its assignee — a plain acknowledgement, \"noted\", \"nothing further from me\" — to stop the server's own follow-up-card mechanism from opening one for it. Omit it (default: not flagged) for anything that names a problem, asks a question, or reports a finding — an unflagged comment on a closed card still opens a follow-up as before, so forgetting the flag costs nothing. The flag is IGNORED if your comment also contains a `❓ Blocking @<person>` marker: a live ask to a human is never suppressed by this field.")),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the whole created comment (body echo included) instead of the lean confirmation."), mcpsdk.DefaultBool(false)),
 	), s.tracked("add_comment", s.handleAddComment))
 
 	s.addTool(mcpsdk.NewTool("add_vcs_link",
@@ -709,10 +714,11 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Comments & Artifacts ---
 	s.addTool(mcpsdk.NewTool("list_comments",
-		mcpsdk.WithDescription("List comments on a task. Paginated: call again with a higher `page` to read a thread longer than `limit`."),
+		mcpsdk.WithDescription("List comments on a task. NEWEST FIRST by default: limit=N returns the LAST N comments of the thread — enough to catch up on where it stands. To read a thread chronologically from its start, pass order=asc and page forward. Paginated: call again with a higher `page` to read a thread longer than `limit`."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithBoolean("include_internal", mcpsdk.Description("Include internal (agent-only) comments."), mcpsdk.DefaultBool(true)),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max comments to return (default 50).")),
+		mcpsdk.WithString("order", mcpsdk.Description("Sort direction: desc (default — NEWEST comments first, so limit=2 gives the LAST two comments) or asc (oldest first — chronological reading from the start of the thread). An invalid value is REFUSED by the API; an explicitly empty value is refused locally (at the API boundary it is indistinguishable from absent) — neither is silently treated as asc.")),
 		mcpsdk.WithNumber("page", mcpsdk.Description("1-based page number. Omit for the first page; use with `has_more`/`total_pages` in the response to read the rest of a thread.")),
 	), s.tracked("list_comments", s.handleListComments))
 

@@ -35,12 +35,12 @@ func TestRESTClient_GetTaskComments_RequestsNewestPageAndRestoresChronologicalOr
 	defer srv.Close()
 
 	c := NewRESTClient(srv.URL, "test-key")
-	result, err := c.GetTaskComments(context.Background(), "8a98ddd3-566c-4e81-b2d1-b92103d2ef03")
+	result, err := c.GetTaskComments(context.Background(), "8a98ddd3-566c-4e81-b2d1-b92103d2ef03", 50)
 	if err != nil {
 		t.Fatalf("GetTaskComments returned error: %v", err)
 	}
 
-	if want := "include_internal=true&sort_dir=desc"; gotQuery != want {
+	if want := "include_internal=true&page_size=50&sort_dir=desc"; gotQuery != want {
 		t.Errorf("query = %q, want %q (must request the newest page, not the server default)", gotQuery, want)
 	}
 
@@ -80,7 +80,7 @@ func TestRESTClient_GetTaskComments_EmptyAndSingleItem(t *testing.T) {
 		}))
 		defer srv.Close()
 		c := NewRESTClient(srv.URL, "test-key")
-		result, err := c.GetTaskComments(context.Background(), "no-comments-task")
+		result, err := c.GetTaskComments(context.Background(), "no-comments-task", 50)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -100,7 +100,7 @@ func TestRESTClient_GetTaskComments_EmptyAndSingleItem(t *testing.T) {
 		}))
 		defer srv.Close()
 		c := NewRESTClient(srv.URL, "test-key")
-		result, err := c.GetTaskComments(context.Background(), "one-comment-task")
+		result, err := c.GetTaskComments(context.Background(), "one-comment-task", 50)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -126,7 +126,7 @@ func TestRESTClient_GetTaskComments_PropagatesError(t *testing.T) {
 	defer srv.Close()
 
 	c := NewRESTClient(srv.URL, "test-key")
-	result, err := c.GetTaskComments(context.Background(), "missing-task")
+	result, err := c.GetTaskComments(context.Background(), "missing-task", 50)
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}

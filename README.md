@@ -346,7 +346,7 @@ did not supply; an explicit `limit` always wins.
 
 | Tool | Description |
 |------|-------------|
-| `list_comments` | List task comments |
+| `list_comments` | List task comments (newest first by default) |
 | `upload_artifact` | Upload file/code/log to a task |
 | `list_artifacts` | List task artifacts |
 | `get_artifact` | Get artifact details (`download_path`; bytes via the two-step download below) |
