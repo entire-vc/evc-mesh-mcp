@@ -68,6 +68,34 @@ func (c *recallCapture) take() []byte {
 	return b
 }
 
+// newReplayHandler serves the recorded raw /memories/search responses back in
+// call order (one per fixture case) and keeps each one in capture, exactly like
+// the live proxy does. Any other path is 404; running past the recording is 500,
+// so a snapshot that does not match the fixture fails loudly instead of cycling.
+func newReplayHandler(raws [][]byte, capture *recallCapture) http.Handler {
+	var mu sync.Mutex
+	next := 0
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/memories/search" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if next >= len(raws) {
+			http.Error(w, "replay exhausted", http.StatusInternalServerError)
+			return
+		}
+		b := raws[next]
+		next++
+		capture.mu.Lock()
+		capture.last = b
+		capture.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(b)
+	})
+}
+
 type splitStats struct {
 	calls, empties, used, measurable, hitBefore, hitAfter, sumBefore, sumAfter int
 }
@@ -86,8 +114,21 @@ func TestRecallFixtureLive(t *testing.T) {
 	key := os.Getenv("MESH_AGENT_KEY")
 	wsID := os.Getenv("MESH_LIVE_FIXTURE_WORKSPACE")
 	file := os.Getenv("MESH_LIVE_FIXTURE_FILE")
+	replayFile := os.Getenv("MESH_LIVE_FIXTURE_REPLAY")
+	if replayFile != "" {
+		// Frozen-snapshot mode: no server, no key. The raw responses of an earlier
+		// live run (MESH_LIVE_FIXTURE_DUMP) are served back in call order, so
+		// different ranking logic can be compared on exactly the same corpus.
+		if file == "" {
+			file = replayFile
+		}
+		if wsID == "" {
+			wsID = uuid.NewString()
+		}
+		baseURL, key = "http://replay.invalid", "replay"
+	}
 	if baseURL == "" || key == "" || wsID == "" || file == "" {
-		t.Skip("live fixture needs MESH_LIVE_FIXTURE_URL, MESH_LIVE_FIXTURE_WORKSPACE, MESH_LIVE_FIXTURE_FILE and MESH_AGENT_KEY")
+		t.Skip("live fixture needs MESH_LIVE_FIXTURE_URL, MESH_LIVE_FIXTURE_WORKSPACE, MESH_LIVE_FIXTURE_FILE and MESH_AGENT_KEY (or MESH_LIVE_FIXTURE_REPLAY)")
 	}
 	data, err := os.ReadFile(file)
 	if err != nil {
@@ -96,6 +137,25 @@ func TestRecallFixtureLive(t *testing.T) {
 	var triples []recallTriple
 	if err := json.Unmarshal(data, &triples); err != nil {
 		t.Fatalf("parse fixture: %v", err)
+	}
+	var replayRaw [][]byte
+	if replayFile != "" {
+		rd, err := os.ReadFile(replayFile)
+		if err != nil {
+			t.Fatalf("read replay snapshot: %v", err)
+		}
+		var rows []struct {
+			Raw json.RawMessage `json:"raw"`
+		}
+		if err := json.Unmarshal(rd, &rows); err != nil {
+			t.Fatalf("parse replay snapshot: %v", err)
+		}
+		if len(rows) != len(triples) {
+			t.Fatalf("snapshot has %d rows, fixture has %d cases", len(rows), len(triples))
+		}
+		for _, r := range rows {
+			replayRaw = append(replayRaw, r.Raw)
+		}
 	}
 	if len(triples) == 0 {
 		t.Fatal("fixture is empty")
@@ -126,7 +186,11 @@ func TestRecallFixtureLive(t *testing.T) {
 			return nil
 		},
 	}
-	srv := httptest.NewServer(proxy)
+	var handler http.Handler = proxy
+	if replayFile != "" {
+		handler = newReplayHandler(replayRaw, capture)
+	}
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	ws := uuid.MustParse(wsID)
