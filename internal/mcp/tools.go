@@ -2478,11 +2478,18 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	// weakest candidates padded to a full page.
 	best, scored := recallTopScore(items)
 	noisy := recallNoisyResult(result, items, query, best, scored)
-	if !scored || best < recallRelevanceThreshold || noisy {
+	// The threshold is not an unconditional kill anymore (2026-10-03 fixture): on a
+	// server that reports arm counts, only the noise gate decides — a query
+	// whose word occurs in a returned entry is answerable however low its
+	// fused rank. The bare threshold still gates servers without arm counts,
+	// where the noise gate cannot run.
+	if !scored || noisy || (best < recallRelevanceThreshold && !recallArmCounts(result)) {
 		reason := fmt.Sprintf("no candidate cleared the relevance threshold (best score %.5f, threshold %.5f)",
 			best, recallRelevanceThreshold)
-		if noisy {
-			reason = fmt.Sprintf("best score %.5f is below the noise ceiling %.5f (sparse_rows=%d, dense_rows=%d): nothing ranked near the top of either arm",
+		if !scored {
+			reason = "no returned entry carried a score the gate could judge"
+		} else if noisy {
+			reason = fmt.Sprintf("best score %.5f is below the noise ceiling %.5f (sparse_rows=%d, dense_rows=%d): nothing ranked near the top of either arm and no query word occurs in any returned entry",
 				best, recallNoiseCeiling, int(result["sparse_rows"].(float64)), int(result["dense_rows"].(float64)))
 		}
 		result["items"] = []any{}
@@ -2568,6 +2575,16 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 // traffic produces under this lower, safer floor. Formal acceptance against
 // a fixed fixture of real queries is the next checkpoint to retune this if
 // needed.
+//
+// Measured on the re-recorded 2026-10-03 fixture snapshot (222 calls +
+// 3 live garbage probes): applied unconditionally, this threshold killed real
+// queries BEFORE the noise gate's overlap check could rescue them. The three
+// lost cases sat at fused 0.0078/0.0088/0.0098 — below the bar — with their
+// query tokens present in the returned keys ("gotcha-verify-driver-…",
+// "fiddlersessiondead-…", "solution-checkout-…"), while garbage sits at
+// 0.011475 (dense-arm rank 1 alone), ABOVE the bar: the unconditional cut
+// only ever hit the real ones. It now applies only when the server reports no
+// arm counts, where recallNoisyResult cannot run.
 const recallRelevanceThreshold = 0.0100
 
 // recallNoiseCeiling is the second gate signal (#858f3a13). The dense arm
@@ -2581,26 +2598,48 @@ const recallRelevanceThreshold = 0.0100
 // also ate a real identifier-only query (same 0.01148, sparse_rows=0), so it
 // only fires when no query word occurs in any returned entry. A missing sparse_rows
 // field (older server) disables the signal; dense_rows must be > 0.
+//
+// 2026-10-03 measurement note: the ceiling cannot move down to separate the
+// classes — on the 03.10 re-record the lost real queries (fused 0.0078–0.0098)
+// sit BELOW garbage (0.011475), so any ceiling that keeps garbage out also
+// keeps them out. Lexical overlap is the only discriminator below the ceiling.
 const recallNoiseCeiling = 0.0120
 
 // recallNoisyResult reports whether the response looks like dense-arm noise:
 // best fused score below recallNoiseCeiling on a server that reports arm
 // counts and returned dense rows, AND no word of the query appears anywhere in
-// the returned entries. The fused score is rank-only, so a garbage query and a
-// real identifier-only query (acceptance #858f3a13, fixture 9) both land at
-// 0.01148 with sparse_rows=0; the lexical overlap is what tells them apart.
+// the returned entries. The fused score is rank-only, so a garbage query, a
+// real identifier-only query (acceptance #858f3a13, fixture 9) and a real
+// paraphrase all land in the same band; the lexical overlap is what tells the
+// real ones apart — including below recallRelevanceThreshold, which is why
+// that threshold no longer empties a response unconditionally (2026-10-03 fixture: it
+// cut "review-verify-driver" — used key at server rank 1, fused 0.0078, query
+// token in the returned key — before this check could rescue it).
+//
+// A third signal — the raw dense cosine (dense_score, exposed by evc-mesh
+// !1065) — was measured for this gate and rejected (re-recorded 03.10
+// snapshot, 222 cases + 3 live garbage probes): garbage tops out at cosine
+// 0.839–0.864 while the lost real queries top at ~0.86, overlapping bands, so
+// no floor value can separate them. dense_score remains a diagnostic field.
 func recallNoisyResult(result map[string]any, items []any, query string, best float64, scored bool) bool {
 	if !scored || best >= recallNoiseCeiling {
 		return false
 	}
+	if !recallArmCounts(result) {
+		return false
+	}
+	return !recallQueryOverlapsItems(query, items)
+}
+
+// recallArmCounts reports whether the server populated the arm-count envelope
+// the noise gate needs (sparse_rows present, dense_rows > 0). Servers without
+// it are gated by recallRelevanceThreshold alone — the pre-#858f3a13 contract.
+func recallArmCounts(result map[string]any) bool {
 	if _, ok := result["sparse_rows"].(float64); !ok {
 		return false
 	}
 	dense, _ := result["dense_rows"].(float64)
-	if dense <= 0 {
-		return false
-	}
-	return !recallQueryOverlapsItems(query, items)
+	return dense > 0
 }
 
 // recallMinOverlapTokenLen: shorter words ("the", "mcp", "py") are too common
