@@ -1548,7 +1548,57 @@ func (s *Server) handleGetMyTasks(ctx context.Context, request mcpsdk.CallToolRe
 		return errResult("failed to get tasks: %v", err)
 	}
 
+	// Descriptions dominate this payload: each item carries its full text, so
+	// a default 50-task page measured ~162k chars live (≈3.2k per card,
+	// 2026-10-03), and it sits in the caller's context for the rest of the
+	// session — the same cost mechanism recall was trimmed for. Default view
+	// keeps the first line (the summary authors write first); full=true
+	// restores the old shape, and the full text always stays one
+	// get_task(task_id) call away.
+	if !mcpsdk.ParseBoolean(request, "full", false) {
+		if tasks, ok := result["tasks"].([]any); ok {
+			result["tasks"] = trimTaskSummaries(tasks)
+		}
+	}
+
 	return jsonResult(result)
+}
+
+// myTasksDescChars caps a task's description in the get_my_tasks list view.
+// 200 chars covers the summary-first-line convention card authors write;
+// anything longer is body prose a list caller didn't ask to re-read.
+const myTasksDescChars = 200
+
+// trimTaskSummaries trims each task's description to its first line, at most
+// myTasksDescChars runes (rune-safe via firstLineTruncated), and stamps
+// description_truncated=true when text was cut — mirroring recall's
+// content_truncated marker. Items whose description the server already
+// blanked (empty string, has_description reflecting real content — the API's
+// own >200KB page trim) pass through untouched. Routing fields
+// (id/title/status/priority/labels/assignee) are never modified.
+func trimTaskSummaries(tasks []any) []any {
+	out := make([]any, 0, len(tasks))
+	for _, it := range tasks {
+		m, ok := it.(map[string]any)
+		if !ok {
+			out = append(out, it)
+			continue
+		}
+		desc, _ := m["description"].(string)
+		if desc == "" {
+			out = append(out, m)
+			continue
+		}
+		if _, has := m["has_description"]; !has {
+			m["has_description"] = true
+		}
+		if trimmed := firstLineTruncated(desc, myTasksDescChars); trimmed != desc {
+			m["description"] = trimmed
+			m["description_truncated"] = true
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // ============================================================================
