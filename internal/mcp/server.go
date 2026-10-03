@@ -285,11 +285,11 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("get_context", s.handleGetContext))
 
 	s.addTool(mcpsdk.NewTool("get_my_tasks",
-		mcpsdk.WithDescription("Get YOUR assigned tasks (ACP Step 5). Filter by status_category to focus on active work. Use at session start and after completing tasks to pick up the next assignment. Each item's description is trimmed to its first line (≤200 chars; description_truncated marks cuts, has_description says whether there is more) — pass full=true for whole descriptions, or get_task for one card's full details."),
+		mcpsdk.WithDescription("Get YOUR assigned tasks (ACP Step 5). Filter by status_category to focus on active work. Use at session start and after completing tasks to pick up the next assignment. Each item's description is trimmed to its first line (≤200 chars; description_truncated marks cuts, has_description says whether there is more) and envelope fields (url, created_by/created_at, parent_task_id, assignee_id, empty counters) are omitted — pass full=true for the complete items, or get_task for one card's full details."),
 		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: backlog, todo, in_progress, review, done, cancelled.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Filter by project.")),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 50).")),
-		mcpsdk.WithBoolean("full", mcpsdk.Description("Return full task descriptions instead of first-line (≤200 chars) summaries."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return complete items (full descriptions and all envelope fields) instead of the lean first-line view."), mcpsdk.DefaultBool(false)),
 	), s.tracked("get_my_tasks", s.handleGetMyTasks))
 
 	// --- Task CRUD ---

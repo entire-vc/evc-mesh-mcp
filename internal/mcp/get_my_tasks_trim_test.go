@@ -149,7 +149,7 @@ func TestHandleGetMyTasks_Default_TrimsLongDescriptions(t *testing.T) {
 	if item["has_description"] != true {
 		t.Fatalf("has_description must stay true on a trimmed item: %v", item)
 	}
-	for _, key := range []string{"id", "title", "status_id", "priority", "labels", "assignee_name", "assignee_id", "assignee_type"} {
+	for _, key := range []string{"id", "title", "status_id", "priority", "labels", "assignee_name"} {
 		if _, ok := item[key]; !ok {
 			t.Fatalf("routing field %q was dropped from the trimmed item: %v", key, item)
 		}
@@ -226,5 +226,89 @@ func TestHandleGetMyTasks_FullTrue_ReturnsFullDescriptions(t *testing.T) {
 	}
 	if jsonHasKeyAnywhere(t, out, "description_truncated") {
 		t.Fatalf("full=true response must not carry description_truncated markers: %v", out)
+	}
+}
+
+// leanEnvelopeFixture is one item shaped like the live REST response, with
+// every envelope field the lean default view must drop.
+func leanEnvelopeFixture() map[string]any {
+	item := map[string]any{
+		"id": "82b388a0-81b9-4296-a3d5-614149865a75", "title": "T", "status_id": "st-1",
+		"priority": "medium", "labels": []any{"mcp"}, "assignee_name": "Garfield",
+		"due_date": nil, "updated_at": "2026-10-03T00:51:35Z", "project_id": "p-1",
+		"description": "d", "has_description": true, "human_gate": false,
+		"url": "https://mesh.entire.host/t/x", "parent_task_id": nil,
+		"assignee_id": "a-1", "assignee_type": "agent", "assigned_by": "",
+		"created_by": "a-2", "created_by_name": "Linus", "created_by_type": "agent",
+		"created_at": "2026-09-24T00:18:46Z", "completed_at": nil,
+		"artifact_count": float64(0), "vcs_link_count": float64(0), "completion_signal": false,
+		"delegation_level": "auto", "position": float64(0), "human_gate_class": "hard",
+		"is_shipped": false, "custom_fields": map[string]any{}, "dod_checks": map[string]any{},
+		"estimated_hours": nil, "start_after": nil, "subtask_count": float64(0),
+	}
+	return map[string]any{"count": 1, "total_count": 1, "has_more": false, "tasks": []any{item}}
+}
+
+func leanItem(t *testing.T, out map[string]any) map[string]any {
+	t.Helper()
+	tasks, _ := out["tasks"].([]any)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %v", out["tasks"])
+	}
+	return tasks[0].(map[string]any)
+}
+
+// TestHandleGetMyTasks_Default_LeanEnvelope: the default view omits the
+// envelope fields but keeps every routing field; red before leanTaskSummaries.
+func TestHandleGetMyTasks_Default_LeanEnvelope(t *testing.T) {
+	out := callGetMyTasks(t, myTasksHarness(t, leanEnvelopeFixture()), map[string]any{})
+	item := leanItem(t, out)
+	for _, k := range []string{
+		"url", "parent_task_id", "assignee_id", "assignee_type", "assigned_by", "created_by",
+		"created_by_name", "created_by_type", "created_at", "completed_at", "artifact_count",
+		"vcs_link_count", "completion_signal", "delegation_level", "position", "human_gate_class",
+		"is_shipped", "custom_fields", "dod_checks", "estimated_hours", "start_after", "subtask_count",
+	} {
+		if _, ok := item[k]; ok {
+			t.Errorf("lean default view must not carry %q: %v", k, item)
+		}
+	}
+	for _, k := range []string{"id", "title", "status_id", "priority", "labels", "assignee_name", "due_date", "updated_at", "project_id", "has_description"} {
+		if _, ok := item[k]; !ok {
+			t.Errorf("routing field %q dropped from lean view: %v", k, item)
+		}
+	}
+	b, _ := json.Marshal(item)
+	if len(b) > 600 {
+		t.Errorf("lean item is %d chars, budget 600: %s", len(b), b)
+	}
+}
+
+// TestHandleGetMyTasks_Default_LeanKeepsRealValues: empty-only drops must not
+// hide a real estimate, subtask count or custom field.
+func TestHandleGetMyTasks_Default_LeanKeepsRealValues(t *testing.T) {
+	fx := leanEnvelopeFixture()
+	item := fx["tasks"].([]any)[0].(map[string]any)
+	item["estimated_hours"] = float64(3)
+	item["subtask_count"] = float64(2)
+	item["custom_fields"] = map[string]any{"k": "v"}
+	item["artifact_count"] = float64(1)
+	item["vcs_link_count"] = float64(2)
+	item["completion_signal"] = true
+	got := leanItem(t, callGetMyTasks(t, myTasksHarness(t, fx), map[string]any{}))
+	for _, k := range []string{"estimated_hours", "subtask_count", "custom_fields", "artifact_count", "vcs_link_count", "completion_signal"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("real value of %q was dropped: %v", k, got)
+		}
+	}
+}
+
+// TestHandleGetMyTasks_FullTrue_KeepsEnvelope: full=true is the old shape.
+func TestHandleGetMyTasks_FullTrue_KeepsEnvelope(t *testing.T) {
+	fx := leanEnvelopeFixture()
+	want := len(fx["tasks"].([]any)[0].(map[string]any))
+	got := leanItem(t, callGetMyTasks(t, myTasksHarness(t, fx), map[string]any{"full": true}))
+	if len(got) != want {
+		t.Fatalf("full=true changed the item shape: %d keys, want %d: %v", len(got), want, got)
 	}
 }

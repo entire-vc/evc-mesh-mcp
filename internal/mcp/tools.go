@@ -1557,7 +1557,7 @@ func (s *Server) handleGetMyTasks(ctx context.Context, request mcpsdk.CallToolRe
 	// get_task(task_id) call away.
 	if !mcpsdk.ParseBoolean(request, "full", false) {
 		if tasks, ok := result["tasks"].([]any); ok {
-			result["tasks"] = trimTaskSummaries(tasks)
+			result["tasks"] = leanTaskSummaries(trimTaskSummaries(tasks))
 		}
 	}
 
@@ -1599,6 +1599,63 @@ func trimTaskSummaries(tasks []any) []any {
 		out = append(out, m)
 	}
 	return out
+}
+
+// myTasksLeanDropKeys are per-item fields the default get_my_tasks view omits.
+// After the description trim (!136) a 50-task page still measured ~60k chars
+// live (2026-10-03, task 82b388a0): ~1.1k chars of envelope per card, mostly
+// UUID cross-references, timestamps and a url derivable from id. None of them
+// is needed to pick the next card; get_task(id) or full=true returns them.
+var myTasksLeanDropKeys = []string{
+	"url", "parent_task_id", "assignee_id", "assignee_type", "assigned_by",
+	"created_by", "created_by_name", "created_by_type", "created_at", "completed_at",
+	"delegation_level", "position", "human_gate_class", "is_shipped",
+}
+
+// myTasksLeanDropWhenEmpty are dropped only when null/empty/zero/false, so a
+// real value (estimate, start_after, custom fields, subtasks) is still shown.
+var myTasksLeanDropWhenEmpty = []string{
+	"custom_fields", "dod_checks", "estimated_hours", "start_after", "subtask_count",
+	"artifact_count", "vcs_link_count", "completion_signal",
+}
+
+// leanTaskSummaries strips the envelope fields above from each item. Routing
+// fields (id/title/status_id/priority/labels/assignee_name/due_date/
+// updated_at/project_id) and gate/checkout context are never touched.
+func leanTaskSummaries(tasks []any) []any {
+	for _, it := range tasks {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, k := range myTasksLeanDropKeys {
+			delete(m, k)
+		}
+		for _, k := range myTasksLeanDropWhenEmpty {
+			if isEmptyJSONValue(m[k]) {
+				delete(m, k)
+			}
+		}
+	}
+	return tasks
+}
+
+func isEmptyJSONValue(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case string:
+		return x == ""
+	case bool:
+		return !x
+	case float64:
+		return x == 0
+	case map[string]any:
+		return len(x) == 0
+	case []any:
+		return len(x) == 0
+	}
+	return false
 }
 
 // ============================================================================
