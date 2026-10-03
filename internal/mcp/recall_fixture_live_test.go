@@ -303,17 +303,19 @@ func TestRecallFixtureLive(t *testing.T) {
 		div(all.sumBefore, all.calls), div(all.sumAfter, all.calls), all.empties, all.gateLosses)
 
 	// MESH_LIVE_FIXTURE_ENFORCE=1 turns the acceptance thresholds into
-	// assertions: per-item top-3 >= 60% (on all calls and on the hold-out half
-	// alone) and average default response <= 9000 chars.
+	// assertions: per-item top-3 >= 65% (on all calls and >= 62% on the hold-out
+	// half alone) and average default response <= 9000 chars. Raised from 60/60
+	// on 2026-10-03 when the importance tie-bands rerank moved the fixture to
+	// 65%+ overall; the holdout bar keeps the un-tuned half honest.
 	if os.Getenv("MESH_LIVE_FIXTURE_ENFORCE") == "1" {
 		if all.measurable == 0 {
 			t.Fatal("no measurable used keys: fixture does not match this corpus")
 		}
-		if pct(all.hitAfter, all.measurable) < 60 {
-			t.Errorf("top-3 %d/%d below 60%%", all.hitAfter, all.measurable)
+		if pct(all.hitAfter, all.measurable) < 65 {
+			t.Errorf("top-3 %d/%d below 65%%", all.hitAfter, all.measurable)
 		}
-		if h := stats["holdout"]; h.measurable > 0 && pct(h.hitAfter, h.measurable) < 60 {
-			t.Errorf("hold-out top-3 %d/%d below 60%%", h.hitAfter, h.measurable)
+		if h := stats["holdout"]; h.measurable > 0 && pct(h.hitAfter, h.measurable) < 62 {
+			t.Errorf("hold-out top-3 %d/%d below 62%%", h.hitAfter, h.measurable)
 		}
 		if avg := div(all.sumAfter, all.calls); avg > 9000 {
 			t.Errorf("average default response %d chars exceeds 9000", avg)
