@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -263,17 +264,20 @@ func leanItem(t *testing.T, out map[string]any) map[string]any {
 func TestHandleGetMyTasks_Default_LeanEnvelope(t *testing.T) {
 	out := callGetMyTasks(t, myTasksHarness(t, leanEnvelopeFixture()), map[string]any{})
 	item := leanItem(t, out)
+	// due_date/human_gate ride the value-conditional list: nil/false serialize
+	// to nothing (live pages carried 49-50 nulls), a real value stays.
 	for _, k := range []string{
 		"url", "parent_task_id", "assignee_id", "assignee_type", "assigned_by", "created_by",
 		"created_by_name", "created_by_type", "created_at", "completed_at", "artifact_count",
 		"vcs_link_count", "completion_signal", "delegation_level", "position", "human_gate_class",
 		"is_shipped", "custom_fields", "dod_checks", "estimated_hours", "start_after", "subtask_count",
+		"due_date", "human_gate",
 	} {
 		if _, ok := item[k]; ok {
 			t.Errorf("lean default view must not carry %q: %v", k, item)
 		}
 	}
-	for _, k := range []string{"id", "title", "status_id", "priority", "labels", "assignee_name", "due_date", "updated_at", "project_id", "has_description"} {
+	for _, k := range []string{"id", "title", "status_id", "priority", "labels", "assignee_name", "updated_at", "project_id", "has_description"} {
 		if _, ok := item[k]; !ok {
 			t.Errorf("routing field %q dropped from lean view: %v", k, item)
 		}
@@ -285,7 +289,7 @@ func TestHandleGetMyTasks_Default_LeanEnvelope(t *testing.T) {
 }
 
 // TestHandleGetMyTasks_Default_LeanKeepsRealValues: empty-only drops must not
-// hide a real estimate, subtask count or custom field.
+// hide a real estimate, subtask count, custom field, deadline or armed gate.
 func TestHandleGetMyTasks_Default_LeanKeepsRealValues(t *testing.T) {
 	fx := leanEnvelopeFixture()
 	item := fx["tasks"].([]any)[0].(map[string]any)
@@ -295,20 +299,24 @@ func TestHandleGetMyTasks_Default_LeanKeepsRealValues(t *testing.T) {
 	item["artifact_count"] = float64(1)
 	item["vcs_link_count"] = float64(2)
 	item["completion_signal"] = true
+	item["due_date"] = "2026-10-10T12:00:00Z"
+	item["human_gate"] = true
 	got := leanItem(t, callGetMyTasks(t, myTasksHarness(t, fx), map[string]any{}))
-	for _, k := range []string{"estimated_hours", "subtask_count", "custom_fields", "artifact_count", "vcs_link_count", "completion_signal"} {
+	for _, k := range []string{"estimated_hours", "subtask_count", "custom_fields", "artifact_count", "vcs_link_count", "completion_signal", "due_date", "human_gate"} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("real value of %q was dropped: %v", k, got)
 		}
 	}
 }
 
-// TestHandleGetMyTasks_FullTrue_KeepsEnvelope: full=true is the old shape.
+// TestHandleGetMyTasks_FullTrue_KeepsEnvelope: full=true is the old shape —
+// the fixture item verbatim, keys AND values. A key-count check alone would
+// let a dropped-plus-added field slip through (codex-review P2, 2026-10-03).
 func TestHandleGetMyTasks_FullTrue_KeepsEnvelope(t *testing.T) {
 	fx := leanEnvelopeFixture()
-	want := len(fx["tasks"].([]any)[0].(map[string]any))
+	want := fx["tasks"].([]any)[0].(map[string]any)
 	got := leanItem(t, callGetMyTasks(t, myTasksHarness(t, fx), map[string]any{"full": true}))
-	if len(got) != want {
-		t.Fatalf("full=true changed the item shape: %d keys, want %d: %v", len(got), want, got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("full=true must return the fixture item verbatim:\n got: %v\nwant: %v", got, want)
 	}
 }

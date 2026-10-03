@@ -1614,14 +1614,18 @@ var myTasksLeanDropKeys = []string{
 
 // myTasksLeanDropWhenEmpty are dropped only when null/empty/zero/false, so a
 // real value (estimate, start_after, custom fields, subtasks) is still shown.
+// due_date and human_gate joined after the first live page (still 27k chars,
+// 2026-10-03) carried human_gate:false on all 50 items and due_date:null on
+// 49 — a set deadline or an armed gate must survive, the empty forms don't.
 var myTasksLeanDropWhenEmpty = []string{
 	"custom_fields", "dod_checks", "estimated_hours", "start_after", "subtask_count",
-	"artifact_count", "vcs_link_count", "completion_signal",
+	"artifact_count", "vcs_link_count", "completion_signal", "due_date", "human_gate",
 }
 
 // leanTaskSummaries strips the envelope fields above from each item. Routing
-// fields (id/title/status_id/priority/labels/assignee_name/due_date/
-// updated_at/project_id) and gate/checkout context are never touched.
+// fields (id/title/status_id/priority/labels/assignee_name/updated_at/
+// project_id) and gate/checkout context are never touched; due_date and
+// human_gate are value-conditional (see myTasksLeanDropWhenEmpty).
 func leanTaskSummaries(tasks []any) []any {
 	for _, it := range tasks {
 		m, ok := it.(map[string]any)
