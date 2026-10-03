@@ -159,7 +159,7 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 		if err != nil {
 			return errResult("failed to search tasks: %v", err)
 		}
-		return jsonResult(result)
+		return jsonResult(leanTasksPage(result, mcpsdk.ParseBoolean(request, "full", false)))
 	}
 
 	// status_category: resolve to all matching status IDs via the API.
@@ -188,7 +188,26 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 		return errResult("failed to list tasks: %v", err)
 	}
 
-	return jsonResult(result)
+	return jsonResult(leanTasksPage(result, mcpsdk.ParseBoolean(request, "full", false)))
+}
+
+// leanTasksPage applies the get_my_tasks lean default view to a list_tasks
+// result page: descriptions cut to their first line (see trimTaskSummaries)
+// and the envelope fields stripped (see leanTaskSummaries). The same cost
+// mechanism as get_my_tasks — a description-heavy item is ~3k chars and a
+// default page of them sits in the caller's context for the rest of the
+// session; a 30-task done-walk measured 87k chars live (2026-10-03, #56b00943)
+// against get_my_tasks' already-trimmed 25k at count=50. Both list_tasks
+// exits (project listing and workspace search) share the same items shape,
+// so they share the same lean view; full=true returns the page untouched.
+func leanTasksPage(result map[string]any, full bool) map[string]any {
+	if full {
+		return result
+	}
+	if items, ok := result["items"].([]any); ok {
+		result["items"] = leanTaskSummaries(trimTaskSummaries(items))
+	}
+	return result
 }
 
 // ============================================================================
