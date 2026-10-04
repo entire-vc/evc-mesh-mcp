@@ -57,6 +57,7 @@ var toolKinds = map[string]toolKind{
 	"list_sub_agents":          kindRead,
 	"list_tasks":               kindRead,
 	"poll_tasks":               kindRead,
+	"get_memory":               kindRead,
 	"recall":                   kindRead,
 	"recall_with_graph":        kindRead,
 	"search_docs":              kindRead,

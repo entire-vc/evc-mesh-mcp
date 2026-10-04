@@ -24,7 +24,7 @@ import (
 
 // Profile constants for MCP server tool sets.
 const (
-	// ProfileCore registers only the 25 essential tools for lightweight agents.
+	// ProfileCore registers only the 26 essential tools for lightweight agents.
 	ProfileCore = "core"
 	// ProfileFull registers all tools (core + advanced). This is the default.
 	ProfileFull = "full"
@@ -145,7 +145,7 @@ type ServerConfig struct {
 	Session *AgentSession
 	// RESTClient is the HTTP client used to call the Mesh REST API.
 	RESTClient *RESTClient
-	// Profile controls which tools are registered: "core" (25 essential tools)
+	// Profile controls which tools are registered: "core" (26 essential tools)
 	// or "full" (all tools, default).
 	Profile string
 	// SetupHint, when non-empty, puts the server in unconfigured mode: it
@@ -248,7 +248,7 @@ func (s *Server) MCPServer() *mcpserver.MCPServer {
 	return s.mcpServer
 }
 
-// registerCoreTools registers the 25 essential tools with optimized, directive descriptions.
+// registerCoreTools registers the 26 essential tools with optimized, directive descriptions.
 func (s *Server) registerCoreTools() {
 	// --- ACP / Session tools ---
 	s.addTool(mcpsdk.NewTool("heartbeat",
@@ -415,7 +415,7 @@ func (s *Server) registerCoreTools() {
 
 	// --- Memory ---
 	s.addTool(mcpsdk.NewTool("recall",
-		mcpsdk.WithDescription("SEARCH memory by keywords. Use to find a SPECIFIC piece of knowledge, e.g. 'API convention' or 'license decision'. Returns ranked results with scores. Only the top 3 items (after reranking: exact/partial key match and matching project/scope float up) come back with full content; the rest carry just key+snippet+score — pass full=true for complete text on all of them. Below the relevance threshold, returns an empty list with an explanation instead of weak matches. For loading ALL project knowledge at session start, use get_project_knowledge instead. Set include_archived=true to retrieve archived memories."),
+		mcpsdk.WithDescription("SEARCH memory by keywords. Use to find a SPECIFIC piece of knowledge, e.g. 'API convention' or 'license decision'. Returns ranked results with scores. Default view is compact: per item key, tags, score, created_at, importance_score, scope and the first ~300 chars of content (content_truncated/content_chars say when it was cut). For the whole text of one entry call get_memory(key); full=true returns every item uncut with all stored fields. Below the relevance threshold, returns an empty list with an explanation instead of weak matches. For loading ALL project knowledge at session start, use get_project_knowledge instead. Set include_archived=true to retrieve archived memories."),
 		mcpsdk.WithString("query", mcpsdk.Required(), mcpsdk.Description("Full-text search query.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Filter to a specific project.")),
 		mcpsdk.WithString("scope", mcpsdk.Description("Filter by scope: workspace, project, agent, or all (default).")),
@@ -432,8 +432,16 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithBoolean("include_archived", mcpsdk.Description("Include archived memories in results (default false)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 10, max 50). This is a hard bound: the response never contains more than limit items. When knowledge-graph boost is enabled, a share of the page (limit/4, at least 1 when limit>=2) may be filled with graph-expanded neighbours, marked graph_boost=true and provenance=via:graph — they take the tail slots instead of being added on top. Rows that fail scope/tags are dropped, never returned unmarked, whether they arrived by retrieval, by pinning, or by graph expansion.")),
 		mcpsdk.WithNumber("offset", mcpsdk.Description("Pagination offset (default 0).")),
-		mcpsdk.WithBoolean("full", mcpsdk.Description("Return every item in full, with all stored fields and uncut content (default false: only the top 3 carry content, cut at 2000 chars with content_truncated/content_chars set, and bookkeeping fields such as agent_id, workspace_id, simhash and decay scores are left out; the rest are key+snippet+score). A second identical call with full=true returns items in the same order, so it works as an on-demand full-text fetch for anything past rank 3 or for a cut item."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return every item in full, with all stored fields and uncut content (default false: compact view, content cut at ~300 chars with content_truncated/content_chars set, bookkeeping fields such as agent_id, workspace_id, simhash and decay scores are left out). Prefer get_memory(key) to read one cut entry in full; full=true re-fetches the whole page uncut."), mcpsdk.DefaultBool(false)),
 	), s.tracked("recall", s.handleRecall))
+
+	s.addTool(mcpsdk.NewTool("get_memory",
+		mcpsdk.WithDescription("Full text of ONE memory by exact key (the `key` field recall returns). Use after recall when an item's content_truncated is true and you need the rest. Errors if no entry has exactly that key."),
+		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Exact memory key, as returned by recall.")),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Project of a project-scoped entry, if the key exists in several.")),
+		mcpsdk.WithString("scope", mcpsdk.Description("Filter by scope: workspace, project, agent, or all (default).")),
+		mcpsdk.WithBoolean("include_archived", mcpsdk.Description("Also look among archived memories (default false)."), mcpsdk.DefaultBool(false)),
+	), s.tracked("get_memory", s.handleGetMemory))
 
 	s.addTool(mcpsdk.NewTool("recall_with_graph",
 		mcpsdk.WithDescription("Search memory with Knowledge Graph expansion. Seeds from hybrid recall, then BFS-traverses memory_edges up to hops depth. Returns memories ranked by composite score with hop_distance and provenance fields. Use when you want broader context — related decisions, connected incidents, derived learnings."),

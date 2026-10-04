@@ -26,7 +26,7 @@ Pick one:
 ## 3. Add it to the MCP settings
 
 Use the absolute path to the binary. The tool profile is set with
-`MESH_MCP_PROFILE` (`core` = 25 everyday tools, `full` = 63 tools; default `full`).
+`MESH_MCP_PROFILE` (`core` = 26 everyday tools, `full` = 64 tools; default `full`).
 
 ```json
 {

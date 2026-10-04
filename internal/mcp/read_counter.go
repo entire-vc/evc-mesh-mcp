@@ -11,6 +11,7 @@ import (
 // readToolNames lists the MCP tools counted as memory-read operations.
 var readToolNames = map[string]bool{
 	"recall":                true,
+	"get_memory":            true,
 	"get_project_knowledge": true,
 	"get_context":           true,
 	"get_canonical_updates": true,

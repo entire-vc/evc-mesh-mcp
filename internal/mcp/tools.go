@@ -2651,19 +2651,75 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 		}
 	}
 
-	// Full text for the top recallFullCount items (as before); beyond that, key
-	// + first-line snippet + score only, unless the caller asked for everything
-	// with full=true. This is the backward-compat default: a caller that never
-	// sets full=true gets exactly this shape, which is the change itself — old
-	// callers do not regress to a missing field, they regress to a smaller one.
+	// Compact view by default: every item is cut to the fields a reader acts on
+	// and ~recallContentChars of content (flagged when cut). full=true returns
+	// the server's items untouched; get_memory(key) fetches one entry whole.
 	if !full {
 		if items, ok := result["items"].([]any); ok {
-			result["items"] = trimRecallItems(items)
+			result["items"] = compactRecallItems(items)
 		}
 	}
 
 	s.recordMemoryRead(ctx, "recall")
 	return jsonResult(result)
+}
+
+// get_memory scans at most getMemoryPages pages of getMemoryPageSize results.
+const (
+	getMemoryPageSize = 50
+	getMemoryPages    = 4
+)
+
+// handleGetMemory returns the full text of ONE memory by exact key. The backend
+// has no get-by-key endpoint, so this recalls on the key and picks the entry whose
+// key matches exactly; the relevance gate of handleRecall is deliberately not
+// applied (a known key is not a search), nor is the importance floor.
+func (s *Server) handleGetMemory(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	session := s.getSession(ctx)
+	if session == nil {
+		return errResult("not authenticated: no agent session")
+	}
+	key := mcpsdk.ParseString(request, "key", "")
+	if key == "" {
+		return errResult("key is required")
+	}
+	projectID := mcpsdk.ParseString(request, "project_id", "")
+	scope := mcpsdk.ParseString(request, "scope", "")
+
+	// Page through the search until the exact key shows up: the key is a query
+	// like any other, so its entry is not guaranteed to sit in the first page.
+	// Bounded (getMemoryPages x getMemoryPageSize) so a typo cannot scan forever.
+	includeArchived := mcpsdk.ParseBoolean(request, "include_archived", false)
+	// A key is an address, not a search: a superseded entry is still the entry at
+	// that key, so the server default (exclude superseded) must not hide it.
+	includeSuperseded := false
+	for page := 0; page < getMemoryPages; page++ {
+		result, err := s.getRESTClient(ctx).RecallMemories(ctx, RecallMemoriesParams{
+			Query:             key,
+			WorkspaceID:       session.WorkspaceID.String(),
+			ProjectID:         projectID,
+			Scope:             scope,
+			ImportanceMin:     0,
+			IncludeArchived:   includeArchived,
+			ExcludeSuperseded: &includeSuperseded,
+			Limit:             getMemoryPageSize,
+			Offset:            page * getMemoryPageSize,
+		})
+		if err != nil {
+			return errResult("get_memory failed: %v", err)
+		}
+		items, _ := result["items"].([]any)
+		for _, it := range items {
+			if m, ok := it.(map[string]any); ok && m["key"] == key {
+				s.recordMemoryRead(ctx, "get_memory")
+				return jsonResult(m)
+			}
+		}
+		if len(items) < getMemoryPageSize {
+			break // last page
+		}
+	}
+	return errResult("no memory with key %q found (try recall to search by words)", key)
 }
 
 // recallRelevanceThreshold gates whether recall returns anything at all: below
@@ -2824,13 +2880,6 @@ func recallQueryOverlapsItems(query string, items []any) bool {
 	}
 	return false
 }
-
-// recallFullCount is how many top-ranked items (after reranking) keep their
-// full content in a recall response; the rest are trimmed to key+snippet+score.
-const recallFullCount = 3
-
-// recallSnippetChars caps the first-line preview kept for a trimmed item.
-const recallSnippetChars = 120
 
 // recallTopScore returns the highest "score" field among items, and whether any
 // item carried a numeric score at all (items missing "score" are not evidence
@@ -3059,12 +3108,25 @@ func keyMatchBoost(key, query string) int {
 	return 0
 }
 
-// trimRecallItems keeps content for the first recallFullCount items (minus
-// bookkeeping fields, content capped: see compactTopItem) and reduces the rest
-// to key + first-line snippet + score — the response used to
-// carry full content for every item up to limit (10 by default), which is the
-// 25.7k-char average measured in an audit.
-func trimRecallItems(items []any) []any {
+// recallContentChars caps the content of every item in the default (compact)
+// recall view. Measured on the fleet: 349 recall calls/day averaging 7.9k chars
+// per response, almost all of it content nobody reads past the first lines. A cut
+// item says so and carries its full length; full=true or get_memory(key)
+// returns it whole.
+const recallContentChars = 300
+
+// recallCompactFields is the allow-list of fields kept per item in the compact
+// view. Everything else (ids of writer/workspace, dedup hash, decay scores,
+// timestamps of the write path, version...) is dropped: it restates the order or
+// is only useful to the server. graph_boost/provenance stay because they change
+// how a reader must interpret the hit.
+var recallCompactFields = []string{
+	"key", "tags", "score", "created_at", "importance_score", "scope",
+	"graph_boost", "provenance",
+}
+
+// compactRecallItems projects every item onto the compact view.
+func compactRecallItems(items []any) []any {
 	out := make([]any, len(items))
 	for i, it := range items {
 		m, ok := it.(map[string]any)
@@ -3072,61 +3134,54 @@ func trimRecallItems(items []any) []any {
 			out[i] = it
 			continue
 		}
-		if i < recallFullCount {
-			out[i] = compactTopItem(m)
-			continue
-		}
-		trimmed := map[string]any{"key": m["key"]}
-		if score, ok := m["score"]; ok {
-			trimmed["score"] = score
-		}
-		content, _ := m["content"].(string)
-		trimmed["snippet"] = firstLineTruncated(content, recallSnippetChars)
-		out[i] = trimmed
+		out[i] = compactRecallItem(m)
 	}
 	return out
 }
 
-// recallServiceFields are bookkeeping fields of a stored memory that a reader of
-// the recall text does not need: ids of who wrote it and where, the dedup hash,
-// decay scores that only restate the order, timestamps of the write path.
-// Measured on live top-3 items they are ~775 of ~3080 chars each.
-// Unknown fields are kept (this is a deny-list): only what is named here goes.
-var recallServiceFields = []string{
-	"agent_id", "workspace_id", "content_simhash", "freshness_score", "recency_score",
-	"relevance", "created_at", "expires_at", "last_accessed_at", "source_type",
-}
-
-// recallTopContentChars caps the content of a top item. Median memory content is
-// ~2k chars; with the metadata gone, three uncapped items still leave the
-// average response at ~9.5k, over the 9k response-size target. A cut item says
-// so and carries its full length, and full=true returns it whole.
-const recallTopContentChars = 2000
-
-// compactTopItem returns a copy of a top-ranked item without service fields and
-// with over-long content cut (rune-safe). archived/status are dropped only while
-// they carry the default (false / "active"), so include_archived callers still
-// see the ones that matter.
-func compactTopItem(m map[string]any) map[string]any {
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	for _, f := range recallServiceFields {
-		delete(out, f)
-	}
-	if a, ok := out["archived"].(bool); ok && !a {
-		delete(out, "archived")
-	}
-	if st, _ := out["status"].(string); st == "active" {
-		delete(out, "status")
-	}
-	if content, ok := out["content"].(string); ok {
-		if r := []rune(content); len(r) > recallTopContentChars {
-			out["content"] = string(r[:recallTopContentChars])
-			out["content_truncated"] = true
-			out["content_chars"] = len(r)
+// compactRecallItem returns a copy of m limited to recallCompactFields plus
+// content cut to recallContentChars (rune-safe). created_at falls back to
+// updated_at when the server did not send it. project_id is kept only for
+// project-scoped entries (it is what get_memory needs to disambiguate the key);
+// archived/status survive only while they carry a non-default value, so
+// include_archived callers still see the ones that matter.
+func compactRecallItem(m map[string]any) map[string]any {
+	out := make(map[string]any, len(recallCompactFields)+4)
+	for _, f := range recallCompactFields {
+		if v, ok := m[f]; ok {
+			out[f] = v
 		}
+	}
+	if _, ok := out["created_at"]; !ok {
+		if v, ok := m["updated_at"]; ok {
+			out["created_at"] = v
+		}
+	}
+	if sc, _ := m["scope"].(string); sc == "project" {
+		if v, ok := m["project_id"]; ok {
+			out["project_id"] = v
+		}
+	}
+	if a, ok := m["archived"].(bool); ok && a {
+		out["archived"] = a
+	}
+	if st, _ := m["status"].(string); st != "" && st != "active" {
+		out["status"] = st
+	}
+	content, ok := m["content"].(string)
+	if !ok {
+		// Entries the server already reduced to key+snippet keep the snippet.
+		if sn, ok := m["snippet"]; ok {
+			out["content"] = sn
+		}
+		return out
+	}
+	if r := []rune(content); len(r) > recallContentChars {
+		out["content"] = string(r[:recallContentChars])
+		out["content_truncated"] = true
+		out["content_chars"] = len(r)
+	} else {
+		out["content"] = content
 	}
 	return out
 }
