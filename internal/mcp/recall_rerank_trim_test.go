@@ -223,8 +223,6 @@ func TestRerankRecallItems_BoostedItemsNeverBanded(t *testing.T) {
 	assertOrder(t, out, "exact-query-match", "episode-tail-a", "episode-tail-b")
 }
 
-
-
 // --- recallTopScore -----------------------------------------------------------
 
 func TestRecallTopScore(t *testing.T) {
@@ -251,100 +249,80 @@ func TestRecallTopScore_NoScoredItems(t *testing.T) {
 
 // --- trimRecallItems / firstLineTruncated --------------------------------------
 
-func TestTrimRecallItems_KeepsTopFullRestTrimmed(t *testing.T) {
+func TestCompactRecallItems_EveryItemCompact(t *testing.T) {
+	long := strings.Repeat("ж", recallContentChars+500)
 	items := make([]any, 5)
 	for i := range items {
 		items[i] = map[string]any{
-			"key":     "item",
-			"content": "full content that should only survive for the top items\nsecond line",
-			"score":   0.01,
-			"extra":   "field that must not leak into a trimmed item",
+			"key": "item", "content": long, "score": 0.01, "tags": []any{"t"},
+			"scope": "workspace", "importance_score": 0.8, "created_at": "2026-10-01",
+			"agent_id": "a", "workspace_id": "w", "content_simhash": 7, "freshness_score": 1.0,
+			"recency_score": 1.0, "relevance": 1.0, "updated_at": "u", "version": 3,
+			"id": "i", "source_type": "agent", "archived": false, "status": "active",
 		}
 	}
-	out := trimRecallItems(items)
-
-	for i := 0; i < recallFullCount; i++ {
-		m := out[i].(map[string]any)
-		if _, has := m["content"]; !has {
-			t.Errorf("item %d should keep full content, lost it", i)
+	out := compactRecallItems(items)
+	for i, it := range out {
+		m := it.(map[string]any)
+		for _, f := range []string{"key", "tags", "score", "created_at", "importance_score", "scope", "content"} {
+			if _, has := m[f]; !has {
+				t.Errorf("item %d must keep %q", i, f)
+			}
 		}
-		if _, has := m["extra"]; !has {
-			t.Errorf("item %d should be untouched (all fields), lost %q", i, "extra")
+		for _, f := range []string{"agent_id", "workspace_id", "content_simhash", "freshness_score", "recency_score",
+			"relevance", "updated_at", "version", "id", "source_type", "archived", "status", "expires_at"} {
+			if _, has := m[f]; has {
+				t.Errorf("item %d must not carry %q", i, f)
+			}
 		}
-	}
-	for i := recallFullCount; i < len(out); i++ {
-		m := out[i].(map[string]any)
-		if _, has := m["content"]; has {
-			t.Errorf("item %d should not carry full content", i)
+		got := m["content"].(string)
+		if n := len([]rune(got)); n != recallContentChars || !utf8.ValidString(got) {
+			t.Errorf("item %d content = %d runes (valid=%v), want %d", i, n, utf8.ValidString(got), recallContentChars)
 		}
-		if _, has := m["extra"]; has {
-			t.Errorf("item %d should not carry unrelated fields", i)
-		}
-		if m["key"] != "item" {
-			t.Errorf("item %d must keep its key, got %v", i, m["key"])
-		}
-		if m["score"] != 0.01 {
-			t.Errorf("item %d must keep its score, got %v", i, m["score"])
-		}
-		snippet, _ := m["snippet"].(string)
-		if snippet == "" {
-			t.Errorf("item %d must carry a snippet", i)
-		}
-		if snippet != "full content that should only survive for the top items" {
-			t.Errorf("snippet should be the first line only, got %q", snippet)
+		if m["content_truncated"] != true || m["content_chars"] != recallContentChars+500 {
+			t.Errorf("item %d truncation not announced: %v / %v", i, m["content_truncated"], m["content_chars"])
 		}
 	}
-}
-
-func TestCompactTopItem_DropsServiceFieldsKeepsRest(t *testing.T) {
-	in := map[string]any{
-		"id": "i", "key": "k", "content": "body", "score": 0.01, "tags": []any{"t"}, "scope": "workspace",
-		"updated_at": "2026-09-30", "project_id": "p", "hop": 1, "graph_boost": true,
-		"agent_id": "a", "workspace_id": "w", "content_simhash": 7, "freshness_score": 1.0,
-		"recency_score": 1.0, "relevance": 1.0, "created_at": "c", "expires_at": "e",
-		"last_accessed_at": "l", "source_type": "agent", "version": 3,
-		"archived": false, "status": "active",
-	}
-	out := compactTopItem(in)
-	for _, f := range []string{"agent_id", "workspace_id", "content_simhash", "freshness_score", "recency_score",
-		"relevance", "created_at", "expires_at", "last_accessed_at", "source_type", "archived", "status"} {
-		if _, has := out[f]; has {
-			t.Errorf("service field %q must be dropped", f)
-		}
-	}
-	for _, f := range []string{"id", "key", "content", "score", "tags", "scope", "updated_at", "project_id", "hop", "graph_boost", "version"} {
-		if _, has := out[f]; !has {
-			t.Errorf("field %q must be kept", f)
-		}
-	}
-	if _, has := in["agent_id"]; !has {
+	if _, has := items[0].(map[string]any)["agent_id"]; !has {
 		t.Error("input map must not be mutated")
 	}
 }
 
-func TestCompactTopItem_KeepsNonDefaultArchivedAndStatus(t *testing.T) {
-	out := compactTopItem(map[string]any{"key": "k", "archived": true, "status": "review_needed"})
-	if out["archived"] != true || out["status"] != "review_needed" {
-		t.Errorf("non-default archived/status must survive, got %v", out)
+func TestCompactRecallItem_ShortContentNotFlagged(t *testing.T) {
+	out := compactRecallItem(map[string]any{"key": "k", "content": "short"})
+	if out["content"] != "short" {
+		t.Errorf("short content must pass verbatim, got %v", out["content"])
+	}
+	if _, has := out["content_truncated"]; has {
+		t.Error("content under the cap must not be flagged")
 	}
 }
 
-func TestCompactTopItem_CapsContentByRunes(t *testing.T) {
-	long := strings.Repeat("ж", recallTopContentChars+500)
-	out := compactTopItem(map[string]any{"key": "k", "content": long})
-	got, _ := out["content"].(string)
-	if n := len([]rune(got)); n != recallTopContentChars {
-		t.Errorf("content cut to %d runes, want %d", n, recallTopContentChars)
+func TestCompactRecallItem_CreatedAtFallsBackToUpdatedAt(t *testing.T) {
+	out := compactRecallItem(map[string]any{"key": "k", "updated_at": "2026-10-02"})
+	if out["created_at"] != "2026-10-02" {
+		t.Errorf("created_at should fall back to updated_at, got %v", out["created_at"])
 	}
-	if !utf8.ValidString(got) {
-		t.Error("cut content must stay valid UTF-8")
+	if _, has := out["updated_at"]; has {
+		t.Error("updated_at itself must not leak")
 	}
-	if out["content_truncated"] != true || out["content_chars"] != recallTopContentChars+500 {
-		t.Errorf("truncation must be announced with the full length, got %v / %v", out["content_truncated"], out["content_chars"])
+}
+
+func TestCompactRecallItem_KeepsNonDefaultArchivedStatusAndProjectID(t *testing.T) {
+	out := compactRecallItem(map[string]any{"key": "k", "archived": true, "status": "review_needed", "scope": "project", "project_id": "p"})
+	if out["archived"] != true || out["status"] != "review_needed" || out["project_id"] != "p" {
+		t.Errorf("non-default archived/status and project_id of project-scoped entries must survive, got %v", out)
 	}
-	short := compactTopItem(map[string]any{"key": "k", "content": "short"})
-	if _, has := short["content_truncated"]; has {
-		t.Error("content under the cap must not be flagged")
+	ws := compactRecallItem(map[string]any{"key": "k", "scope": "workspace", "project_id": "p"})
+	if _, has := ws["project_id"]; has {
+		t.Error("project_id of a workspace-scoped entry must be dropped")
+	}
+}
+
+func TestCompactRecallItem_KeepsGraphMarkers(t *testing.T) {
+	out := compactRecallItem(map[string]any{"key": "k", "graph_boost": true, "provenance": "via:graph"})
+	if out["graph_boost"] != true || out["provenance"] != "via:graph" {
+		t.Errorf("graph markers must survive, got %v", out)
 	}
 }
 
@@ -464,16 +442,18 @@ func TestHandleRecall_GenuineLowScoreHit_SurvivesThreshold(t *testing.T) {
 	}
 }
 
-// TestHandleRecall_AboveThreshold_TrimsToTopThree covers requirements 1 and 5:
-// a call with no new params gets full content for the top 3 and key+snippet+
-// score for the rest — this is the default (backward-compatible) behavior.
-func TestHandleRecall_AboveThreshold_TrimsToTopThree(t *testing.T) {
+// TestHandleRecall_AboveThreshold_CompactForEveryItem: a call with no new params
+// gets the compact view for ALL items (content cut at recallContentChars, flagged,
+// no bookkeeping fields).
+func TestHandleRecall_AboveThreshold_CompactForEveryItem(t *testing.T) {
+	long := strings.Repeat("x", 2000)
 	items := make([]any, 6)
 	for i := range items {
 		items[i] = map[string]any{
-			"key":     "strong-match",
-			"content": "this is the full content of a relevant memory",
-			"score":   0.02, // well above recallRelevanceThreshold
+			"key":      "strong-match",
+			"content":  long,
+			"score":    0.02, // well above recallRelevanceThreshold
+			"agent_id": "a", "content_simhash": 7,
 		}
 	}
 	server, closeFn := newRecallTestServer(t, items, nil)
@@ -488,16 +468,21 @@ func TestHandleRecall_AboveThreshold_TrimsToTopThree(t *testing.T) {
 	out := decodeRecallResult(t, result)
 	gotItems, _ := out["items"].([]any)
 	if len(gotItems) != 6 {
-		t.Fatalf("expected all 6 items to survive (trimmed, not dropped), got %d", len(gotItems))
+		t.Fatalf("expected all 6 items to survive, got %d", len(gotItems))
 	}
 	for i, it := range gotItems {
 		m := it.(map[string]any)
-		_, hasContent := m["content"]
-		if i < recallFullCount && !hasContent {
-			t.Errorf("item %d should keep full content", i)
+		if n := len([]rune(m["content"].(string))); n != recallContentChars {
+			t.Errorf("item %d content %d runes, want %d", i, n, recallContentChars)
 		}
-		if i >= recallFullCount && hasContent {
-			t.Errorf("item %d should be trimmed (no content field)", i)
+		if m["content_truncated"] != true || m["content_chars"] != float64(2000) {
+			t.Errorf("item %d truncation flags wrong: %v / %v", i, m["content_truncated"], m["content_chars"])
+		}
+		if _, has := m["agent_id"]; has {
+			t.Errorf("item %d leaks agent_id", i)
+		}
+		if _, has := m["content_simhash"]; has {
+			t.Errorf("item %d leaks content_simhash", i)
 		}
 	}
 }
@@ -507,7 +492,7 @@ func TestHandleRecall_AboveThreshold_TrimsToTopThree(t *testing.T) {
 func TestHandleRecall_Full_ReturnsEverythingFull(t *testing.T) {
 	items := make([]any, 6)
 	for i := range items {
-		items[i] = map[string]any{"key": "k", "content": "full text", "score": 0.02}
+		items[i] = map[string]any{"key": "k", "content": strings.Repeat("y", 2000), "score": 0.02, "agent_id": "a", "content_simhash": 7}
 	}
 	server, closeFn := newRecallTestServer(t, items, nil)
 	defer closeFn()
@@ -524,8 +509,15 @@ func TestHandleRecall_Full_ReturnsEverythingFull(t *testing.T) {
 		t.Fatalf("expected 6 items, got %d", len(gotItems))
 	}
 	for i, it := range gotItems {
-		if _, has := it.(map[string]any)["content"]; !has {
-			t.Errorf("item %d should keep full content under full=true", i)
+		m := it.(map[string]any)
+		if c, _ := m["content"].(string); len(c) != 2000 {
+			t.Errorf("item %d content must be verbatim (2000), got %d", i, len(c))
+		}
+		if _, has := m["content_truncated"]; has {
+			t.Errorf("item %d must not be flagged truncated under full=true", i)
+		}
+		if m["agent_id"] != "a" || m["content_simhash"] != float64(7) {
+			t.Errorf("item %d must keep all stored fields under full=true, got %v", i, m)
 		}
 	}
 }

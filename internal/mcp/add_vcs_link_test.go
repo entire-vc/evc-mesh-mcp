@@ -15,7 +15,7 @@ import (
 // coreToolCount pins the size of the core profile. The doc comments in
 // server.go quote this number; they drifted out of date once already, and a
 // stale comment is how a tool ends up registered in the wrong profile.
-const coreToolCount = 25
+const coreToolCount = 26
 
 func TestCoreProfile_ExposesAddVCSLink(t *testing.T) {
 	server := NewServer(ServerConfig{Profile: ProfileCore})

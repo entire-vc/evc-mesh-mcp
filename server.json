@@ -28,7 +28,7 @@
         },
         {
           "name": "MESH_MCP_PROFILE",
-          "description": "Tool profile: core (25 tools, lower context overhead) or full (63 tools). Defaults to full.",
+          "description": "Tool profile: core (26 tools, lower context overhead) or full (64 tools). Defaults to full.",
           "isRequired": false
         }
       ]
@@ -54,7 +54,7 @@
         },
         {
           "name": "MESH_MCP_PROFILE",
-          "description": "Tool profile: core (25 tools, lower context overhead) or full (63 tools). Defaults to full.",
+          "description": "Tool profile: core (26 tools, lower context overhead) or full (64 tools). Defaults to full.",
           "isRequired": false
         }
       ]

@@ -51,8 +51,8 @@ The MCP server supports two profiles to optimize context window usage:
 
 | Profile | Tools | Context overhead | Best for |
 |---------|-------|-----------------|----------|
-| **core** | 25 | ~8K tokens (4% of 200K) | Claude Code, Cursor, small-context models |
-| **full** | 63 | ~18K tokens (9% of 200K) | Power users, automation agents, admin ops |
+| **core** | 26 | ~8K tokens (4% of 200K) | Claude Code, Cursor, small-context models |
+| **full** | 64 | ~18K tokens (9% of 200K) | Power users, automation agents, admin ops |
 
 Set via `MESH_MCP_PROFILE` environment variable. Default: `full`.
 
@@ -148,8 +148,8 @@ SSE mode serves **two profiles simultaneously** on different paths:
 
 | Path | Profile | Description |
 |------|---------|-------------|
-| `/sse` + `/message` | full | All 63 tools (backward compatible) |
-| `/core/sse` + `/core/message` | core | 25 essential tools |
+| `/sse` + `/message` | full | All 64 tools (backward compatible) |
+| `/core/sse` + `/core/message` | core | 26 essential tools |
 
 The same process also serves the **Streamable HTTP** transport (stateless, one
 agent key per request, sent in the `Authorization: Bearer` or `X-Agent-Key`
@@ -242,7 +242,7 @@ publish_event(type="summary", memory={persist: true})  → broadcast + persist
 session_report(model, tokens_in, tokens_out)           → report metrics
 ```
 
-## MCP Tools — Core Profile (25)
+## MCP Tools — Core Profile (26)
 
 ### ACP & Identity
 
@@ -279,7 +279,8 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 
 | Tool | Description |
 |------|-------------|
-| `recall` | Search memory by keywords |
+| `recall` | Search memory by keywords (compact by default: ~300 chars of content per item; `full=true` for everything uncut) |
+| `get_memory` | Full text of one memory by exact key |
 | `remember` | Save knowledge (UPSERT by key) |
 | `forget` | Delete a memory entry |
 | `recall_with_graph` | Search memory, expanding results through the knowledge graph |
@@ -327,7 +328,7 @@ did not supply; an explicit `limit` always wins.
 | `report_error` | Report an error on a task |
 | `session_report` | Report session metrics (model, tokens, cost) |
 
-## MCP Tools — Full Profile (adds 38 more, 63 total)
+## MCP Tools — Full Profile (adds 38 more, 64 total)
 
 ### Additional Task Tools
 
