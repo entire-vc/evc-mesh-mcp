@@ -252,6 +252,13 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		resolvedID = taskID
 	}
 
+	// Default view caps the description (getTaskDescChars); full=true keeps
+	// the verbatim body. Applied before the since-branching so both the
+	// plain and the changed-since paths return the same shape.
+	if !mcpsdk.ParseBoolean(request, "full", false) {
+		capTaskDescription(task)
+	}
+
 	resp := map[string]any{}
 
 	// Without `since`, behave exactly as before: the full task, every call.
@@ -413,6 +420,27 @@ func taskDeltaStub(task map[string]any) map[string]any {
 // context on the worst cards. The tail is where an acting agent looks first;
 // comments_total_count/comments_has_more keep the hidden rest visible.
 const defaultTaskCommentsLimit = 5
+
+// getTaskDescChars caps task.description in the default get_task view. A
+// fleet measurement (24h) put get_task at 1012 calls, 5.3k avg / 12.8k p95
+// per call, descriptions being the bulk; 4000 chars keep the usual card spec
+// whole and cut only the long tail. full=true returns the body verbatim.
+const getTaskDescChars = 4000
+
+// capTaskDescription cuts task["description"] to getTaskDescChars runes and
+// stamps description_truncated/description_chars/description_hint. A short
+// description is left untouched (no markers).
+func capTaskDescription(task map[string]any) {
+	desc, _ := task["description"].(string)
+	r := []rune(desc)
+	if len(r) <= getTaskDescChars {
+		return
+	}
+	task["description"] = string(r[:getTaskDescChars])
+	task["description_truncated"] = true
+	task["description_chars"] = len(r)
+	task["description_hint"] = "pass full=true for the full description"
+}
 
 // maxTaskCommentsLimit bounds the explicit "give me more of the tail" escape
 // hatch to what the API's own page cap serves in one request — a thread
@@ -1064,6 +1092,11 @@ func (s *Server) handleAddVCSLink(ctx context.Context, request mcpsdk.CallToolRe
 // 12. list_comments
 // ============================================================================
 
+// defaultListCommentsLimit: the newest 10 comments are what an agent acts on;
+// list_comments averaged 6.6k / p95 24.9k per call at the old default of 50.
+// Bodies stay whole; has_more/total_pages say how much is hidden.
+const defaultListCommentsLimit = 10
+
 func (s *Server) handleListComments(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	taskID := mcpsdk.ParseString(request, "task_id", "")
 	if taskID == "" {
@@ -1076,7 +1109,7 @@ func (s *Server) handleListComments(ctx context.Context, request mcpsdk.CallTool
 		params["include_internal"] = "true"
 	}
 
-	limit := mcpsdk.ParseInt(request, "limit", 50)
+	limit := mcpsdk.ParseInt(request, "limit", defaultListCommentsLimit)
 	if limit > 0 {
 		params["page_size"] = strconv.Itoa(limit)
 	}
@@ -2024,6 +2057,10 @@ func (s *Server) handleGetTeamDirectory(ctx context.Context, request mcpsdk.Call
 	return jsonResult(compactTeamDirectory(result))
 }
 
+// teamDirectoryZoneChars caps the project column (responsibility_zone) in
+// the compact directory to one line.
+const teamDirectoryZoneChars = 200
+
 // teamDirectoryColumns are the row-array columns compactTeamDirectory emits
 // for both "agents" and "humans", in this order.
 var teamDirectoryColumns = []string{"id", "name", "role", "project", "status"}
@@ -2062,11 +2099,15 @@ func compactTeamDirectoryRows(members any) [][]any {
 		if status == "" {
 			status, _ = m["status"].(string)
 		}
+		var zone any = m["responsibility_zone"]
+		if z, ok := zone.(string); ok {
+			zone = firstLineTruncated(z, teamDirectoryZoneChars)
+		}
 		rows = append(rows, []any{
 			m["id"],
 			m["name"],
 			m["role"],
-			m["responsibility_zone"],
+			zone,
 			status,
 		})
 	}
@@ -2265,6 +2306,12 @@ func (s *Server) handlePollTasks(ctx context.Context, request mcpsdk.CallToolReq
 	result, err := s.getRESTClient(ctx).PollTasks(ctx, timeout)
 	if err != nil {
 		return errResult("poll_tasks failed: %v", err)
+	}
+	// Same lean per-card view as get_my_tasks; full=true is the old shape.
+	if !mcpsdk.ParseBoolean(request, "full", false) {
+		if tasks, ok := result["tasks"].([]any); ok {
+			result["tasks"] = leanTaskSummaries(trimTaskSummaries(tasks))
+		}
 	}
 	return jsonResult(result)
 }
