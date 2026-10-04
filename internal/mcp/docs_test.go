@@ -580,3 +580,43 @@ func TestGetDoc_OutlineDepthLimitsLevels(t *testing.T) {
 		}
 	}
 }
+
+// list_docs pages its output. The page reports total_count and has_more so a
+// client can tell a cut listing from a complete one, and a child's path is
+// still resolved when its parent sits on another page.
+func TestListDocs_PagesWithTotalCountAndHasMore(t *testing.T) {
+	f, projID, childID := standardFixture(t)
+
+	first := callDocsTool(t, f.newServer().handleListDocs, map[string]any{"project_id": projID, "limit": 1})
+	if first["count"] != float64(1) || first["total_count"] != float64(2) || first["has_more"] != true {
+		t.Fatalf("page 1: count=%v total_count=%v has_more=%v, want 1/2/true", first["count"], first["total_count"], first["has_more"])
+	}
+
+	second := callDocsTool(t, f.newServer().handleListDocs, map[string]any{"project_id": projID, "limit": 1, "offset": 1})
+	if second["has_more"] != false || second["offset"] != float64(1) {
+		t.Fatalf("page 2: has_more=%v offset=%v, want false/1", second["has_more"], second["offset"])
+	}
+	item := second["items"].([]any)[0].(map[string]any)
+	if item["id"] != childID || item["path"] != "architecture/adr-004" {
+		t.Errorf("page 2 item = id %v path %v, want the child with its full path", item["id"], item["path"])
+	}
+}
+
+// Default and cap: no limit gives the default page, an absurd limit is clamped,
+// an offset past the end is an empty page, not an error.
+func TestListDocs_LimitDefaultsClampAndOffsetPastEnd(t *testing.T) {
+	f, projID, _ := standardFixture(t)
+
+	def := callDocsTool(t, f.newServer().handleListDocs, map[string]any{"project_id": projID})
+	if def["limit"] != float64(docListDefaultLimit) || def["has_more"] != false {
+		t.Errorf("default: limit=%v has_more=%v, want %d/false", def["limit"], def["has_more"], docListDefaultLimit)
+	}
+	big := callDocsTool(t, f.newServer().handleListDocs, map[string]any{"project_id": projID, "limit": 100000})
+	if big["limit"] != float64(docListMaxLimit) {
+		t.Errorf("limit=100000 reported as %v, want clamp to %d", big["limit"], docListMaxLimit)
+	}
+	past := callDocsTool(t, f.newServer().handleListDocs, map[string]any{"project_id": projID, "offset": 99})
+	if past["count"] != float64(0) || past["total_count"] != float64(2) || past["has_more"] != false {
+		t.Errorf("offset past end: count=%v total_count=%v has_more=%v, want 0/2/false", past["count"], past["total_count"], past["has_more"])
+	}
+}
