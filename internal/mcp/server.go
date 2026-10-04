@@ -311,9 +311,10 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("list_tasks", s.handleListTasks))
 
 	s.addTool(mcpsdk.NewTool("get_task",
-		mcpsdk.WithDescription("Get full task details with optional comments, artifacts, dependencies, and VCS links. With include_comments=true, only the newest comments_limit comments come back (default 5 — the tail is what you act on; comments_total_count/comments_has_more always say how much is hidden; comments_limit raises the tail up to 200, and a longer thread is read by paging list_comments with order=desc)."),
+		mcpsdk.WithDescription("Get task details with optional comments, artifacts, dependencies, and VCS links. The description is capped at 4000 chars by default (description_truncated=true, description_chars=<N> mark a cut) — pass full=true for the complete description. With include_comments=true, only the newest comments_limit comments come back (default 5 — the tail is what you act on; comments_total_count/comments_has_more always say how much is hidden; comments_limit raises the tail up to 200, and a longer thread is read by paging list_comments with order=desc)."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID (full UUID or 6–12 char hex short-ID prefix).")),
 		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 timestamp from an earlier call in this session (e.g. that response's task.updated_at, or your own last-call time). With it: include_comments returns only comments created after it, and the full task body (description and the rest) is included only if the task's own updated_at is after it too — the response then carries task_changed=true/false so you always know which you got, and a trimmed stub (id/status_id/assignee/updated_at) instead of the full task when nothing changed, to avoid re-paying for the same ~5k tokens on a repeat call. Omit for the unfiltered default: full task body, but the comment tail still obeys comments_limit (default 5, max 200) — a longer thread needs list_comments paging.")),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the full description instead of the first 4000 chars (default false)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_comments", mcpsdk.Description("Include the task's most recent comments (see comments_limit for how many; the response carries comments_total_count and comments_has_more so a longer thread is never silently hidden)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithNumber("comments_limit", mcpsdk.Description("How many of the NEWEST comments to include when include_comments=true (default 5, max 200). The tail is where an acting agent looks first; raise it when you need more of it. The API caps any single request at 200 — a longer thread is only readable end-to-end by paging list_comments (order=desc, page=N), never by one call here.")),
 		mcpsdk.WithBoolean("include_artifacts", mcpsdk.Description("Include artifacts."), mcpsdk.DefaultBool(false)),
@@ -725,7 +726,7 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithDescription("List comments on a task. NEWEST FIRST by default: limit=N returns the LAST N comments of the thread — enough to catch up on where it stands. To read a thread chronologically from its start, pass order=asc and page forward. Paginated: call again with a higher `page` to read a thread longer than `limit`."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithBoolean("include_internal", mcpsdk.Description("Include internal (agent-only) comments."), mcpsdk.DefaultBool(true)),
-		mcpsdk.WithNumber("limit", mcpsdk.Description("Max comments to return (default 50).")),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Max comments to return (default 10, newest first; bodies are never cut).")),
 		mcpsdk.WithString("order", mcpsdk.Description("Sort direction: desc (default — NEWEST comments first, so limit=2 gives the LAST two comments) or asc (oldest first — chronological reading from the start of the thread). An invalid value is REFUSED by the API; an explicitly empty value is refused locally (at the API boundary it is indistinguishable from absent) — neither is silently treated as asc.")),
 		mcpsdk.WithNumber("page", mcpsdk.Description("1-based page number. Omit for the first page; use with `has_more`/`total_pages` in the response to read the rest of a thread.")),
 	), s.tracked("list_comments", s.handleListComments))
@@ -789,7 +790,7 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Team & Rules ---
 	s.addTool(mcpsdk.NewTool("get_team_directory",
-		mcpsdk.WithDescription("Get the workspace team directory listing all agents and human members. Default: a compact row-array table (columns id/name/role/project/status) instead of full profiles — pass full=true for the complete dump (capabilities, heartbeat, escalation_to, timestamps, ...)."),
+		mcpsdk.WithDescription("Get the workspace team directory listing all agents and human members. Default: a compact row-array table (columns id/name/role/project/status; project cut to one line, ≤200 chars) instead of full profiles — pass full=true for the complete dump (capabilities, heartbeat, escalation_to, timestamps, ...)."),
 		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the full per-member profile dump instead of the compact table (default false)."), mcpsdk.DefaultBool(false)),
 	), s.tracked("get_team_directory", s.handleGetTeamDirectory))
 
@@ -835,7 +836,8 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Push Notifications ---
 	s.addTool(mcpsdk.NewTool("poll_tasks",
-		mcpsdk.WithDescription("Long-poll for new task assignments. Blocks until a task is assigned to this agent or the timeout expires. Returns current assigned tasks and whether any change occurred. Kept for backward compatibility — prefer get_my_tasks for non-blocking access."),
+		mcpsdk.WithDescription("Long-poll for new task assignments. Blocks until a task is assigned to this agent or the timeout expires. Returns current assigned tasks and whether any change occurred. Tasks use the lean get_my_tasks view (first-line descriptions, no envelope fields); full=true returns the complete items. Kept for backward compatibility — prefer get_my_tasks for non-blocking access."),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return complete task items instead of the lean view (default false)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithNumber("timeout", mcpsdk.Description("Maximum seconds to wait for new assignments (default 30, max 120).")),
 	), s.tracked("poll_tasks", s.handlePollTasks))
 
