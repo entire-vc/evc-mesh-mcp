@@ -261,6 +261,13 @@ func (s *Server) handleSearchDocs(ctx context.Context, request mcpsdk.CallToolRe
 // list_docs
 // ============================================================================
 
+// list_docs paging: the default keeps a reply small, the cap stops a caller
+// from asking for the whole project in one go again.
+const (
+	docListDefaultLimit = 50
+	docListMaxLimit     = 200
+)
+
 func (s *Server) handleListDocs(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	projectID := mcpsdk.ParseString(request, "project_id", "")
 	if projectID == "" {
@@ -282,8 +289,22 @@ func (s *Server) handleListDocs(ctx context.Context, request mcpsdk.CallToolRequ
 		}
 	}
 
-	items := make([]map[string]any, 0, len(docs))
-	for _, d := range docs {
+	// Paths and has_children above are computed over the WHOLE listing — a
+	// child's path needs its ancestors, which may sit on another page — and only
+	// then is the output sliced. The slice is what keeps a big project from
+	// arriving as one 100k-character reply.
+	limit := mcpsdk.ParseInt(request, "limit", docListDefaultLimit)
+	if limit <= 0 {
+		limit = docListDefaultLimit
+	}
+	limit = min(limit, docListMaxLimit)
+	offset := max(mcpsdk.ParseInt(request, "offset", 0), 0)
+	total := len(docs)
+	end := min(offset+limit, total)
+	page := docs[min(offset, total):end]
+
+	items := make([]map[string]any, 0, len(page))
+	for _, d := range page {
 		item := stripKeys(d, docListNoiseKeys)
 		id := asString(d, "id")
 		item["path"] = paths[id]
@@ -292,8 +313,12 @@ func (s *Server) handleListDocs(ctx context.Context, request mcpsdk.CallToolRequ
 	}
 
 	out := map[string]any{
-		"items": items,
-		"count": len(items),
+		"items":       items,
+		"count":       len(items),
+		"total_count": total,
+		"limit":       limit,
+		"offset":      offset,
+		"has_more":    end < total,
 	}
 	if truncated {
 		// Named, not swallowed: a listing that quietly stopped early reads

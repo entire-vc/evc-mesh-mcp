@@ -561,9 +561,11 @@ func (s *Server) registerAdvancedTools() {
 	// so the surface is narrow by construction: read the map (list_docs), find a
 	// page by content (search_docs), then read the part you need (get_doc).
 	s.addTool(mcpsdk.NewTool("list_docs",
-		mcpsdk.WithDescription("List a project's documents — id, title, slug path, version, who touched them last. Carries NO document bodies, so it is safe to call on a whole project: use it as the map, then get_doc for one page. Returns path and has_children for navigating the tree."),
+		mcpsdk.WithDescription("List a project's documents — id, title, slug path, version, who touched them last. Carries NO document bodies, so it is safe to call on a whole project: use it as the map, then get_doc for one page. Returns path and has_children for navigating the tree. Paged: the reply carries total_count and has_more; when has_more is true pass offset to read the rest."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project UUID.")),
 		mcpsdk.WithBoolean("include_archived", mcpsdk.Description("Include archived documents."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Page size (default 50, max 200).")),
+		mcpsdk.WithNumber("offset", mcpsdk.Description("Documents to skip (default 0).")),
 	), s.tracked("list_docs", s.handleListDocs))
 
 	s.addTool(mcpsdk.NewTool("get_doc",
