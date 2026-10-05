@@ -199,7 +199,7 @@ func TestWave3AfterWalkFiltersBeforePaging(t *testing.T) {
 }
 
 func TestWave3AutoSummaryAndEscape(t *testing.T) {
-	for _, prefix := range []string{"[fiddler] ✅ completed", "[balancer] assigned", "INTAKE: accepted"} {
+	for _, prefix := range []string{"[fiddler] ✅ completed", "[balancer] assigned", "🔀 **fleet-balancer сменил исполнителя: Khan → Hugh**", "INTAKE: accepted", "🔀 INTAKE-DECOMPOSE", "🔼 INTAKE-PROMOTE", "🏁 INTAKE-PARENT-CLOSE"} {
 		t.Run(prefix, func(t *testing.T) {
 			body := prefix + "\nsecond line\nthird line"
 			s := newCommentsTestServer(t, []map[string]any{wave2Comment("auto", body, false), wave2Comment("human", "Decision\n"+strings.Repeat("x", 2000), false)})

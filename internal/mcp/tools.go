@@ -1236,7 +1236,7 @@ func compactComment(m map[string]any, includeAuto ...bool) map[string]any {
 }
 
 func isAutomaticComment(body string) bool {
-	for _, prefix := range []string{"[fiddler] ✅ completed", "[balancer]", "🤖 auto:", "INTAKE:", "[INTAKE]"} {
+	for _, prefix := range []string{"[fiddler] ✅ completed", "[balancer]", "🔀 **fleet-balancer сменил исполнителя:", "🤖 auto:", "INTAKE:", "[INTAKE]", "🔀 INTAKE-DECOMPOSE", "🔼 INTAKE-PROMOTE", "🏁 INTAKE-PARENT-CLOSE"} {
 		if strings.HasPrefix(body, prefix) {
 			return true
 		}
