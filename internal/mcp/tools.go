@@ -146,6 +146,18 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 	}
 
 	limit := mcpsdk.ParseInt(request, "limit", 50)
+	full := mcpsdk.ParseBoolean(request, "full", false)
+	// Wave 2 (#dc719c63): the compact view caps the page at
+	// listTasksCompactLimitCeiling items. A live probe measured limit=200
+	// handing back 118k chars of lean items — the single biggest list_tasks
+	// response in the fleet — while no routing decision needs 200 cards at
+	// once. full=true keeps the API's own 200 ceiling, and a clamped call
+	// says so in the response (limit_clamped_to) so paging math stays honest.
+	limitClamped := false
+	if !full && limit > listTasksCompactLimitCeiling {
+		limit = listTasksCompactLimitCeiling
+		limitClamped = true
+	}
 	if limit > 0 {
 		params["page_size"] = strconv.Itoa(limit)
 	}
@@ -159,7 +171,11 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 		if err != nil {
 			return errResult("failed to search tasks: %v", err)
 		}
-		return jsonResult(leanTasksPage(result, mcpsdk.ParseBoolean(request, "full", false)))
+		page := leanTasksPage(result, full)
+		if limitClamped {
+			noteLimitClamp(page)
+		}
+		return jsonResult(page)
 	}
 
 	// status_category: resolve to all matching status IDs via the API.
@@ -188,7 +204,25 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 		return errResult("failed to list tasks: %v", err)
 	}
 
-	return jsonResult(leanTasksPage(result, mcpsdk.ParseBoolean(request, "full", false)))
+	page := leanTasksPage(result, full)
+	if limitClamped {
+		noteLimitClamp(page)
+	}
+	return jsonResult(page)
+}
+
+// listTasksCompactLimitCeiling is the per-page item ceiling in list_tasks'
+// default (compact) view. full=true restores the API's own 200-item page.
+const listTasksCompactLimitCeiling = 50
+
+// noteLimitClamp stamps the clamp onto a response page so a caller paging
+// with a larger limit sees why their pages shrank instead of silently
+// overlapping.
+func noteLimitClamp(page map[string]any) {
+	page["limit_clamped_to"] = listTasksCompactLimitCeiling
+	page["limit_note"] = fmt.Sprintf(
+		"compact view caps limit at %d; pass full=true for up to 200 per page",
+		listTasksCompactLimitCeiling)
 }
 
 // leanTasksPage applies the get_my_tasks lean default view to a list_tasks
@@ -252,11 +286,13 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		resolvedID = taskID
 	}
 
-	// Default view caps the description (getTaskDescChars); full=true keeps
-	// the verbatim body. Applied before the since-branching so both the
-	// plain and the changed-since paths return the same shape.
-	if !mcpsdk.ParseBoolean(request, "full", false) {
-		capTaskDescription(task)
+	// Default view caps the description (getTaskDescChars) and drops empty
+	// service fields; full=true keeps the verbatim body. Applied before the
+	// since-branching so both the plain and the changed-since paths return
+	// the same shape.
+	full := mcpsdk.ParseBoolean(request, "full", false)
+	if !full {
+		leanGetTaskView(task)
 	}
 
 	resp := map[string]any{}
@@ -300,6 +336,12 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 			arr, _ := items.([]any)
 			if sinceSet {
 				arr = commentsSince(arr, since)
+			}
+			// Inline comments share the list_comments compact shape in the
+			// default view (wave 2, #dc719c63): id/author_name/created_at/
+			// body ≤500 chars. full=true returns them verbatim.
+			if !full {
+				arr = compactCommentItems(arr)
 			}
 			resp["comments"] = arr
 			itemCount = len(arr)
@@ -423,9 +465,11 @@ const defaultTaskCommentsLimit = 5
 
 // getTaskDescChars caps task.description in the default get_task view. A
 // fleet measurement (24h) put get_task at 1012 calls, 5.3k avg / 12.8k p95
-// per call, descriptions being the bulk; 4000 chars keep the usual card spec
-// whole and cut only the long tail. full=true returns the body verbatim.
-const getTaskDescChars = 4000
+// per call, descriptions being the bulk; wave 1 kept 4000 chars and the
+// follow-up fleet probe (2026-10-05, #dc719c63) still measured 5.1k per call
+// on a card whose description ran long — the AC section of a card lives in
+// the first 2000 chars, and the rest is one full=true away.
+const getTaskDescChars = 2000
 
 // capTaskDescription cuts task["description"] to getTaskDescChars runes and
 // stamps description_truncated/description_chars/description_hint. A short
@@ -440,6 +484,35 @@ func capTaskDescription(task map[string]any) {
 	task["description_truncated"] = true
 	task["description_chars"] = len(r)
 	task["description_hint"] = "pass full=true for the full description"
+}
+
+// getTaskDropAlways are service fields the compact get_task view never
+// returns: url is derivable from id and nothing routes on it.
+var getTaskDropAlways = []string{"url"}
+
+// getTaskDropWhenEmpty are task fields dropped only while null/empty/zero/
+// false, mirroring the get_my_tasks lean lists: a real value (a set due_date,
+// non-zero counters, populated custom_fields) always survives — only the
+// ~14 bytes of "artifact_count": 0-style noise go.
+var getTaskDropWhenEmpty = []string{
+	"artifact_count", "vcs_link_count", "subtask_count", "dod_checks", "custom_fields",
+	"estimated_hours", "start_after", "due_date", "completed_at", "completion_signal",
+	"is_shipped", "position", "assigned_by", "parent_task_id",
+}
+
+// leanGetTaskView applies the wave-2 compact default to a task object in
+// place: description cap plus empty-service-field stripping. full=true
+// callers never reach it.
+func leanGetTaskView(task map[string]any) {
+	capTaskDescription(task)
+	for _, k := range getTaskDropAlways {
+		delete(task, k)
+	}
+	for _, k := range getTaskDropWhenEmpty {
+		if isEmptyJSONValue(task[k]) {
+			delete(task, k)
+		}
+	}
 }
 
 // maxTaskCommentsLimit bounds the explicit "give me more of the tail" escape
@@ -1151,7 +1224,88 @@ func (s *Server) handleListComments(ctx context.Context, request mcpsdk.CallTool
 		return errResult("failed to list comments: %v", err)
 	}
 
+	// Compact view by default (wave 2, #dc719c63): the REST page carries 12
+	// fields per comment and bodies up to 1.2k chars — a live probe measured
+	// 1.6k chars per comment, most of it author_id/task_id/url/metadata the
+	// caller already knows or never uses. The compact item keeps what a
+	// reader acts on; full=true returns the page untouched.
+	if !mcpsdk.ParseBoolean(request, "full", false) {
+		result = leanCommentsPage(result)
+	}
+
 	return jsonResult(result)
+}
+
+// listCommentsBodyChars caps a comment body in the compact list_comments (and
+// inline get_task comments) view. 500 chars covers a normal status comment;
+// longer bodies are logs pasted into a card and belong in an artifact.
+const listCommentsBodyChars = 500
+
+// compactComment projects a comment onto the compact view: id, author_name,
+// created_at, body cut to listCommentsBodyChars (marked), is_internal only
+// when true. Everything else — author_id, author_type, task_id, url,
+// metadata, parent_comment_id, updated_at — is a full=true field.
+func compactComment(m map[string]any) map[string]any {
+	out := make(map[string]any, 5)
+	for _, f := range []string{"id", "author_name", "created_at"} {
+		if v, ok := m[f]; ok {
+			out[f] = v
+		}
+	}
+	if a, ok := m["is_internal"].(bool); ok && a {
+		out["is_internal"] = a
+	}
+	if body, ok := m["body"]; ok {
+		if s, ok := body.(string); ok {
+			if r := []rune(s); len(r) > listCommentsBodyChars {
+				out["body"] = string(r[:listCommentsBodyChars]) + "…"
+				out["body_truncated"] = true
+			} else {
+				out["body"] = s
+			}
+		} else {
+			out["body"] = body
+		}
+	}
+	return out
+}
+
+// compactCommentItems projects every item; non-map entries pass through.
+func compactCommentItems(items []any) []any {
+	out := make([]any, len(items))
+	for i, it := range items {
+		if m, ok := it.(map[string]any); ok {
+			out[i] = compactComment(m)
+		} else {
+			out[i] = it
+		}
+	}
+	return out
+}
+
+// commentsPageKeepFields is the envelope allow-list for the compact
+// list_comments view: the pager (and nothing else) — paging is how a thread
+// longer than `limit` is read.
+var commentsPageKeepFields = []string{
+	"page", "page_size", "total_count", "total_pages", "has_more", "list_revision",
+}
+
+// leanCommentsPage applies the compact view to a REST comments page.
+func leanCommentsPage(result map[string]any) map[string]any {
+	out := make(map[string]any, len(commentsPageKeepFields)+1)
+	for _, k := range commentsPageKeepFields {
+		if v, ok := result[k]; ok {
+			out[k] = v
+		}
+	}
+	if items, ok := result["items"].([]any); ok {
+		out["items"] = compactCommentItems(items)
+	} else if items, ok := result["items"]; ok {
+		out["items"] = items
+	} else {
+		out["items"] = []any{}
+	}
+	return out
 }
 
 // ============================================================================
@@ -1729,8 +1883,7 @@ const myTasksDescChars = 200
 
 // trimTaskSummaries trims each task's description to its first line, at most
 // myTasksDescChars runes (rune-safe via firstLineTruncated), and stamps
-// description_truncated=true when text was cut — mirroring recall's
-// content_truncated marker. Items whose description the server already
+// description_truncated=true when text was cut. Items whose description the server already
 // blanked (empty string, has_description reflecting real content — the API's
 // own >200KB page trim) pass through untouched. Routing fields
 // (id/title/status/priority/labels/assignee) are never modified.
@@ -2058,8 +2211,12 @@ func (s *Server) handleGetTeamDirectory(ctx context.Context, request mcpsdk.Call
 }
 
 // teamDirectoryZoneChars caps the project column (responsibility_zone) in
-// the compact directory to one line.
-const teamDirectoryZoneChars = 200
+// the compact directory to one line. Wave 2 (#dc719c63): a live probe put
+// the zone column at 54% of the whole compact payload — 200 CHARS is up to
+// 400 BYTES of UTF-8 Russian, and the fleet's own growth (41 agents and
+// counting) multiplied it. 60 chars still name the zone; the full text is a
+// full=true field.
+const teamDirectoryZoneChars = 60
 
 // teamDirectoryColumns are the row-array columns compactTeamDirectory emits
 // for both "agents" and "humans", in this order.
@@ -2082,7 +2239,7 @@ func compactTeamDirectory(full map[string]any) map[string]any {
 		"columns":   teamDirectoryColumns,
 		"agents":    compactTeamDirectoryRows(full["agents"]),
 		"humans":    compactTeamDirectoryRows(full["humans"]),
-		"note":      "Trimmed to id/name/role/project/status (project = responsibility_zone, status = computed_status). Pass full=true for full profiles (capabilities, heartbeat, escalation_to, timestamps, ...).",
+		"note":      "Compact rows: id/name/role/project/status (project = responsibility_zone, one line ≤60 chars; status = computed_status). full=true returns full profiles.",
 	}
 	return out
 }
@@ -3163,13 +3320,15 @@ func keyMatchBoost(key, query string) int {
 const recallContentChars = 300
 
 // recallCompactFields is the allow-list of fields kept per item in the compact
-// view. Everything else (ids of writer/workspace, dedup hash, decay scores,
-// timestamps of the write path, version...) is dropped: it restates the order or
-// is only useful to the server. graph_boost/provenance stay because they change
-// how a reader must interpret the hit.
+// view. Everything else (scope, importance_score, created_at and the other
+// write-path bookkeeping, dedup hash, decay scores, version...) is dropped:
+// it restates the order or is only useful to the server, and a fleet probe
+// (2026-10-05, #dc719c63) put the bookkeeping at ~140 bytes of a ~600-byte
+// item. graph_boost/provenance stay because they change how a reader must
+// interpret the hit. Timestamps and scores-of-the-write-path are full=true
+// fields now.
 var recallCompactFields = []string{
-	"key", "tags", "score", "created_at", "importance_score", "scope",
-	"graph_boost", "provenance",
+	"key", "tags", "score", "graph_boost", "provenance",
 }
 
 // compactRecallItems projects every item onto the compact view.
@@ -3187,21 +3346,18 @@ func compactRecallItems(items []any) []any {
 }
 
 // compactRecallItem returns a copy of m limited to recallCompactFields plus
-// content cut to recallContentChars (rune-safe). created_at falls back to
-// updated_at when the server did not send it. project_id is kept only for
-// project-scoped entries (it is what get_memory needs to disambiguate the key);
-// archived/status survive only while they carry a non-default value, so
-// include_archived callers still see the ones that matter.
+// content cut to recallContentChars (rune-safe). A cut is marked by a trailing
+// ellipsis in the content itself — the content_truncated/content_chars fields
+// left the compact view in wave 2 (#dc719c63); get_memory(key) or full=true
+// fetches the whole entry. project_id is kept only for project-scoped entries
+// (it is what get_memory needs to disambiguate the key); archived/status
+// survive only while they carry a non-default value, so include_archived
+// callers still see the ones that matter.
 func compactRecallItem(m map[string]any) map[string]any {
 	out := make(map[string]any, len(recallCompactFields)+4)
 	for _, f := range recallCompactFields {
 		if v, ok := m[f]; ok {
 			out[f] = v
-		}
-	}
-	if _, ok := out["created_at"]; !ok {
-		if v, ok := m["updated_at"]; ok {
-			out["created_at"] = v
 		}
 	}
 	if sc, _ := m["scope"].(string); sc == "project" {
@@ -3224,9 +3380,7 @@ func compactRecallItem(m map[string]any) map[string]any {
 		return out
 	}
 	if r := []rune(content); len(r) > recallContentChars {
-		out["content"] = string(r[:recallContentChars])
-		out["content_truncated"] = true
-		out["content_chars"] = len(r)
+		out["content"] = string(r[:recallContentChars]) + "…"
 	} else {
 		out["content"] = content
 	}

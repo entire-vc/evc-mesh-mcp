@@ -302,7 +302,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("priority", mcpsdk.Description("Filter by priority: urgent, high, medium, low, none.")),
 		mcpsdk.WithArray("labels", mcpsdk.Description("Filter by labels."), mcpsdk.WithStringItems()),
 		mcpsdk.WithString("search", mcpsdk.Description("Search in title and description.")),
-		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results to return (default 50, max 200).")),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results to return (default 50). The compact view caps limit at 50 — a larger value is clamped and the response says so via limit_clamped_to; pass full=true for up to 200 per page.")),
 		mcpsdk.WithString("sort", mcpsdk.Description("Sort field: created_at, updated_at, priority, due_date.")),
 		mcpsdk.WithString("order", mcpsdk.Description("Sort direction: asc (default) or desc. Without this, a project larger than `limit` returns its OLDEST tasks, so \"what changed recently\" walks come back empty and look clean. An invalid value is REFUSED by the API, not silently treated as asc.")),
 		mcpsdk.WithNumber("page", mcpsdk.Description("1-based page number (default 1). The response reports total_pages; without this parameter every page beyond the first was unreachable while the envelope kept advertising them.")),
@@ -311,10 +311,10 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("list_tasks", s.handleListTasks))
 
 	s.addTool(mcpsdk.NewTool("get_task",
-		mcpsdk.WithDescription("Get task details with optional comments, artifacts, dependencies, and VCS links. The description is capped at 4000 chars by default (description_truncated=true, description_chars=<N> mark a cut) — pass full=true for the complete description. With include_comments=true, only the newest comments_limit comments come back (default 5 — the tail is what you act on; comments_total_count/comments_has_more always say how much is hidden; comments_limit raises the tail up to 200, and a longer thread is read by paging list_comments with order=desc)."),
+		mcpsdk.WithDescription("Get task details with optional comments, artifacts, dependencies, and VCS links. The default view is compact: description capped at 2000 chars (description_truncated=true, description_chars=<N> mark a cut), zero counters and empty service fields (url, position, null dates, ...) omitted, and inline comments (include_comments) in the list_comments compact shape (id/author_name/created_at/body ≤500 chars). Pass full=true for the verbatim task, full description and whole comment objects. With include_comments=true, only the newest comments_limit comments come back (default 5 — the tail is what you act on; comments_total_count/comments_has_more always say how much is hidden; comments_limit raises the tail up to 200, and a longer thread is read by paging list_comments with order=desc)."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID (full UUID or 6–12 char hex short-ID prefix).")),
 		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 timestamp from an earlier call in this session (e.g. that response's task.updated_at, or your own last-call time). With it: include_comments returns only comments created after it, and the full task body (description and the rest) is included only if the task's own updated_at is after it too — the response then carries task_changed=true/false so you always know which you got, and a trimmed stub (id/status_id/assignee/updated_at) instead of the full task when nothing changed, to avoid re-paying for the same ~5k tokens on a repeat call. Omit for the unfiltered default: full task body, but the comment tail still obeys comments_limit (default 5, max 200) — a longer thread needs list_comments paging.")),
-		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the full description instead of the first 4000 chars (default false)."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the verbatim task (full description, all fields, whole inline comments) instead of the compact view (default false)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_comments", mcpsdk.Description("Include the task's most recent comments (see comments_limit for how many; the response carries comments_total_count and comments_has_more so a longer thread is never silently hidden)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithNumber("comments_limit", mcpsdk.Description("How many of the NEWEST comments to include when include_comments=true (default 5, max 200). The tail is where an acting agent looks first; raise it when you need more of it. The API caps any single request at 200 — a longer thread is only readable end-to-end by paging list_comments (order=desc, page=N), never by one call here.")),
 		mcpsdk.WithBoolean("include_artifacts", mcpsdk.Description("Include artifacts."), mcpsdk.DefaultBool(false)),
@@ -416,7 +416,7 @@ func (s *Server) registerCoreTools() {
 
 	// --- Memory ---
 	s.addTool(mcpsdk.NewTool("recall",
-		mcpsdk.WithDescription("SEARCH memory by keywords. Use to find a SPECIFIC piece of knowledge, e.g. 'API convention' or 'license decision'. Returns ranked results with scores. Default view is compact: per item key, tags, score, created_at, importance_score, scope and the first ~300 chars of content (content_truncated/content_chars say when it was cut). For the whole text of one entry call get_memory(key); full=true returns every item uncut with all stored fields. Below the relevance threshold, returns an empty list with an explanation instead of weak matches. For loading ALL project knowledge at session start, use get_project_knowledge instead. Set include_archived=true to retrieve archived memories."),
+		mcpsdk.WithDescription("SEARCH memory by keywords. Use to find a SPECIFIC piece of knowledge, e.g. 'API convention' or 'license decision'. Returns ranked results with scores. Default view is compact: per item key, tags, score and the first ~300 chars of content (a trailing … marks a cut; timestamps, scope and bookkeeping fields are omitted). For the whole text of one entry call get_memory(key); full=true returns every item uncut with all stored fields (created_at included). Below the relevance threshold, returns an empty list with an explanation instead of weak matches. For loading ALL project knowledge at session start, use get_project_knowledge instead. Set include_archived=true to retrieve archived memories."),
 		mcpsdk.WithString("query", mcpsdk.Required(), mcpsdk.Description("Full-text search query.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Filter to a specific project.")),
 		mcpsdk.WithString("scope", mcpsdk.Description("Filter by scope: workspace, project, agent, or all (default).")),
@@ -433,11 +433,11 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithBoolean("include_archived", mcpsdk.Description("Include archived memories in results (default false)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 10, max 50). This is a hard bound: the response never contains more than limit items. When knowledge-graph boost is enabled, a share of the page (limit/4, at least 1 when limit>=2) may be filled with graph-expanded neighbours, marked graph_boost=true and provenance=via:graph — they take the tail slots instead of being added on top. Rows that fail scope/tags are dropped, never returned unmarked, whether they arrived by retrieval, by pinning, or by graph expansion.")),
 		mcpsdk.WithNumber("offset", mcpsdk.Description("Pagination offset (default 0).")),
-		mcpsdk.WithBoolean("full", mcpsdk.Description("Return every item in full, with all stored fields and uncut content (default false: compact view, content cut at ~300 chars with content_truncated/content_chars set, bookkeeping fields such as agent_id, workspace_id, simhash and decay scores are left out). Prefer get_memory(key) to read one cut entry in full; full=true re-fetches the whole page uncut."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return every item in full, with all stored fields and uncut content (default false: compact view, content cut at ~300 chars and marked with a trailing `…`, bookkeeping fields such as agent_id, workspace_id, simhash and decay scores are left out). Prefer get_memory(key) to read one cut entry in full; full=true re-fetches the whole page uncut."), mcpsdk.DefaultBool(false)),
 	), s.tracked("recall", s.handleRecall))
 
 	s.addTool(mcpsdk.NewTool("get_memory",
-		mcpsdk.WithDescription("Full text of ONE memory by exact key (the `key` field recall returns). Use after recall when an item's content_truncated is true and you need the rest. Errors if no entry has exactly that key."),
+		mcpsdk.WithDescription("Full text of ONE memory by exact key (the `key` field recall returns). Use after recall when an item's content ends with the `…` cut marker and you need the rest. Errors if no entry has exactly that key."),
 		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Exact memory key, as returned by recall.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project of a project-scoped entry, if the key exists in several.")),
 		mcpsdk.WithString("scope", mcpsdk.Description("Filter by scope: workspace, project, agent, or all (default).")),
@@ -725,12 +725,13 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Comments & Artifacts ---
 	s.addTool(mcpsdk.NewTool("list_comments",
-		mcpsdk.WithDescription("List comments on a task. NEWEST FIRST by default: limit=N returns the LAST N comments of the thread — enough to catch up on where it stands. To read a thread chronologically from its start, pass order=asc and page forward. Paginated: call again with a higher `page` to read a thread longer than `limit`."),
+		mcpsdk.WithDescription("List comments on a task. NEWEST FIRST by default: limit=N returns the LAST N comments of the thread — enough to catch up on where it stands. To read a thread chronologically from its start, pass order=asc and page forward. Paginated: call again with a higher `page` to read a thread longer than `limit`. Default view is compact: per comment id, author_name, created_at and body (cut at 500 chars, body_truncated marks a cut; is_internal shows only when true); author_id, task_id, url, metadata, parent_comment_id and updated_at are omitted — pass full=true for complete comment objects."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithBoolean("include_internal", mcpsdk.Description("Include internal (agent-only) comments."), mcpsdk.DefaultBool(true)),
-		mcpsdk.WithNumber("limit", mcpsdk.Description("Max comments to return (default 10, newest first; bodies are never cut).")),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Max comments to return (default 10, newest first; bodies cut at 500 chars in the compact view).")),
 		mcpsdk.WithString("order", mcpsdk.Description("Sort direction: desc (default — NEWEST comments first, so limit=2 gives the LAST two comments) or asc (oldest first — chronological reading from the start of the thread). An invalid value is REFUSED by the API; an explicitly empty value is refused locally (at the API boundary it is indistinguishable from absent) — neither is silently treated as asc.")),
 		mcpsdk.WithNumber("page", mcpsdk.Description("1-based page number. Omit for the first page; use with `has_more`/`total_pages` in the response to read the rest of a thread.")),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return complete comment objects (author_id, task_id, url, metadata, parent_comment_id, updated_at, uncut bodies) instead of the compact view."), mcpsdk.DefaultBool(false)),
 	), s.tracked("list_comments", s.handleListComments))
 
 	s.addTool(mcpsdk.NewTool("upload_artifact",
@@ -792,7 +793,7 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Team & Rules ---
 	s.addTool(mcpsdk.NewTool("get_team_directory",
-		mcpsdk.WithDescription("Get the workspace team directory listing all agents and human members. Default: a compact row-array table (columns id/name/role/project/status; project cut to one line, ≤200 chars) instead of full profiles — pass full=true for the complete dump (capabilities, heartbeat, escalation_to, timestamps, ...)."),
+		mcpsdk.WithDescription("Get the workspace team directory listing all agents and human members. Default: a compact row-array table (columns id/name/role/project/status; project = responsibility_zone cut to one line ≤60 chars, status = computed_status) instead of full profiles — pass full=true for the complete dump (capabilities, heartbeat, escalation_to, timestamps, full zone text, ...)."),
 		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the full per-member profile dump instead of the compact table (default false)."), mcpsdk.DefaultBool(false)),
 	), s.tracked("get_team_directory", s.handleGetTeamDirectory))
 

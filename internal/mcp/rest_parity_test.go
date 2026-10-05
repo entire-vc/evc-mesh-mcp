@@ -115,7 +115,7 @@ func TestRESTvsMCP_EntityKeysMatchExceptIntentionalDrops(t *testing.T) {
 	got := map[string]map[string]any{
 		"task":     call(s.handleGetTask, map[string]any{"task_id": taskID, "full": true})["task"].(map[string]any),
 		"project":  call(s.handleGetProject, map[string]any{"project_id": projectID})["project"].(map[string]any),
-		"comment":  first(call(s.handleListComments, map[string]any{"task_id": taskID})["items"]),
+		"comment":  first(call(s.handleListComments, map[string]any{"task_id": taskID, "full": true})["items"]),
 		"doc":      first(call(s.handleListDocs, map[string]any{"project_id": projectID})["items"]),
 		"artifact": call(s.handleGetArtifact, map[string]any{"artifact_id": artifactID})["artifact"].(map[string]any),
 	}
