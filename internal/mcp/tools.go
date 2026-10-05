@@ -286,12 +286,13 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		resolvedID = taskID
 	}
 
-	// Default view caps the description (getTaskDescChars) and drops empty
-	// service fields; full=true keeps the verbatim body. Applied before the
+	// Default view drops envelope fields; descriptions are always complete.
+	// full=true keeps the complete REST object. Applied before the
 	// since-branching so both the plain and the changed-since paths return
 	// the same shape.
 	full := mcpsdk.ParseBoolean(request, "full", false)
 	if !full {
+		s.compactTaskStatus(ctx, task, resolvedID)
 		leanGetTaskView(task)
 	}
 
@@ -339,9 +340,9 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 			}
 			// Inline comments share the list_comments compact shape in the
 			// default view (wave 2, #dc719c63): id/author_name/created_at/
-			// body ≤500 chars. full=true returns them verbatim.
+			// complete body. full=true returns complete REST objects.
 			if !full {
-				arr = compactCommentItems(arr)
+				arr = compactCommentItems(arr, mcpsdk.ParseBoolean(request, "include_auto", false))
 			}
 			resp["comments"] = arr
 			itemCount = len(arr)
@@ -404,6 +405,10 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		// semantics callers historically got from the bare-array response.
 		resp["dependencies"] = deps.Outgoing
 		resp["dependencies_incoming"] = deps.Incoming
+		if !full {
+			resp["dependencies"] = compactDependencies(deps.Outgoing, false)
+			resp["dependencies_incoming"] = compactDependencies(deps.Incoming, true)
+		}
 	}
 
 	if mcpsdk.ParseBoolean(request, "include_vcs_links", false) {
@@ -447,7 +452,7 @@ func taskChangedSince(task map[string]any, since time.Time) bool {
 // call this session.
 func taskDeltaStub(task map[string]any) map[string]any {
 	stub := map[string]any{}
-	for _, f := range []string{"id", "status_id", "assignee_id", "assignee_name", "checked_out_by", "human_gate", "updated_at"} {
+	for _, f := range []string{"id", "status", "status_id", "status_lookup_error", "assignee_id", "assignee_name", "checked_out_by", "human_gate", "updated_at"} {
 		if v, ok := task[f]; ok {
 			stub[f] = v
 		}
@@ -463,53 +468,14 @@ func taskDeltaStub(task map[string]any) map[string]any {
 // comments_total_count/comments_has_more keep the hidden rest visible.
 const defaultTaskCommentsLimit = 5
 
-// getTaskDescChars caps task.description in the default get_task view. A
-// fleet measurement (24h) put get_task at 1012 calls, 5.3k avg / 12.8k p95
-// per call, descriptions being the bulk; wave 1 kept 4000 chars and the
-// follow-up fleet probe (2026-10-05, #dc719c63) still measured 5.1k per call
-// on a card whose description ran long — the AC section of a card lives in
-// the first 2000 chars, and the rest is one full=true away.
-const getTaskDescChars = 2000
-
-// capTaskDescription cuts task["description"] to getTaskDescChars runes and
-// stamps description_truncated/description_chars/description_hint. A short
-// description is left untouched (no markers).
-func capTaskDescription(task map[string]any) {
-	desc, _ := task["description"].(string)
-	r := []rune(desc)
-	if len(r) <= getTaskDescChars {
-		return
-	}
-	task["description"] = string(r[:getTaskDescChars])
-	task["description_truncated"] = true
-	task["description_chars"] = len(r)
-	task["description_hint"] = "pass full=true for the full description"
-}
-
-// getTaskDropAlways are service fields the compact get_task view never
-// returns: url is derivable from id and nothing routes on it.
-var getTaskDropAlways = []string{"url"}
-
-// getTaskDropWhenEmpty are task fields dropped only while null/empty/zero/
-// false, mirroring the get_my_tasks lean lists: a real value (a set due_date,
-// non-zero counters, populated custom_fields) always survives — only the
-// ~14 bytes of "artifact_count": 0-style noise go.
-var getTaskDropWhenEmpty = []string{
-	"artifact_count", "vcs_link_count", "subtask_count", "dod_checks", "custom_fields",
-	"estimated_hours", "start_after", "due_date", "completed_at", "completion_signal",
-	"is_shipped", "position", "assigned_by", "parent_task_id",
-}
-
-// leanGetTaskView applies the wave-2 compact default to a task object in
-// place: description cap plus empty-service-field stripping. full=true
-// callers never reach it.
+// leanGetTaskView removes envelope fields, preserving all decision text.
 func leanGetTaskView(task map[string]any) {
-	capTaskDescription(task)
-	for _, k := range getTaskDropAlways {
-		delete(task, k)
+	keep := map[string]bool{}
+	for _, k := range []string{"id", "title", "status", "status_id", "status_lookup_error", "priority", "assignee_name", "labels", "parent_task_id", "start_after", "updated_at", "description", "human_gate", "custom_fields", "dod_checks"} {
+		keep[k] = true
 	}
-	for _, k := range getTaskDropWhenEmpty {
-		if isEmptyJSONValue(task[k]) {
+	for k := range task {
+		if !keep[k] || (isEmptyJSONValue(task[k]) && k != "description" && k != "id" && k != "title") {
 			delete(task, k)
 		}
 	}
@@ -1219,63 +1185,71 @@ func (s *Server) handleListComments(ctx context.Context, request mcpsdk.CallTool
 		params["page"] = strconv.Itoa(page)
 	}
 
-	result, err := s.getRESTClient(ctx).ListComments(ctx, taskID, params)
+	var result map[string]any
+	var err error
+	if hasArgument(request, "after") {
+		after := mcpsdk.ParseString(request, "after", "")
+		if after == "" {
+			return errResult("after must be a comment UUID or RFC3339 timestamp")
+		}
+		result, err = s.commentsAfter(ctx, taskID, after, params)
+	} else {
+		result, err = s.getRESTClient(ctx).ListComments(ctx, taskID, params)
+	}
 	if err != nil {
 		return errResult("failed to list comments: %v", err)
 	}
 
 	// Compact view by default (wave 2, #dc719c63): the REST page carries 12
-	// fields per comment and bodies up to 1.2k chars — a live probe measured
+	// fields per comment — a live probe measured
 	// 1.6k chars per comment, most of it author_id/task_id/url/metadata the
 	// caller already knows or never uses. The compact item keeps what a
 	// reader acts on; full=true returns the page untouched.
 	if !mcpsdk.ParseBoolean(request, "full", false) {
-		result = leanCommentsPage(result)
+		result = leanCommentsPage(result, mcpsdk.ParseBoolean(request, "include_auto", false))
 	}
 
 	return jsonResult(result)
 }
 
-// listCommentsBodyChars caps a comment body in the compact list_comments (and
-// inline get_task comments) view. 500 chars covers a normal status comment;
-// longer bodies are logs pasted into a card and belong in an artifact.
-const listCommentsBodyChars = 500
-
-// compactComment projects a comment onto the compact view: id, author_name,
-// created_at, body cut to listCommentsBodyChars (marked), is_internal only
-// when true. Everything else — author_id, author_type, task_id, url,
-// metadata, parent_comment_id, updated_at — is a full=true field.
-func compactComment(m map[string]any) map[string]any {
-	out := make(map[string]any, 5)
-	for _, f := range []string{"id", "author_name", "created_at"} {
+// compactComment retains cursor/reply id and all ordinary text. Only known
+// automation prefixes are summarized, with include_auto restoring their bodies.
+func compactComment(m map[string]any, includeAuto ...bool) map[string]any {
+	out := make(map[string]any, 4)
+	for _, f := range []string{"id", "author_name", "created_at", "body"} {
 		if v, ok := m[f]; ok {
 			out[f] = v
 		}
 	}
-	if a, ok := m["is_internal"].(bool); ok && a {
-		out["is_internal"] = a
+	if stamp, ok := out["created_at"].(string); ok {
+		if t, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+			out["created_at"] = t.UTC().Format("2006-01-02T15:04Z")
+		}
 	}
-	if body, ok := m["body"]; ok {
-		if s, ok := body.(string); ok {
-			if r := []rune(s); len(r) > listCommentsBodyChars {
-				out["body"] = string(r[:listCommentsBodyChars]) + "…"
-				out["body_truncated"] = true
-			} else {
-				out["body"] = s
-			}
-		} else {
-			out["body"] = body
+	if len(includeAuto) == 0 || !includeAuto[0] {
+		if body, ok := out["body"].(string); ok && isAutomaticComment(body) {
+			out["body"] = strings.Join(strings.Fields(strings.SplitN(body, "\n", 2)[0]), " ")
+			out["auto_summary"] = true
 		}
 	}
 	return out
 }
 
+func isAutomaticComment(body string) bool {
+	for _, prefix := range []string{"[fiddler] ✅ completed", "[balancer]", "🤖 auto:", "INTAKE:", "[INTAKE]"} {
+		if strings.HasPrefix(body, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // compactCommentItems projects every item; non-map entries pass through.
-func compactCommentItems(items []any) []any {
+func compactCommentItems(items []any, includeAuto ...bool) []any {
 	out := make([]any, len(items))
 	for i, it := range items {
 		if m, ok := it.(map[string]any); ok {
-			out[i] = compactComment(m)
+			out[i] = compactComment(m, includeAuto...)
 		} else {
 			out[i] = it
 		}
@@ -1291,7 +1265,7 @@ var commentsPageKeepFields = []string{
 }
 
 // leanCommentsPage applies the compact view to a REST comments page.
-func leanCommentsPage(result map[string]any) map[string]any {
+func leanCommentsPage(result map[string]any, includeAuto ...bool) map[string]any {
 	out := make(map[string]any, len(commentsPageKeepFields)+1)
 	for _, k := range commentsPageKeepFields {
 		if v, ok := result[k]; ok {
@@ -1299,7 +1273,7 @@ func leanCommentsPage(result map[string]any) map[string]any {
 		}
 	}
 	if items, ok := result["items"].([]any); ok {
-		out["items"] = compactCommentItems(items)
+		out["items"] = compactCommentItems(items, includeAuto...)
 	} else if items, ok := result["items"]; ok {
 		out["items"] = items
 	} else {
