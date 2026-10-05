@@ -264,23 +264,27 @@ func TestCompactRecallItems_EveryItemCompact(t *testing.T) {
 	out := compactRecallItems(items)
 	for i, it := range out {
 		m := it.(map[string]any)
-		for _, f := range []string{"key", "tags", "score", "created_at", "importance_score", "scope", "content"} {
+		// Wave 2 (#dc719c63): the compact keep-list shrank to what a reader
+		// acts on — key/tags/score/content. created_at, importance_score and
+		// scope moved to full=true only.
+		for _, f := range []string{"key", "tags", "score", "content"} {
 			if _, has := m[f]; !has {
 				t.Errorf("item %d must keep %q", i, f)
 			}
 		}
 		for _, f := range []string{"agent_id", "workspace_id", "content_simhash", "freshness_score", "recency_score",
-			"relevance", "updated_at", "version", "id", "source_type", "archived", "status", "expires_at"} {
+			"relevance", "updated_at", "version", "id", "source_type", "archived", "status", "expires_at",
+			"created_at", "importance_score", "scope", "content_truncated", "content_chars"} {
 			if _, has := m[f]; has {
 				t.Errorf("item %d must not carry %q", i, f)
 			}
 		}
 		got := m["content"].(string)
-		if n := len([]rune(got)); n != recallContentChars || !utf8.ValidString(got) {
-			t.Errorf("item %d content = %d runes (valid=%v), want %d", i, n, utf8.ValidString(got), recallContentChars)
+		if n := len([]rune(got)); n != recallContentChars+1 || !utf8.ValidString(got) {
+			t.Errorf("item %d content = %d runes (valid=%v), want %d + ellipsis", i, n, utf8.ValidString(got), recallContentChars)
 		}
-		if m["content_truncated"] != true || m["content_chars"] != recallContentChars+500 {
-			t.Errorf("item %d truncation not announced: %v / %v", i, m["content_truncated"], m["content_chars"])
+		if !strings.HasSuffix(got, "…") {
+			t.Errorf("item %d cut content must end with the ellipsis mark", i)
 		}
 	}
 	if _, has := items[0].(map[string]any)["agent_id"]; !has {
@@ -298,13 +302,15 @@ func TestCompactRecallItem_ShortContentNotFlagged(t *testing.T) {
 	}
 }
 
-func TestCompactRecallItem_CreatedAtFallsBackToUpdatedAt(t *testing.T) {
-	out := compactRecallItem(map[string]any{"key": "k", "updated_at": "2026-10-02"})
-	if out["created_at"] != "2026-10-02" {
-		t.Errorf("created_at should fall back to updated_at, got %v", out["created_at"])
+// Wave 2 (#dc719c63): timestamps left the compact view entirely — created_at
+// (and its old updated_at fallback) is a full=true field now.
+func TestCompactRecallItem_NoTimestamps(t *testing.T) {
+	out := compactRecallItem(map[string]any{"key": "k", "created_at": "2026-10-01", "updated_at": "2026-10-02"})
+	if _, has := out["created_at"]; has {
+		t.Error("created_at must not be emitted in the compact view")
 	}
 	if _, has := out["updated_at"]; has {
-		t.Error("updated_at itself must not leak")
+		t.Error("updated_at must not be synthesized into the compact view")
 	}
 }
 
@@ -472,11 +478,13 @@ func TestHandleRecall_AboveThreshold_CompactForEveryItem(t *testing.T) {
 	}
 	for i, it := range gotItems {
 		m := it.(map[string]any)
-		if n := len([]rune(m["content"].(string))); n != recallContentChars {
-			t.Errorf("item %d content %d runes, want %d", i, n, recallContentChars)
+		// Wave 2 (#dc719c63): the cut is marked by a trailing ellipsis, not
+		// by content_truncated/content_chars fields.
+		if n := len([]rune(m["content"].(string))); n != recallContentChars+1 {
+			t.Errorf("item %d content %d runes, want %d + ellipsis", i, n, recallContentChars)
 		}
-		if m["content_truncated"] != true || m["content_chars"] != float64(2000) {
-			t.Errorf("item %d truncation flags wrong: %v / %v", i, m["content_truncated"], m["content_chars"])
+		if !strings.HasSuffix(m["content"].(string), "…") {
+			t.Errorf("item %d cut content must end with the ellipsis mark", i)
 		}
 		if _, has := m["agent_id"]; has {
 			t.Errorf("item %d leaks agent_id", i)

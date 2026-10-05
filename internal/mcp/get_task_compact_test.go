@@ -43,8 +43,8 @@ func TestGetTask_DescriptionCappedByDefault_FullVerbatim(t *testing.T) {
 
 	task, _ := callGetTaskCompact(t, s, map[string]any{"task_id": id})["task"].(map[string]any)
 	d, _ := task["description"].(string)
-	if n := len([]rune(d)); n != 4000 {
-		t.Errorf("default description = %d runes, want 4000", n)
+	if n := len([]rune(d)); n != 2000 {
+		t.Errorf("default description = %d runes, want 2000 (wave 2, #dc719c63)", n)
 	}
 	if task["description_truncated"] != true {
 		t.Errorf("description_truncated = %v, want true", task["description_truncated"])
@@ -70,28 +70,29 @@ func TestGetTask_DescriptionCappedByDefault_FullVerbatim(t *testing.T) {
 
 func TestGetTask_ShortDescriptionUntouched(t *testing.T) {
 	id := uuid.New().String()
-	exact := strings.Repeat("a", 4000)
+	exact := strings.Repeat("a", 2000)
 	s := compactTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "title": "t", "description": exact})
 	})
 	task, _ := callGetTaskCompact(t, s, map[string]any{"task_id": id})["task"].(map[string]any)
 	if task["description"] != exact {
-		t.Error("a description of exactly 4000 chars must pass whole")
+		t.Error("a description of exactly 2000 chars must pass whole")
 	}
 	if _, has := task["description_truncated"]; has {
 		t.Error("no truncation marker on an untouched description")
 	}
 }
 
-func TestListComments_DefaultLimitTenBodyWhole(t *testing.T) {
+func TestListComments_DefaultLimitTenBodyCutCompact(t *testing.T) {
 	var q string
 	body := strings.Repeat("x", 20000)
 	s := compactTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		q = r.URL.RawQuery
 		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "c", "body": body}}})
 	})
+	taskID := uuid.New().String()
 	req := mcpsdk.CallToolRequest{}
-	req.Params.Arguments = map[string]any{"task_id": uuid.New().String()}
+	req.Params.Arguments = map[string]any{"task_id": taskID}
 	res, err := s.handleListComments(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -99,8 +100,30 @@ func TestListComments_DefaultLimitTenBodyWhole(t *testing.T) {
 	if !strings.Contains(q, "page_size=10") || !strings.Contains(q, "sort_dir=desc") {
 		t.Errorf("default query = %q, want page_size=10 and sort_dir=desc", q)
 	}
+	// Wave 2 (#dc719c63): the default view cuts a 20k-char body to 500 + mark;
+	// full=true returns it whole.
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(resultText(t, res)), &page); err != nil {
+		t.Fatal(err)
+	}
+	got := page.Items[0]["body"].(string)
+	if n := len([]rune(got)); n != 500+1 {
+		t.Errorf("compact body = %d runes, want 500 + ellipsis", n)
+	}
+	if page.Items[0]["body_truncated"] != true {
+		t.Error("a cut body must carry body_truncated=true")
+	}
+
+	reqFull := mcpsdk.CallToolRequest{}
+	reqFull.Params.Arguments = map[string]any{"task_id": taskID, "full": true}
+	res, err = s.handleListComments(context.Background(), reqFull)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(resultText(t, res), body) {
-		t.Error("comment body must not be cut")
+		t.Error("full=true must return the comment body whole")
 	}
 }
 
@@ -148,7 +171,7 @@ func TestTeamDirectory_ProjectColumnCappedToOneLine(t *testing.T) {
 	if rows[0][3] != "first line zone" {
 		t.Errorf("zone row0 = %q", rows[0][3])
 	}
-	if n := len([]rune(rows[1][3].(string))); n != 200 {
-		t.Errorf("zone row1 = %d runes, want 200", n)
+	if n := len([]rune(rows[1][3].(string))); n != 60 {
+		t.Errorf("zone row1 = %d runes, want 60 (wave 2, one line)", n)
 	}
 }
