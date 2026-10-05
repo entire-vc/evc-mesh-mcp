@@ -143,8 +143,8 @@ func callListComments(t *testing.T, s *Server, args map[string]any) map[string]a
 
 func TestListCommentsWave2Compact_DefaultFieldsOnly(t *testing.T) {
 	comments := []map[string]any{
-		wave2Comment("c1", strings.Repeat("b", 700), false), // body > 500: cut + mark
-		wave2Comment("c2", "short body", true),              // internal: flag survives
+		wave2Comment("c1", strings.Repeat("b", 700), false), // long body preserved
+		wave2Comment("c2", "short body", true),              // internal flag is full-only
 	}
 	s := newCommentsTestServer(t, comments)
 
@@ -175,21 +175,17 @@ func TestListCommentsWave2Compact_DefaultFieldsOnly(t *testing.T) {
 			t.Errorf("compact comment still carries %s (wave-2 drop)", f)
 		}
 	}
-	body, _ := first["body"].(string)
-	if n := len([]rune(body)); n != 500+1 {
-		t.Errorf("body = %d runes, want 500 + ellipsis", n)
+	if first["body"] != strings.Repeat("b", 700) {
+		t.Error("compact body must be complete")
 	}
-	if first["body_truncated"] != true {
-		t.Error("a cut body must carry body_truncated=true")
+	if _, has := first["body_truncated"]; has {
+		t.Error("obsolete body marker")
+	}
+	second := items[1].(map[string]any)
+	if _, has := second["is_internal"]; has {
+		t.Error("is_internal is full-only")
 	}
 
-	second, _ := items[1].(map[string]any)
-	if second["is_internal"] != true {
-		t.Error("is_internal must survive when true (an agent-only comment must be recognizable)")
-	}
-	if _, has := second["body_truncated"]; has {
-		t.Error("an uncut body must not carry body_truncated")
-	}
 }
 
 // The pager must survive the compact view exactly when there IS a next
@@ -200,7 +196,7 @@ func TestListCommentsWave2Compact_KeepsPagingWhenHasMore(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"items": []any{wave2Comment("c21", "page two body", false)},
-			"page": 2, "page_size": 10, "total_count": 42,
+			"page":  2, "page_size": 10, "total_count": 42,
 			"total_pages": 5, "has_more": true, "list_revision": 7,
 			"order": "desc", // not on the envelope allow-list: must drop
 		})
@@ -254,7 +250,7 @@ func TestListCommentsWave2Full_Verbatim(t *testing.T) {
 
 // --- get_task ---------------------------------------------------------------
 
-func TestGetTaskWave2_DescCap2000(t *testing.T) {
+func TestGetTaskWave3_DescriptionWhole(t *testing.T) {
 	id := uuid.New().String()
 	long := strings.Repeat("я", 9000)
 	s := compactTestServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -263,15 +259,13 @@ func TestGetTaskWave2_DescCap2000(t *testing.T) {
 
 	res := callGetTaskCompact(t, s, map[string]any{"task_id": id})
 	task, _ := res["task"].(map[string]any)
-	d, _ := task["description"].(string)
-	if n := len([]rune(d)); n != 2000 {
-		t.Errorf("default description = %d runes, want 2000 (wave 2)", n)
+	if task["description"] != long {
+		t.Error("compact description must be complete")
 	}
-	if task["description_truncated"] != true {
-		t.Error("description_truncated must mark the cut")
-	}
-	if h, _ := task["description_hint"].(string); !strings.Contains(h, "full=true") {
-		t.Error("hint must name full=true")
+	for _, k := range []string{"description_truncated", "description_chars", "description_hint"} {
+		if _, ok := task[k]; ok {
+			t.Errorf("obsolete marker %s", k)
+		}
 	}
 
 	// full=true: verbatim, no markers.
@@ -304,13 +298,13 @@ func TestGetTaskWave2_EmptyServiceFieldsDropped(t *testing.T) {
 	for _, f := range []string{
 		"artifact_count", "vcs_link_count", "subtask_count", "custom_fields", "dod_checks",
 		"estimated_hours", "start_after", "due_date", "completed_at", "completion_signal",
-		"is_shipped", "position", "assigned_by", "url",
+		"is_shipped", "position", "assigned_by", "url", "human_gate",
 	} {
 		if _, has := task[f]; has {
 			t.Errorf("compact get_task still carries empty/service field %s", f)
 		}
 	}
-	for _, f := range []string{"labels", "human_gate", "parent_task_id", "priority", "id", "title"} {
+	for _, f := range []string{"labels", "parent_task_id", "priority", "id", "title"} {
 		if _, has := task[f]; !has {
 			t.Errorf("compact get_task lost real-value field %s", f)
 		}
@@ -327,7 +321,7 @@ func TestGetTaskWave2_EmptyServiceFieldsDropped(t *testing.T) {
 	}
 }
 
-func TestGetTaskWave2_NonEmptyCountersSurvive(t *testing.T) {
+func TestGetTaskWave3_CountersFullOnly(t *testing.T) {
 	id := uuid.New().String()
 	s := compactTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -338,11 +332,21 @@ func TestGetTaskWave2_NonEmptyCountersSurvive(t *testing.T) {
 	})
 	res := callGetTaskCompact(t, s, map[string]any{"task_id": id})
 	task, _ := res["task"].(map[string]any)
-	for _, f := range []string{"artifact_count", "subtask_count", "due_date", "custom_fields"} {
-		if _, has := task[f]; !has {
-			t.Errorf("a real value in %s must survive the compact view", f)
+	for _, f := range []string{"artifact_count", "subtask_count", "due_date"} {
+		if _, ok := task[f]; ok {
+			t.Errorf("compact contains %s", f)
 		}
 	}
+	if task["custom_fields"] == nil {
+		t.Error("populated custom fields must survive")
+	}
+	full := callGetTaskCompact(t, s, map[string]any{"task_id": id, "full": true})["task"].(map[string]any)
+	for _, f := range []string{"artifact_count", "subtask_count", "due_date", "custom_fields"} {
+		if full[f] == nil {
+			t.Errorf("full lost %s", f)
+		}
+	}
+
 }
 
 func TestGetTaskWave2_InlineCommentsCompact(t *testing.T) {
@@ -365,9 +369,10 @@ func TestGetTaskWave2_InlineCommentsCompact(t *testing.T) {
 		t.Fatalf("comments = %d, want 1", len(comments))
 	}
 	c, _ := comments[0].(map[string]any)
-	if b, _ := c["body"].(string); len([]rune(b)) != 500+1 {
-		t.Errorf("inline comment body = %d runes, want %d + ellipsis", len([]rune(b)), 500)
+	if c["body"] != long {
+		t.Error("inline body must remain complete")
 	}
+
 	if _, has := c["author_id"]; has {
 		t.Error("inline comments share the list_comments compact shape (no author_id)")
 	}

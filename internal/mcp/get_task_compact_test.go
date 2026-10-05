@@ -34,7 +34,7 @@ func callGetTaskCompact(t *testing.T, s *Server, args map[string]any) map[string
 	return resp
 }
 
-func TestGetTask_DescriptionCappedByDefault_FullVerbatim(t *testing.T) {
+func TestGetTask_DescriptionWholeByDefault_FullVerbatim(t *testing.T) {
 	id := uuid.New().String()
 	long := strings.Repeat("я", 9000) // multi-byte: cut must be rune-safe
 	s := compactTestServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -42,18 +42,13 @@ func TestGetTask_DescriptionCappedByDefault_FullVerbatim(t *testing.T) {
 	})
 
 	task, _ := callGetTaskCompact(t, s, map[string]any{"task_id": id})["task"].(map[string]any)
-	d, _ := task["description"].(string)
-	if n := len([]rune(d)); n != 2000 {
-		t.Errorf("default description = %d runes, want 2000 (wave 2, #dc719c63)", n)
+	if task["description"] != long {
+		t.Error("compact description must remain complete")
 	}
-	if task["description_truncated"] != true {
-		t.Errorf("description_truncated = %v, want true", task["description_truncated"])
-	}
-	if c, _ := task["description_chars"].(float64); c != 9000 {
-		t.Errorf("description_chars = %v, want 9000", task["description_chars"])
-	}
-	if h, _ := task["description_hint"].(string); !strings.Contains(h, "full=true") {
-		t.Errorf("hint missing full=true: %q", h)
+	for _, k := range []string{"description_truncated", "description_chars", "description_hint"} {
+		if _, ok := task[k]; ok {
+			t.Errorf("obsolete marker %s", k)
+		}
 	}
 
 	// positive control: full=true is the verbatim old shape, no markers.
@@ -83,7 +78,7 @@ func TestGetTask_ShortDescriptionUntouched(t *testing.T) {
 	}
 }
 
-func TestListComments_DefaultLimitTenBodyCutCompact(t *testing.T) {
+func TestListComments_DefaultLimitTenBodyWholeCompact(t *testing.T) {
 	var q string
 	body := strings.Repeat("x", 20000)
 	s := compactTestServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -100,8 +95,7 @@ func TestListComments_DefaultLimitTenBodyCutCompact(t *testing.T) {
 	if !strings.Contains(q, "page_size=10") || !strings.Contains(q, "sort_dir=desc") {
 		t.Errorf("default query = %q, want page_size=10 and sort_dir=desc", q)
 	}
-	// Wave 2 (#dc719c63): the default view cuts a 20k-char body to 500 + mark;
-	// full=true returns it whole.
+	// Both views preserve the complete 20k-character body.
 	var page struct {
 		Items []map[string]any `json:"items"`
 	}
@@ -109,11 +103,11 @@ func TestListComments_DefaultLimitTenBodyCutCompact(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := page.Items[0]["body"].(string)
-	if n := len([]rune(got)); n != 500+1 {
-		t.Errorf("compact body = %d runes, want 500 + ellipsis", n)
+	if got != body {
+		t.Error("compact body must remain complete")
 	}
-	if page.Items[0]["body_truncated"] != true {
-		t.Error("a cut body must carry body_truncated=true")
+	if _, ok := page.Items[0]["body_truncated"]; ok {
+		t.Error("obsolete body marker")
 	}
 
 	reqFull := mcpsdk.CallToolRequest{}
