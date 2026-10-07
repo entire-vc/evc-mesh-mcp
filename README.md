@@ -252,7 +252,7 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 | `get_project_knowledge` | Get ALL permanent knowledge (decisions, conventions). ACP Step 2 |
 | `get_my_rules` | Get ALL governance rules (workflow + assignment). ACP Step 3 |
 | `get_context` | Get recent activity + project knowledge. ACP Step 4 |
-| `get_my_tasks` | Get assigned tasks. ACP Step 5 |
+| `get_my_tasks` | Get assigned tasks with complete descriptions and optional lossless conditional responses. ACP Step 5 |
 
 ### Task Management
 
