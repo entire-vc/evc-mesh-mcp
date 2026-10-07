@@ -101,7 +101,8 @@ type Server struct {
 	profile     string
 	// checkouts stores checkout_token keyed by task_id for graceful release.
 	// Populated by handleCheckoutTask; consumed and cleared by handleReleaseTask.
-	checkouts sync.Map
+	checkouts        sync.Map
+	myTasksSnapshots myTasksSnapshots
 	// activeProjects maps agentID (uuid.UUID) to the project_id of the most recently
 	// checked-out task. Used by handleRemember to auto-populate project_id when absent.
 	activeProjects sync.Map
@@ -285,11 +286,14 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("get_context", s.handleGetContext))
 
 	s.addTool(mcpsdk.NewTool("get_my_tasks",
-		mcpsdk.WithDescription("Get YOUR assigned tasks (ACP Step 5). Filter by status_category to focus on active work. Use at session start and after completing tasks to pick up the next assignment. Each item's description is trimmed to its first line (≤200 chars; description_truncated marks cuts, has_description says whether there is more) and envelope fields (url, created_by/created_at, parent_task_id, assignee_id) and valueless fields (0-counters, due_date=null, human_gate=false) are omitted — pass full=true for the complete items, or get_task for one card's full details."),
+		mcpsdk.WithDescription("Get YOUR assigned tasks (ACP Step 5). Filter by status_category to focus on active work. Use at session start and after completing tasks to pick up the next assignment. Descriptions are complete. Envelope fields (url, created_by/created_at, parent_task_id, assignee_id) and valueless fields (0-counters, due_date=null, human_gate=false) are omitted — pass full=true for the complete items, or get_task for one card's full details."),
 		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: backlog, todo, in_progress, review, done, cancelled.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Filter by project.")),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 50).")),
-		mcpsdk.WithBoolean("full", mcpsdk.Description("Return complete items (full descriptions and all envelope fields) instead of the lean first-line view."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the original complete REST response; always bypasses revision and delta shortcuts."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithString("snapshot_session", mcpsdk.Description("Opaque non-secret consumer cache namespace. Required for conditional responses on stateless HTTP. Use a fresh value after restart or compaction; never credentials or lease tokens.")),
+		mcpsdk.WithString("known_revision", mcpsdk.Description("Revision of a complete snapshot retained for this session and the same filters/view. Omit after cache loss, restart or compaction to request complete cold. Exact match returns unchanged=true; mismatch returns complete cold unless accept_delta=true.")),
+		mcpsdk.WithBoolean("accept_delta", mcpsdk.Description("Opt in to lossless delta against known_revision: complete changed items, removed_ids, full order and non-items envelope. Apply only to the retained matching base; otherwise omit known_revision and retry cold."), mcpsdk.DefaultBool(false)),
 	), s.tracked("get_my_tasks", s.handleGetMyTasks))
 
 	// --- Task CRUD ---

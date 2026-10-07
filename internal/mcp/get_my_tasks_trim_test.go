@@ -128,11 +128,8 @@ func myTasksItem(t *testing.T, out map[string]any, idx int) map[string]any {
 	return item
 }
 
-// TestHandleGetMyTasks_Default_TrimsLongDescriptions is the primary
-// acceptance check: no `full` param → a >200-char multi-paragraph description
-// collapses to its first line with a truncation marker, while routing fields
-// (id/title/status/priority/labels/assignee) survive untouched.
-func TestHandleGetMyTasks_Default_TrimsLongDescriptions(t *testing.T) {
+// Complete default descriptions retain every paragraph and routing field.
+func TestHandleGetMyTasks_Default_PreservesLongDescriptions(t *testing.T) {
 	server := myTasksHarness(t, myTasksFixture())
 	out := callGetMyTasks(t, server, map[string]any{})
 
@@ -141,11 +138,11 @@ func TestHandleGetMyTasks_Default_TrimsLongDescriptions(t *testing.T) {
 	}
 
 	item := myTasksItem(t, out, 0)
-	if got := item["description"]; got != "Fix the retry backoff in the SSE reconnect path." {
-		t.Fatalf("expected description trimmed to its first line, got: %q", got)
+	if got := item["description"]; got != longTaskDescription {
+		t.Fatalf("expected complete description, got: %q", got)
 	}
-	if item["description_truncated"] != true {
-		t.Fatalf("trimmed item must carry description_truncated=true: %v", item)
+	if item["description_truncated"] == true {
+		t.Fatalf("complete item must not carry description_truncated=true: %v", item)
 	}
 	if item["has_description"] != true {
 		t.Fatalf("has_description must stay true on a trimmed item: %v", item)
@@ -170,23 +167,21 @@ func TestHandleGetMyTasks_Default_TrimsLongDescriptions(t *testing.T) {
 	}
 }
 
-// TestHandleGetMyTasks_Default_RuneSafeCut checks the Cyrillic case: the cut
-// at 200 chars is by runes, so a 300-rune first line yields exactly 200 valid
-// runes, never a byte-sliced mojibake tail.
-func TestHandleGetMyTasks_Default_RuneSafeCut(t *testing.T) {
+// Default Unicode descriptions retain all original runes and newlines.
+func TestHandleGetMyTasks_Default_PreservesUnicode(t *testing.T) {
 	server := myTasksHarness(t, myTasksFixture())
 	out := callGetMyTasks(t, server, map[string]any{})
 
 	item := myTasksItem(t, out, 2)
 	desc, _ := item["description"].(string)
-	if n := len([]rune(desc)); n != 200 {
-		t.Fatalf("expected exactly 200 runes after the cut, got %d: %q", n, desc)
+	if n := len([]rune(desc)); n != len([]rune(cyrillicFirstLineLong)) {
+		t.Fatalf("expected every original Unicode rune, got %d: %q", n, desc)
 	}
 	if strings.ContainsRune(desc, 0xFFFD) {
 		t.Fatalf("rune-unsafe cut produced replacement characters: %q", desc)
 	}
-	if item["description_truncated"] != true {
-		t.Fatalf("cut item must carry description_truncated=true: %v", item)
+	if item["description_truncated"] == true {
+		t.Fatalf("complete item must not carry description_truncated=true: %v", item)
 	}
 }
 

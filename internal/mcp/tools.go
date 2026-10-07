@@ -1834,20 +1834,7 @@ func (s *Server) handleGetMyTasks(ctx context.Context, request mcpsdk.CallToolRe
 		return errResult("failed to get tasks: %v", err)
 	}
 
-	// Descriptions dominate this payload: each item carries its full text, so
-	// a default 50-task page measured ~162k chars live (≈3.2k per card,
-	// 2026-10-03), and it sits in the caller's context for the rest of the
-	// session — the same cost mechanism recall was trimmed for. Default view
-	// keeps the first line (the summary authors write first); full=true
-	// restores the old shape, and the full text always stays one
-	// get_task(task_id) call away.
-	if !mcpsdk.ParseBoolean(request, "full", false) {
-		if tasks, ok := result["tasks"].([]any); ok {
-			result["tasks"] = leanTaskSummaries(trimTaskSummaries(tasks))
-		}
-	}
-
-	return jsonResult(result)
+	return s.renderMyTasks(ctx, request, params, result)
 }
 
 // myTasksDescChars caps a task's description in the get_my_tasks list view.
