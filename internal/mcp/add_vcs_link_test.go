@@ -30,6 +30,29 @@ func TestCoreProfile_ExposesAddVCSLink(t *testing.T) {
 	}
 }
 
+// Clients may apply schema defaults before calling a tool. Inferred fields
+// must stay optional and have no schema default that overrides the URL.
+func TestAddVCSLinkSchema_PreservesURLInference(t *testing.T) {
+	for _, profile := range []string{ProfileCore, ProfileFull} {
+		server := NewServer(ServerConfig{Profile: profile})
+		schema := server.MCPServer().ListTools()["add_vcs_link"].Tool.InputSchema
+		for _, name := range []string{"provider", "link_type", "external_id"} {
+			property, ok := schema.Properties[name].(map[string]any)
+			if !ok {
+				t.Fatalf("profile %s: missing %s schema", profile, name)
+			}
+			if value, exists := property["default"]; exists {
+				t.Errorf("profile %s: %s default=%v overrides URL inference", profile, name, value)
+			}
+			for _, required := range schema.Required {
+				if required == name {
+					t.Errorf("profile %s: inferred field %s must be optional", profile, name)
+				}
+			}
+		}
+	}
+}
+
 func TestParseVCSURL(t *testing.T) {
 	tests := []struct {
 		name string
@@ -74,6 +97,21 @@ func TestParseVCSURL(t *testing.T) {
 			name: "self-hosted gitlab merge request",
 			url:  "https://git.entire.host/entire-vc/team-relay-ops/-/merge_requests/14",
 			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "14", Repository: "entire-vc/team-relay-ops"},
+		},
+		{
+			name: "contenthub merge request 326",
+			url:  "https://git.entire.host/entire-vc/contenthub/-/merge_requests/326",
+			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "326", Repository: "entire-vc/contenthub"},
+		},
+		{
+			name: "contenthub merge request 327",
+			url:  "https://git.entire.host/entire-vc/contenthub/-/merge_requests/327",
+			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "327", Repository: "entire-vc/contenthub"},
+		},
+		{
+			name: "contenthub github control",
+			url:  "https://github.com/entire-vc/contenthub/pull/326",
+			want: vcsURLFacts{Provider: "github", LinkType: "pr", ExternalID: "326", Repository: "entire-vc/contenthub"},
 		},
 		{
 			// Negative control for the fix above: a github.com PR URL must
