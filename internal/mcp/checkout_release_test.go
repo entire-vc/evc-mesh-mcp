@@ -77,8 +77,8 @@ func TestCheckoutRelease_TokenForwardedToAPI(t *testing.T) {
 		t.Fatalf("handleCheckoutTask returned error: %v", err)
 	}
 	out := decodeToolResultJSON(t, checkoutResult)
-	if out["checkout_token"] != token {
-		t.Errorf("checkout result checkout_token = %v, want %s", out["checkout_token"], token)
+	if _, present := out["checkout_token"]; present {
+		t.Error("checkout result must not expose capability")
 	}
 
 	// release — must forward the token
@@ -91,7 +91,7 @@ func TestCheckoutRelease_TokenForwardedToAPI(t *testing.T) {
 		t.Errorf("expected released=true, got %v", releaseOut["released"])
 	}
 	if releasedBody["checkout_token"] != token {
-		t.Errorf("API received checkout_token = %q, want %q", releasedBody["checkout_token"], token)
+		t.Error("API did not receive internally cached capability")
 	}
 
 	// token must be cleared from the cache after release
@@ -149,7 +149,7 @@ func TestExtendCheckout_TokenForwardedAndPreserved(t *testing.T) {
 	taskID := uuid.New().String()
 	token := uuid.New().String()
 
-	var extendBody map[string]any
+	var extendBody, releasedBody map[string]any
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -169,6 +169,12 @@ func TestExtendCheckout_TokenForwardedAndPreserved(t *testing.T) {
 				"task_id":        taskID,
 				"checkout_token": token, // server echoes the same token back, does not rotate it
 			})
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/tasks/"+taskID+"/checkout":
+			if err := json.NewDecoder(r.Body).Decode(&releasedBody); err != nil {
+				http.Error(w, "bad body", http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.NotFound(w, r)
 		}
@@ -190,10 +196,13 @@ func TestExtendCheckout_TokenForwardedAndPreserved(t *testing.T) {
 		t.Fatalf("handleExtendCheckout returned error: %v", err)
 	}
 	if extendResult.IsError {
-		t.Fatalf("expected success, got error result: %v", extendResult.Content)
+		t.Fatal("expected successful extend result")
+	}
+	if _, present := decodeToolResultJSON(t, extendResult)["checkout_token"]; present {
+		t.Fatal("extend result must not expose capability")
 	}
 	if extendBody["checkout_token"] != token {
-		t.Errorf("API received checkout_token = %v, want %q", extendBody["checkout_token"], token)
+		t.Error("API did not receive internally cached capability")
 	}
 	if extendBody["ttl_minutes"] != float64(60) {
 		t.Errorf("API received ttl_minutes = %v, want 60", extendBody["ttl_minutes"])
@@ -202,6 +211,16 @@ func TestExtendCheckout_TokenForwardedAndPreserved(t *testing.T) {
 	// Token must still be cached — release_task should still work afterward.
 	cached, ok := server.checkouts.Load(taskID)
 	if !ok || cached.(string) != token {
-		t.Errorf("expected checkout_token %q to remain cached after extend, got %v (ok=%v)", token, cached, ok)
+		t.Error("capability must remain cached after extend")
+	}
+	result, err := server.handleReleaseTask(ctx, buildReleaseRequest(taskID))
+	if err != nil || result == nil || result.IsError {
+		t.Fatal("release after extend failed")
+	}
+	if releasedBody["checkout_token"] != token {
+		t.Fatal("release after extend did not forward cached capability")
+	}
+	if _, ok := server.checkouts.Load(taskID); ok {
+		t.Fatal("release after extend left cached capability")
 	}
 }

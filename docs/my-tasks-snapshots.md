@@ -76,3 +76,6 @@ on wall-clock timestamps. Apply that API migration before conditional rollout.
 The 32 MiB bound covers retained snapshot bodies; each retained scope is a fixed
 64-character digest, so large caller namespaces or filters cannot grow retained
 scope memory. Entry count bounds fixed metadata overhead.
+
+Lease capabilities are always omitted from model-facing cold/full/delta output.
+The internal canonical snapshot remains unchanged; see [lease-output.md](lease-output.md).

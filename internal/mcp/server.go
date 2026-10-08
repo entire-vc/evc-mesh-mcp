@@ -8,6 +8,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -290,7 +291,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: backlog, todo, in_progress, review, done, cancelled.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Filter by project.")),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 50).")),
-		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the original complete REST response; always bypasses revision and delta shortcuts."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return complete non-capability REST fields; always bypasses revision and delta shortcuts."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithString("snapshot_session", mcpsdk.Description("Opaque non-secret consumer cache namespace. Required for conditional responses on stateless HTTP. Use a fresh value after restart or compaction; never credentials or lease tokens.")),
 		mcpsdk.WithString("known_revision", mcpsdk.Description("Revision of a complete snapshot retained for this session and the same filters/view. Omit after cache loss, restart or compaction to request complete cold. Exact match returns unchanged=true; mismatch returns complete cold unless accept_delta=true.")),
 		mcpsdk.WithBoolean("accept_delta", mcpsdk.Description("Opt in to lossless delta against known_revision: complete changed items, removed_ids, full order and non-items envelope. Apply only to the retained matching base; otherwise omit known_revision and retry cold."), mcpsdk.DefaultBool(false)),
@@ -313,14 +314,14 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("order", mcpsdk.Description("Sort direction: asc (default) or desc. Without this, a project larger than `limit` returns its OLDEST tasks, so \"what changed recently\" walks come back empty and look clean. An invalid value is REFUSED by the API, not silently treated as asc.")),
 		mcpsdk.WithNumber("page", mcpsdk.Description("1-based page number (default 1). The response reports total_pages; without this parameter every page beyond the first was unreachable while the envelope kept advertising them.")),
 		mcpsdk.WithNumber("list_revision", mcpsdk.Description("The list_revision echoed back on a previous page of this same project-scoped walk (see the response's list_revision field). Pass it back to continue that walk. If the project's tasks changed since that page was issued, the call is REFUSED with list_revision_stale (HTTP 410) instead of silently returning an inconsistent page — restart pagination from page 1 (omit this field) on that error. Omit on the first page of a fresh walk. Ignored for workspace_id search.")),
-		mcpsdk.WithBoolean("full", mcpsdk.Description("Return complete items (full descriptions and all envelope fields) instead of compact items."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return complete items (full descriptions and non-capability envelope fields) instead of compact items."), mcpsdk.DefaultBool(false)),
 	), s.tracked("list_tasks", s.handleListTasks))
 
 	s.addTool(mcpsdk.NewTool("get_task",
-		mcpsdk.WithDescription("Get task details: compact decision fields, active human_gate=true and status slug; descriptions and ordinary comment bodies are always complete. Comment IDs support reply/after; timestamps are UTC to the minute. Known automation comments are one-line summaries (include_auto=true restores their complete bodies). full=true restores all REST fields. If status lookup is unavailable, status_id and an explicit status_lookup_error remain. Comments return the newest comments_limit entries (default 5, max 200) with pagination markers. Use since=RFC3339 from task.updated_at to avoid repeating an unchanged task and older comments."),
+		mcpsdk.WithDescription("Get task details: compact decision fields, active human_gate=true and status slug; descriptions and ordinary comment bodies are always complete. Comment IDs support reply/after; timestamps are UTC to the minute. Known automation comments are one-line summaries (include_auto=true restores their complete bodies). full=true restores non-capability REST fields. If status lookup is unavailable, status_id and an explicit status_lookup_error remain. Comments return the newest comments_limit entries (default 5, max 200) with pagination markers. Use since=RFC3339 from task.updated_at to avoid repeating an unchanged task and older comments."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID (full UUID or 6–12 char hex short-ID prefix).")),
 		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 timestamp from an earlier call in this session (e.g. that response's task.updated_at, or your own last-call time). With it: include_comments returns only comments created after it, and the full task body (description and the rest) is included only if the task's own updated_at is after it too — the response then carries task_changed=true/false so you always know which you got, and a trimmed stub (id/status/assignee_name/updated_at in compact reads; status_id plus status_lookup_error if lookup fails, or the original status_id and assignee fields with full=true) instead of the full task when nothing changed, to avoid re-paying for the same ~5k tokens on a repeat call. Omit for the unfiltered default: full task body, but the comment tail still obeys comments_limit (default 5, max 200) — a longer thread needs list_comments paging.")),
-		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the verbatim task (full description, all fields, whole inline comments) instead of the compact view (default false)."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the task (full description, non-capability fields, whole inline comments) instead of the compact view (default false)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_comments", mcpsdk.Description("Include the task's most recent comments (see comments_limit for how many; the response carries comments_total_count and comments_has_more so a longer thread is never silently hidden)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithNumber("comments_limit", mcpsdk.Description("How many of the NEWEST comments to include when include_comments=true (default 5, max 200). The tail is where an acting agent looks first; raise it when you need more of it. The API caps any single request at 200 — a longer thread is only readable end-to-end by paging list_comments (order=desc, page=N), never by one call here.")),
 		mcpsdk.WithBoolean("include_artifacts", mcpsdk.Description("Include artifacts."), mcpsdk.DefaultBool(false)),
@@ -732,7 +733,7 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Comments & Artifacts ---
 	s.addTool(mcpsdk.NewTool("list_comments",
-		mcpsdk.WithDescription("List comments newest first (limit default 10), with pagination. Compact fields: id for reply/after, author_name, created_at in UTC to the minute, entire ordinary body. Known automation prefixes get one-line summaries; include_auto=true restores their bodies. full=true restores all REST fields. after accepts a comment UUID or RFC3339 timestamp and returns only newer comments (exclusive), paginated within that delta; unknown IDs are refused. Use order=asc for chronological reading."),
+		mcpsdk.WithDescription("List comments newest first (limit default 10), with pagination. Compact fields: id for reply/after, author_name, created_at in UTC to the minute, entire ordinary body. Known automation prefixes get one-line summaries; include_auto=true restores their bodies. full=true restores non-capability REST fields. after accepts a comment UUID or RFC3339 timestamp and returns only newer comments (exclusive), paginated within that delta; unknown IDs are refused. Use order=asc for chronological reading."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithBoolean("include_internal", mcpsdk.Description("Include internal (agent-only) comments."), mcpsdk.DefaultBool(true)),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max comments to return (default 10, newest first; ordinary bodies are complete).")),
@@ -925,13 +926,48 @@ func parseUUID(s string) (uuid.UUID, error) {
 	return uuid.Parse(s)
 }
 
-// jsonResult marshals the value to JSON and returns a text result.
+// jsonResult is the model-facing JSON boundary. REST objects and the checkout
+// cache remain intact; capabilities never become MCP content, even in full
+// views or nested task/event/history payloads.
 func jsonResult(v any) (*mcpsdk.CallToolResult, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return mcpsdk.NewToolResultError("failed to marshal response"), nil
 	}
+	// Normalize typed structs and RawMessage as well as maps/slices into a
+	// private wire copy. UseNumber preserves int64 generations without float64
+	// rounding and filtering never mutates REST results or snapshot caches.
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var wire any
+	if err := decoder.Decode(&wire); err != nil {
+		return mcpsdk.NewToolResultError("failed to marshal response"), nil
+	}
+	stripLeaseCapabilities(wire)
+	data, err = json.Marshal(wire)
+	if err != nil {
+		return mcpsdk.NewToolResultError("failed to marshal response"), nil
+	}
 	return mcpsdk.NewToolResultText(string(data)), nil
+}
+
+func stripLeaseCapabilities(v any) {
+	switch value := v.(type) {
+	case map[string]any:
+		// checkout_token is the current REST capability. Reserve the equivalent
+		// lease/fencing spellings too; owner/session/generation/expiry are facts,
+		// not bearer capabilities. Do not filter prose or token usage metrics.
+		delete(value, "checkout_token")
+		delete(value, "lease_token")
+		delete(value, "fencing_token")
+		for _, child := range value {
+			stripLeaseCapabilities(child)
+		}
+	case []any:
+		for _, child := range value {
+			stripLeaseCapabilities(child)
+		}
+	}
 }
 
 // errResult returns an error tool result with a formatted message.
