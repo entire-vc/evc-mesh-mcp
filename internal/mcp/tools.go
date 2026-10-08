@@ -102,6 +102,9 @@ func (s *Server) handleGetProject(ctx context.Context, request mcpsdk.CallToolRe
 // ============================================================================
 
 func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	if err := validateListTasksArguments(request); err != nil {
+		return errResult("%v", err)
+	}
 	projectID := mcpsdk.ParseString(request, "project_id", "")
 	workspaceID := mcpsdk.ParseString(request, "workspace_id", "")
 
@@ -110,6 +113,14 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 	}
 
 	params := map[string]string{}
+	if cat := mcpsdk.ParseString(request, "status_category", ""); cat != "" {
+		params["status_category"] = cat
+	}
+	if assignee, err := s.listTasksAssignee(ctx, request); err != nil {
+		return errResult("%v", err)
+	} else if assignee != "" {
+		params["assignee_id"] = assignee
+	}
 
 	if search := mcpsdk.ParseString(request, "search", ""); search != "" {
 		params["search"] = search
@@ -145,7 +156,7 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 		params["page"] = strconv.Itoa(page)
 	}
 
-	limit := mcpsdk.ParseInt(request, "limit", 50)
+	limit := mcpsdk.ParseInt(request, "limit", 20)
 	full := mcpsdk.ParseBoolean(request, "full", false)
 	// Wave 2 (#dc719c63): the compact view caps the page at
 	// listTasksCompactLimitCeiling items. A live probe measured limit=200
@@ -171,32 +182,14 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 		if err != nil {
 			return errResult("failed to search tasks: %v", err)
 		}
-		page := leanTasksPage(result, full)
+		page, err := s.compactListTasksPage(ctx, result, full, "")
+		if err != nil {
+			return errResult("%v", err)
+		}
 		if limitClamped {
 			noteLimitClamp(page)
 		}
 		return jsonResult(page)
-	}
-
-	// status_category: resolve to all matching status IDs via the API.
-	// The REST API accepts status= as comma-separated UUIDs.
-	if cat := mcpsdk.ParseString(request, "status_category", ""); cat != "" {
-		statuses, err := s.getRESTClient(ctx).GetProjectStatuses(ctx, projectID)
-		if err != nil {
-			return errResult("failed to resolve status category: %v", err)
-		}
-		var matchedIDs []string
-		for _, st := range statuses {
-			stCat, _ := st["category"].(string)
-			if stCat == cat {
-				if stID, _ := st["id"].(string); stID != "" {
-					matchedIDs = append(matchedIDs, stID)
-				}
-			}
-		}
-		if len(matchedIDs) > 0 {
-			params["status"] = strings.Join(matchedIDs, ",")
-		}
 	}
 
 	result, err := s.getRESTClient(ctx).ListTasks(ctx, projectID, params)
@@ -204,7 +197,10 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 		return errResult("failed to list tasks: %v", err)
 	}
 
-	page := leanTasksPage(result, full)
+	page, err := s.compactListTasksPage(ctx, result, full, projectID)
+	if err != nil {
+		return errResult("%v", err)
+	}
 	if limitClamped {
 		noteLimitClamp(page)
 	}
@@ -223,25 +219,6 @@ func noteLimitClamp(page map[string]any) {
 	page["limit_note"] = fmt.Sprintf(
 		"compact view caps limit at %d; pass full=true for up to 200 per page",
 		listTasksCompactLimitCeiling)
-}
-
-// leanTasksPage applies the get_my_tasks lean default view to a list_tasks
-// result page: descriptions cut to their first line (see trimTaskSummaries)
-// and the envelope fields stripped (see leanTaskSummaries). The same cost
-// mechanism as get_my_tasks — a description-heavy item is ~3k chars and a
-// default page of them sits in the caller's context for the rest of the
-// session; a 30-task done-walk measured 87k chars live (2026-10-03, #56b00943)
-// against get_my_tasks' already-trimmed 25k at count=50. Both list_tasks
-// exits (project listing and workspace search) share the same items shape,
-// so they share the same lean view; full=true returns the page untouched.
-func leanTasksPage(result map[string]any, full bool) map[string]any {
-	if full {
-		return result
-	}
-	if items, ok := result["items"].([]any); ok {
-		result["items"] = leanTaskSummaries(trimTaskSummaries(items))
-	}
-	return result
 }
 
 // ============================================================================
