@@ -298,20 +298,22 @@ func (s *Server) registerCoreTools() {
 
 	// --- Task CRUD ---
 	s.addTool(mcpsdk.NewTool("list_tasks",
-		mcpsdk.WithDescription("List tasks with filters. Provide project_id for project-scoped listing or workspace_id for global search across all projects (requires search parameter). The default view is lean, matching get_my_tasks: descriptions are cut to their first line (≤200 chars, description_truncated marks a cut) and envelope fields (url, parent_task_id, assignee/creator ids and timestamps, position, counts, custom_fields, ...) are omitted; id, title, status_id, priority, labels, assignee_name, updated_at, project_id, has_description and a set due_date stay. Pass full=true for complete items. has_description always reflects the task's real content, computed before any trimming — but on ANY page (plain listing or search=) whose descriptions total more than 200KB, the server blanks descriptions from the TAIL of that page (in item order) to keep the response size bounded, and marks the response truncated:true (field omitted when false). search= usually returns few enough hits to stay under that budget, so it is the practical workaround for a specific known task, but the one guaranteed way to read a given task's full description regardless of any listing's size or order is get_task(task_id)."),
+		mcpsdk.WithDescription("List tasks with strict filters. Provide project_id for a project listing or workspace_id plus search for cross-project search. Unknown parameters and invalid categories are errors. Compact items contain id, title, status slug, priority, assignee_name, labels, updated_at and routing parent_task_id/start_after when set; workspace results also contain project_id. Pass full=true for complete REST items; listing descriptions are subject to the API page budget, so use get_task for guaranteed full details."),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project ID (required unless workspace_id is provided).")),
 		mcpsdk.WithString("workspace_id", mcpsdk.Description("Workspace ID for global cross-project search (requires search parameter).")),
 		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: backlog, todo, in_progress, review, done, cancelled.")),
+		mcpsdk.WithString("assignee", mcpsdk.Description("Filter by exact case-insensitive assignee name, UUID, or me. Unknown or ambiguous names are errors.")),
+		mcpsdk.WithString("assignee_id", mcpsdk.Description("UUID-only compatibility alias for assignee. Use assignee for names or me.")),
 		mcpsdk.WithString("assignee_type", mcpsdk.Description("Filter by assignee type: user, agent, unassigned.")),
 		mcpsdk.WithString("priority", mcpsdk.Description("Filter by priority: urgent, high, medium, low, none.")),
 		mcpsdk.WithArray("labels", mcpsdk.Description("Filter by labels."), mcpsdk.WithStringItems()),
 		mcpsdk.WithString("search", mcpsdk.Description("Search in title and description.")),
-		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results to return (default 50). The compact view caps limit at 50 — a larger value is clamped and the response says so via limit_clamped_to; pass full=true for up to 200 per page.")),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results to return (default 20). The compact view caps limit at 50 — a larger value is clamped and the response says so via limit_clamped_to; pass full=true for up to 200 per page.")),
 		mcpsdk.WithString("sort", mcpsdk.Description("Sort field: created_at, updated_at, priority, due_date.")),
 		mcpsdk.WithString("order", mcpsdk.Description("Sort direction: asc (default) or desc. Without this, a project larger than `limit` returns its OLDEST tasks, so \"what changed recently\" walks come back empty and look clean. An invalid value is REFUSED by the API, not silently treated as asc.")),
 		mcpsdk.WithNumber("page", mcpsdk.Description("1-based page number (default 1). The response reports total_pages; without this parameter every page beyond the first was unreachable while the envelope kept advertising them.")),
 		mcpsdk.WithNumber("list_revision", mcpsdk.Description("The list_revision echoed back on a previous page of this same project-scoped walk (see the response's list_revision field). Pass it back to continue that walk. If the project's tasks changed since that page was issued, the call is REFUSED with list_revision_stale (HTTP 410) instead of silently returning an inconsistent page — restart pagination from page 1 (omit this field) on that error. Omit on the first page of a fresh walk. Ignored for workspace_id search.")),
-		mcpsdk.WithBoolean("full", mcpsdk.Description("Return complete items (full descriptions and all envelope fields) instead of the lean first-line view."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return complete items (full descriptions and all envelope fields) instead of compact items."), mcpsdk.DefaultBool(false)),
 	), s.tracked("list_tasks", s.handleListTasks))
 
 	s.addTool(mcpsdk.NewTool("get_task",

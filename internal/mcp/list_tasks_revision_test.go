@@ -114,7 +114,7 @@ func TestListTasksTool_RevisionRoundTrip(t *testing.T) {
 	if firstResult.IsError {
 		t.Fatalf("call 1 (fresh walk): unexpected error result: %s", resultText(t, firstResult))
 	}
-	if gotFirstCallQuery != "page_size=50" {
+	if gotFirstCallQuery != "page_size=20" {
 		t.Fatalf("call 1: expected no list_revision on the fresh-walk request, got query %q", gotFirstCallQuery)
 	}
 

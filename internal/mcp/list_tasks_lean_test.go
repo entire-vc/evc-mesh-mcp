@@ -15,8 +15,7 @@ import (
 
 // listTasksEnvelopeFixture is one item shaped like the live REST list_tasks
 // response, carrying every envelope field the lean default view must drop.
-// The description reuses longTaskDescription (>200 chars, short first line)
-// from the get_my_tasks trim tests: the same item shape, the same trim rule.
+// Full mode preserves this long description; compact mode omits it.
 func listTasksEnvelopeFixture() map[string]any {
 	item := map[string]any{
 		"id": "56b00943-cdbb-4598-b1e2-de928e82661c", "title": "T", "status_id": "st-1",
@@ -43,6 +42,10 @@ func listTasksEnvelopeFixture() map[string]any {
 func listTasksHarness(t *testing.T, route string, fixture map[string]any) *Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/statuses") {
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": "st-1", "slug": "todo"}})
+			return
+		}
 		if r.Method != http.MethodGet || r.URL.Path != route {
 			http.NotFound(w, r)
 			return
@@ -117,76 +120,39 @@ func TestListTasksTool_ExposesFullParam(t *testing.T) {
 	}
 }
 
-// TestHandleListTasks_Default_TrimsDescriptionAndStripsEnvelope is the primary
-// acceptance case: no `full` param → the multi-paragraph description collapses
-// to its first line with a truncation marker, every envelope field the card
-// names is gone, and the routing fields (id/title/status_id/priority/labels/
-// assignee_name/updated_at/project_id/has_description) survive untouched.
-// Red on the pre-2026-10-03 handler, which returned the REST page verbatim.
-func TestHandleListTasks_Default_TrimsDescriptionAndStripsEnvelope(t *testing.T) {
+// Compact mode retains only the documented routing fields.
+func TestHandleListTasks_Default_CompactFields(t *testing.T) {
 	projectID := uuid.New().String()
-	server := listTasksHarness(t, "/api/v1/projects/"+projectID+"/tasks",
-		listTasksEnvelopeFixture())
+	server := listTasksHarness(t, "/api/v1/projects/"+projectID+"/tasks", listTasksEnvelopeFixture())
 	out := callListTasks(t, server, map[string]any{"project_id": projectID})
-
 	if out["total_count"] != float64(1) || out["page"] != float64(1) {
-		t.Fatalf("page envelope (total_count/page/total_pages) must not change: %v", out)
+		t.Fatalf("page envelope changed: %v", out)
 	}
-
 	item := listTasksItem(t, out)
-	if got := item["description"]; got != "Fix the retry backoff in the SSE reconnect path." {
-		t.Fatalf("expected description trimmed to its first line, got: %q", got)
-	}
-	if item["description_truncated"] != true {
-		t.Fatalf("trimmed item must carry description_truncated=true: %v", item)
-	}
-	for _, k := range []string{
-		"url", "parent_task_id", "assignee_id", "assignee_type", "assigned_by", "created_by",
-		"created_by_name", "created_by_type", "created_at", "completed_at", "artifact_count",
-		"vcs_link_count", "completion_signal", "delegation_level", "position", "human_gate_class",
-		"is_shipped", "custom_fields", "dod_checks", "estimated_hours", "start_after", "subtask_count",
-		"due_date", "human_gate",
-	} {
-		if _, ok := item[k]; ok {
-			t.Errorf("lean default view must not carry %q: %v", k, item)
-		}
-	}
-	for _, k := range []string{"id", "title", "status_id", "priority", "labels", "assignee_name", "updated_at", "project_id", "has_description"} {
-		if _, ok := item[k]; !ok {
-			t.Errorf("routing field %q dropped from lean view: %v", k, item)
-		}
+	want := map[string]any{"id": "56b00943-cdbb-4598-b1e2-de928e82661c", "title": "T", "status": "todo", "priority": "medium", "labels": []any{"mcp"}, "assignee_name": "Linus", "updated_at": "2026-10-03T11:18:59Z"}
+	if !reflect.DeepEqual(item, want) {
+		t.Fatalf("compact fields: got %v, want %v", item, want)
 	}
 	b, _ := json.Marshal(item)
-	if len(b) > 600 {
-		t.Errorf("lean item is %d chars, budget 600: %s", len(b), b)
+	if len(b) > 250 {
+		t.Errorf("minimal compact row is %d bytes, budget250", len(b))
 	}
 }
 
-// TestHandleListTasks_Default_KeepsRealValues: the value-conditional drops
-// (due_date, counts, estimate, custom_fields, armed gate) hide only their
-// empty forms — a set deadline, a nonzero artifact/vcs count (the done-evidence
-// gate reads vcs links) and a real estimate must stay. Same semantics as
-// get_my_tasks: zero-count fields vanish from live pages, nonzero ones are
-// routing signal, and both survive the lean view.
-func TestHandleListTasks_Default_KeepsRealValues(t *testing.T) {
+// Details outside the compact contract remain available through full=true.
+func TestHandleListTasks_Default_OmitsDetails(t *testing.T) {
 	fx := listTasksEnvelopeFixture()
 	src := fx["items"].([]any)[0].(map[string]any)
-	src["due_date"] = "2026-10-10T12:00:00Z"
-	src["artifact_count"] = float64(2)
-	src["vcs_link_count"] = float64(1)
-	src["estimated_hours"] = float64(3)
-	src["human_gate"] = true
+	for _, k := range []string{"due_date", "artifact_count", "vcs_link_count", "estimated_hours", "human_gate"} {
+		src[k] = "set"
+	}
 	projectID := uuid.New().String()
 	server := listTasksHarness(t, "/api/v1/projects/"+projectID+"/tasks", fx)
 	item := listTasksItem(t, callListTasks(t, server, map[string]any{"project_id": projectID}))
-	for k := range map[string]bool{"due_date": true, "artifact_count": true,
-		"vcs_link_count": true, "estimated_hours": true, "human_gate": true} {
-		if _, ok := item[k]; !ok {
-			t.Errorf("real value of %q was dropped by the lean view: %v", k, item)
+	for _, k := range []string{"due_date", "artifact_count", "vcs_link_count", "estimated_hours", "human_gate"} {
+		if _, ok := item[k]; ok {
+			t.Errorf("detail %q leaked into compact row", k)
 		}
-	}
-	if item["due_date"] != "2026-10-10T12:00:00Z" {
-		t.Fatalf("a set due_date must survive the lean view, got: %v", item["due_date"])
 	}
 }
 
@@ -207,21 +173,17 @@ func TestHandleListTasks_FullTrue_ReturnsItemVerbatim(t *testing.T) {
 	}
 }
 
-// TestHandleListTasks_WorkspaceSearch_SameLeanView: the workspace_id search
-// exit goes through the same lean view — both list_tasks exits share the
-// items shape, so they must share the trim, or a global search would still
-// hand back 3k-char descriptions per item.
-func TestHandleListTasks_WorkspaceSearch_SameLeanView(t *testing.T) {
+// Workspace compact rows retain their project identity.
+func TestHandleListTasks_WorkspaceSearch_Compact(t *testing.T) {
 	wsID := uuid.New().String()
-	server := listTasksHarness(t, "/api/v1/workspaces/"+wsID+"/tasks",
-		listTasksEnvelopeFixture())
-	item := listTasksItem(t, callListTasks(t, server, map[string]any{
-		"workspace_id": wsID, "search": "reconnect",
-	}))
-	if got := item["description"]; got != "Fix the retry backoff in the SSE reconnect path." {
-		t.Fatalf("workspace search must trim descriptions too, got: %q", got)
+	server := listTasksHarness(t, "/api/v1/workspaces/"+wsID+"/tasks", listTasksEnvelopeFixture())
+	item := listTasksItem(t, callListTasks(t, server, map[string]any{"workspace_id": wsID, "search": "reconnect"}))
+	if item["project_id"] != "p-1" || item["status"] != "todo" {
+		t.Fatalf("workspace routing fields: %v", item)
 	}
-	if _, ok := item["url"]; ok {
-		t.Errorf("workspace search must strip envelope fields too: %v", item)
+	for _, k := range []string{"description", "description_truncated", "has_description", "status_id", "url"} {
+		if _, ok := item[k]; ok {
+			t.Errorf("detail %q leaked", k)
+		}
 	}
 }

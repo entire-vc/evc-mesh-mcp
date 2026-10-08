@@ -391,6 +391,10 @@ func TestGetTaskWave2_InlineCommentsCompact(t *testing.T) {
 func TestListTasksWave2_LimitClampedInCompactView(t *testing.T) {
 	var gotPageSize []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/statuses") {
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": "s", "slug": "todo"}})
+			return
+		}
 		gotPageSize = append(gotPageSize, r.URL.Query().Get("page_size"))
 		items := make([]any, 50)
 		for i := range items {
