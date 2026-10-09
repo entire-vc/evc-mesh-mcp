@@ -189,6 +189,9 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 		if limitClamped {
 			noteLimitClamp(page)
 		}
+		if !full {
+			capListTasksPage(page, limit, mcpsdk.ParseInt(request, "page", 1))
+		}
 		return jsonResult(page)
 	}
 
@@ -203,6 +206,9 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 	}
 	if limitClamped {
 		noteLimitClamp(page)
+	}
+	if !full {
+		capListTasksPage(page, limit, mcpsdk.ParseInt(request, "page", 1))
 	}
 	return jsonResult(page)
 }
