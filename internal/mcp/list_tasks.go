@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -184,4 +185,65 @@ func (s *Server) compactListTasksPage(ctx context.Context, result map[string]any
 	}
 	result["items"] = rows
 	return result, nil
+}
+
+// listTasksCompactCharBudget caps the serialized rows of one compact page.
+// Measured over 24h (toolbloat, n=94): full 20-row pages averaged 5079 chars
+// and made up 44% of all list_tasks output; the rows are already lean, so the
+// remaining lever is the page itself. full=true is never capped.
+const listTasksCompactCharBudget = 2500
+
+// capListTasksPage trims a compact page to listTasksCompactCharBudget and says
+// how to continue. The REST layer pages by (page, page_size) only, so the cut
+// page must stay addressable: the kept count k is the largest value that fits
+// AND divides the page's start offset, which makes (limit=k, page=start/k+2)
+// begin exactly at the first dropped row. At least one row is always kept so a
+// page makes progress; a single row above the budget (title/labels are bounded
+// by the API) is returned as is rather than hidden.
+func capListTasksPage(page map[string]any, limit, pageNo int) {
+	items, ok := page["items"].([]any)
+	if !ok || len(items) < 2 {
+		return
+	}
+	fit, used := 0, 0
+	for _, it := range items {
+		b, err := json.Marshal(it)
+		if err != nil {
+			return
+		}
+		if fit > 0 && used+len(b)+1 > listTasksCompactCharBudget {
+			break
+		}
+		used += len(b) + 1
+		fit++
+	}
+	if fit >= len(items) {
+		return
+	}
+	if pageNo < 1 {
+		pageNo = 1
+	}
+	// limit<=0 sends no page_size, so the API's own default decides the page
+	// boundaries and the start offset is unknowable here. Page 1 starts at 0
+	// whatever the size; later pages are returned whole rather than guessed.
+	if limit < 1 {
+		if pageNo > 1 {
+			return
+		}
+		limit = len(items)
+	}
+	if limit < len(items) {
+		limit = len(items)
+	}
+	start := (pageNo - 1) * limit
+	keep := fit
+	for keep > 1 && start%keep != 0 {
+		keep--
+	}
+	page["items"] = items[:keep]
+	page["truncated_to"] = keep
+	page["next"] = map[string]any{"limit": keep, "page": start/keep + 2}
+	page["truncate_note"] = fmt.Sprintf(
+		"compact page capped at %d chars; %d of %d rows shown. Continue with next (limit, page), narrow the filters, or pass full=true",
+		listTasksCompactCharBudget, keep, len(items))
 }
