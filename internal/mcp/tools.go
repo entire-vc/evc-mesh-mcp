@@ -131,6 +131,9 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 	if p := mcpsdk.ParseString(request, "priority", ""); p != "" {
 		params["priority"] = p
 	}
+	if rk := mcpsdk.ParseString(request, "runtime_kind", ""); rk != "" {
+		params["runtime_kind"] = rk
+	}
 	if labels := parseStringSlice(request, "labels"); len(labels) > 0 {
 		params["labels"] = labels[0] // API supports single label filter
 	}
@@ -435,7 +438,7 @@ func taskChangedSince(task map[string]any, since time.Time) bool {
 // call this session.
 func taskDeltaStub(task map[string]any) map[string]any {
 	stub := map[string]any{}
-	for _, f := range []string{"id", "status", "status_id", "status_lookup_error", "assignee_id", "assignee_name", "checked_out_by", "human_gate", "updated_at"} {
+	for _, f := range []string{"id", "status", "status_id", "status_lookup_error", "assignee_id", "assignee_name", "checked_out_by", "human_gate", "runtime_state", "updated_at"} {
 		if v, ok := task[f]; ok {
 			stub[f] = v
 		}
@@ -454,7 +457,7 @@ const defaultTaskCommentsLimit = 5
 // leanGetTaskView removes envelope fields, preserving all decision text.
 func leanGetTaskView(task map[string]any) {
 	keep := map[string]bool{}
-	for _, k := range []string{"id", "title", "status", "status_id", "status_lookup_error", "priority", "assignee_name", "labels", "parent_task_id", "start_after", "updated_at", "description", "human_gate", "custom_fields", "dod_checks"} {
+	for _, k := range []string{"id", "title", "status", "status_id", "status_lookup_error", "priority", "assignee_name", "labels", "parent_task_id", "start_after", "updated_at", "description", "human_gate", "custom_fields", "dod_checks", "runtime_state"} {
 		keep[k] = true
 	}
 	for k := range task {

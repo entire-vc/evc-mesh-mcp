@@ -299,7 +299,7 @@ func (s *Server) registerCoreTools() {
 
 	// --- Task CRUD ---
 	s.addTool(mcpsdk.NewTool("list_tasks",
-		mcpsdk.WithDescription("List tasks with strict filters. Provide project_id for a project listing or workspace_id plus search for cross-project search. Unknown parameters and invalid categories are errors. Compact items contain id, title, status slug, priority, assignee_name, labels, updated_at and routing parent_task_id/start_after when set; workspace results also contain project_id. Pass full=true for complete REST items; listing descriptions are subject to the API page budget, so use get_task for guaranteed full details."),
+		mcpsdk.WithDescription("List tasks with strict filters. Provide project_id for a project listing or workspace_id plus search for cross-project search. Unknown parameters and invalid categories are errors. Compact items contain id, title, status slug, priority, assignee_name, labels, updated_at, runtime_state (working/waiting/queued/stopped with since/lane/ref/stale, when known) and routing parent_task_id/start_after when set; workspace results also contain project_id. Pass full=true for complete REST items; listing descriptions are subject to the API page budget, so use get_task for guaranteed full details."),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project ID (required unless workspace_id is provided).")),
 		mcpsdk.WithString("workspace_id", mcpsdk.Description("Workspace ID for global cross-project search (requires search parameter).")),
 		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: backlog, todo, in_progress, review, done, cancelled.")),
@@ -307,6 +307,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("assignee_id", mcpsdk.Description("UUID-only compatibility alias for assignee. Use assignee for names or me.")),
 		mcpsdk.WithString("assignee_type", mcpsdk.Description("Filter by assignee type: user, agent, unassigned.")),
 		mcpsdk.WithString("priority", mcpsdk.Description("Filter by priority: urgent, high, medium, low, none.")),
+		mcpsdk.WithString("runtime_kind", mcpsdk.Description("Filter by effective runtime state: working, waiting, queued, stopped. working also matches a card with a live checkout and no reported state, whatever its status.")),
 		mcpsdk.WithArray("labels", mcpsdk.Description("Filter by labels."), mcpsdk.WithStringItems()),
 		mcpsdk.WithString("search", mcpsdk.Description("Search in title and description.")),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results to return (default 20). The compact view caps limit at 50 — a larger value is clamped and the response says so via limit_clamped_to; pass full=true for up to 200 per page.")),

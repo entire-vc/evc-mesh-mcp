@@ -15,8 +15,10 @@ import (
 
 const listTasksCategories = "backlog, todo, in_progress, review, done, cancelled"
 
+const listTasksRuntimeKinds = "working, waiting, queued, stopped"
+
 // Keep this list in sync with the tool schema; the schema parity test pins it.
-var listTasksParameters = []string{"assignee", "assignee_id", "assignee_type", "full", "labels", "limit", "list_revision", "order", "page", "priority", "project_id", "search", "sort", "status_category", "workspace_id"}
+var listTasksParameters = []string{"assignee", "assignee_id", "assignee_type", "full", "labels", "limit", "list_revision", "order", "page", "priority", "project_id", "runtime_kind", "search", "sort", "status_category", "workspace_id"}
 
 func validateListTasksArguments(request mcpsdk.CallToolRequest) error {
 	args := request.GetArguments()
@@ -35,6 +37,12 @@ func validateListTasksArguments(request mcpsdk.CallToolRequest) error {
 		cat, valid := v.(string)
 		if !valid || !validListTasksCategory(cat) {
 			return fmt.Errorf("invalid status_category %q; allowed parameters: %s; allowed values: %s", v, strings.Join(listTasksParameters, ", "), listTasksCategories)
+		}
+	}
+	if v, ok := args["runtime_kind"]; ok {
+		kind, valid := v.(string)
+		if !valid || !validListTasksRuntimeKind(kind) {
+			return fmt.Errorf("invalid runtime_kind %q; allowed values: %s", v, listTasksRuntimeKinds)
 		}
 	}
 	if v, ok := args["assignee_id"]; ok {
@@ -134,7 +142,7 @@ func (s *Server) compactListTasksPage(ctx context.Context, result map[string]any
 			continue
 		}
 		row := map[string]any{}
-		for _, key := range []string{"id", "title", "priority", "assignee_name", "labels", "updated_at", "parent_task_id", "start_after"} {
+		for _, key := range []string{"id", "title", "priority", "assignee_name", "labels", "updated_at", "parent_task_id", "start_after", "runtime_state"} {
 			if value, exists := task[key]; exists && value != nil {
 				row[key] = value
 			}
@@ -246,4 +254,12 @@ func capListTasksPage(page map[string]any, limit, pageNo int) {
 	page["truncate_note"] = fmt.Sprintf(
 		"compact page capped at %d chars; %d of %d rows shown. Continue with next (limit, page), narrow the filters, or pass full=true",
 		listTasksCompactCharBudget, keep, len(items))
+}
+
+func validListTasksRuntimeKind(kind string) bool {
+	switch kind {
+	case "working", "waiting", "queued", "stopped":
+		return true
+	}
+	return false
 }
