@@ -513,6 +513,11 @@ func (c *RESTClient) AddDependency(ctx context.Context, taskID string, body map[
 	return result, nil
 }
 
+// RemoveDependency deletes one dependency edge hanging off taskID.
+func (c *RESTClient) RemoveDependency(ctx context.Context, taskID, depID string) error {
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/tasks/"+taskID+"/dependencies/"+depID, nil, nil)
+}
+
 // CreateHumanGateDecision records a human_gate decision on a task — the
 // third human_gate exit (docs/human-gate-decision-recorded.md in evc-mesh).
 // If the task's gate is currently live, the server releases it as a

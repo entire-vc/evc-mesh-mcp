@@ -677,6 +677,13 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithString("dependency_type", mcpsdk.Description("Dependency type: blocks, relates_to, is_child_of."), mcpsdk.DefaultString("blocks")),
 	), s.tracked("add_dependency", s.handleAddDependency))
 
+	s.addTool(mcpsdk.NewTool("remove_dependency",
+		mcpsdk.WithDescription("Remove a dependency edge: task_id (the blocked card) no longer depends on depends_on_task_id. Use to clear a stray or reversed blocks link that holds a card open. Direction matters: pass the pair in the order add_dependency took it. reason is required and logged."),
+		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("The blocked task (the one that has the dependency).")),
+		mcpsdk.WithString("depends_on_task_id", mcpsdk.Required(), mcpsdk.Description("The blocker the edge points at.")),
+		mcpsdk.WithString("reason", mcpsdk.Required(), mcpsdk.Description("Why the link is removed (min 10 chars); written to the server log.")),
+	), s.tracked("remove_dependency", s.handleRemoveDependency))
+
 	// --- Atomic Task Checkout ---
 	s.addTool(mcpsdk.NewTool("checkout_task",
 		mcpsdk.WithDescription("Atomically acquire an exclusive lock on a task. Prevents other agents from checking out the same task simultaneously. The lock is TTL-based and will expire automatically after ttl_minutes (default 120). Use before starting work on a task to ensure exclusive access."),
