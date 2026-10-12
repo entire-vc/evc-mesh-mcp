@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
@@ -2640,7 +2639,10 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	projectID := mcpsdk.ParseString(request, "project_id", "")
 	tags := parseStringSlice(request, "tags")
 	tagsAny := parseStringSlice(request, "tags_any")
-	limit := mcpsdk.ParseInt(request, "limit", 10)
+	limit, full, explicitProfile, err := recallPageArgs(request)
+	if err != nil {
+		return errResult("invalid recall arguments: %v", err)
+	}
 	offset := mcpsdk.ParseInt(request, "offset", 0)
 	createdBy := mcpsdk.ParseString(request, "created_by", "")
 	since := mcpsdk.ParseString(request, "since", "")
@@ -2666,13 +2668,11 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 	orderBy := mcpsdk.ParseString(request, "order_by", "")
 	includeExpired := mcpsdk.ParseBoolean(request, "include_expired", false)
 	includeArchived := mcpsdk.ParseBoolean(request, "include_archived", false)
-	full := mcpsdk.ParseBoolean(request, "full", false)
-
 	// Classify the query and apply profile-specific parameter presets.
 	// An explicit recall_profile param overrides the auto-classifier.
 	profile := ClassifyQuery(query)
-	if explicit := mcpsdk.ParseString(request, "recall_profile", ""); explicit != "" {
-		profile = RecallProfile(explicit)
+	if explicitProfile != "" {
+		profile = explicitProfile
 	}
 	pp := GetProfileParams(profile)
 	if pp.ApplyDecay {
@@ -2735,71 +2735,18 @@ func (s *Server) handleRecall(ctx context.Context, request mcpsdk.CallToolReques
 		rp.ExcludeSuperseded = &falseVal
 	}
 
-	result, err := s.getRESTClient(ctx).RecallMemories(ctx, rp)
+	// The server owns the whole selection: candidate rerank, noise gate, graph
+	// admission and trim all run before it writes read feedback, and only for the
+	// IDs on the returned page. Reordering, dropping or appending rows here would
+	// leave feedback on rows the caller never sees, so this handler only formats.
+	// There is deliberately no fallback to /memories/search on an older API.
+	result, err := s.getRESTClient(ctx).RecallFinal(ctx, rp, os.Getenv("RECALL_GRAPH_ENABLED") == "true")
 	if err != nil {
 		return errResult("recall failed: %v", err)
 	}
-
-	// Rerank before anything else touches result["items"]: the graph-merge step
-	// below cuts the WEAKEST base items to make room for neighbours, and the
-	// trim step keeps only the first recallFullCount full — both need the
-	// boosted order, not the server's raw score order.
-	items, _ := result["items"].([]any)
-	if len(items) > 0 {
-		items = rerankRecallItems(items, query, projectID, scope)
-		result["items"] = items
-	}
-
-	// Gate on the server's own score, not the boost above: the boost is a
-	// structural tie-breaker (this looks like what you asked for), not a
-	// relevance signal on its own, and gating on the boosted order would let an
-	// exact key match through even when nothing in the result is actually
-	// relevant. If nothing clears the bar, say so instead of handing back the
-	// weakest candidates padded to a full page.
-	best, scored := recallTopScore(items)
-	noisy := recallNoisyResult(result, items, query, best, scored)
-	// The threshold is not an unconditional kill anymore (2026-10-03 fixture): on a
-	// server that reports arm counts, only the noise gate decides — a query
-	// whose word occurs in a returned entry is answerable however low its
-	// fused rank. The bare threshold still gates servers without arm counts,
-	// where the noise gate cannot run.
-	if !scored || noisy || (best < recallRelevanceThreshold && !recallArmCounts(result)) {
-		reason := fmt.Sprintf("no candidate cleared the relevance threshold (best score %.5f, threshold %.5f)",
-			best, recallRelevanceThreshold)
-		if !scored {
-			reason = "no returned entry carried a score the gate could judge"
-		} else if noisy {
-			reason = fmt.Sprintf("best score %.5f is below the noise ceiling %.5f (sparse_rows=%d, dense_rows=%d): nothing ranked near the top of either arm and no query word occurs in any returned entry",
-				best, recallNoiseCeiling, int(result["sparse_rows"].(float64)), int(result["dense_rows"].(float64)))
-		}
-		result["items"] = []any{}
-		result["total"] = 0
-		result["explanation"] = reason + " — returning empty instead of the weakest matches; " +
+	if items, _ := result["items"].([]any); len(items) == 0 {
+		result["explanation"] = "no candidate cleared the server's relevance gates — returning empty instead of the weakest matches; " +
 			"try a more specific query, or widen scope/project_id"
-		s.recordMemoryRead(ctx, "recall")
-		return jsonResult(result)
-	}
-
-	// When RECALL_GRAPH_ENABLED=true, fire a secondary KG-expanded recall and
-	// append any hop>0 items not already present in the base results.
-	if os.Getenv("RECALL_GRAPH_ENABLED") == "true" {
-		graphResult, graphErr := s.getRESTClient(ctx).RecallWithGraph(ctx, RecallWithGraphParams{
-			Query:       query,
-			WorkspaceID: session.WorkspaceID.String(),
-			ProjectID:   projectID,
-			// Reuse rp's already-parsed Scope/Tags/TagsAny rather than re-reading
-			// them from the request — a second parse is a second place for the
-			// two to silently disagree.
-			Scope:           rp.Scope,
-			Tags:            rp.Tags,
-			TagsAny:         rp.TagsAny,
-			Hops:            2,
-			WeightThreshold: 0.1, // wide traversal: at 0.3 hop>0 items don't survive importance filter
-			Limit:           50,  // request wider set so hop>0 neighbors are included
-		})
-		if graphErr == nil {
-			result = mergeGraphResults(result, graphResult, limit)
-		}
 	}
 
 	// Compact view by default: every item is cut to the fields a reader acts on
@@ -2871,165 +2818,6 @@ func (s *Server) handleGetMemory(ctx context.Context, request mcpsdk.CallToolReq
 		}
 	}
 	return errResult("no memory with key %q found (try recall to search by words)", key)
-}
-
-// recallRelevanceThreshold gates whether recall returns anything at all: below
-// it, the best candidate is noise for this query, and the honest answer is an
-// empty list with an explanation rather than the 8 weakest matches padded onto
-// the page.
-//
-// First calibration (2026-09-30, superseded) picked the p60 mark of the
-// per-call top-score distribution over 2288 historical recall calls:
-//
-//	p10 0.01148  p30 0.01482  p50 0.01570  p60 0.01595  p70 0.01613  p90 0.01639
-//
-// That cut (0.0159) landed the ~50-70% empty-rate target on
-// historical traffic, but historical traffic is not the right reference
-// class — it mixes genuinely-unanswerable exploratory queries with queries
-// that had a real answer in memory, and a single global percentile can't
-// tell them apart. Review raised exactly this concern: RRF scores
-// are small and tightly clustered, so an absolute cut calibrated on the
-// whole population risks eating real matches, and argued for a
-// relative/normalized cutoff instead (score/top1_score).
-//
-// Live-validated 2026-09-30: ran the p60 threshold against 10 fixture-style
-// queries built from representative topics, each with a genuinely on-topic top
-// hit already in memory. 0.0159 would have zeroed out at least 3 of them —
-// e.g. three of them top-scored 0.01148, 0.01393 and 0.01537 on their own
-// on-topic episodes — all real matches, all below the p60 bar. The
-// concern was confirmed empirically, not just in theory.
-//
-// A pure ratio (score/top1_score) can't fix this on its own: top1/top1 is
-// always 1, so a within-call relative cutoff can never empty a response,
-// and the gate must be able to return an empty result when nothing is relevant.
-// Instead this drops the absolute floor well below the weakest genuine hit
-// observed above (0.01148, with margin), and leaves quality/ordering to
-// rerankRecallItems (key/project/scope boost) rather than to the gate. The
-// floor's job is narrowed to catching genuine noise (a result that only
-// showed up via a weak, low-rank coincidence in one retrieval arm), not to
-// hitting a target empty-rate on its own — that rate is now whatever real
-// traffic produces under this lower, safer floor. Formal acceptance against
-// a fixed fixture of real queries is the next checkpoint to retune this if
-// needed.
-//
-// Measured on the re-recorded 2026-10-03 fixture snapshot (222 calls +
-// 3 live garbage probes): applied unconditionally, this threshold killed real
-// queries BEFORE the noise gate's overlap check could rescue them. The three
-// lost cases sat at fused 0.0078/0.0088/0.0098 — below the bar — with their
-// query tokens present in the returned keys ("gotcha-verify-driver-…",
-// "fiddlersessiondead-…", "solution-checkout-…"), while garbage sits at
-// 0.011475 (dense-arm rank 1 alone), ABOVE the bar: the unconditional cut
-// only ever hit the real ones. It now applies only when the server reports no
-// arm counts, where recallNoisyResult cannot run.
-const recallRelevanceThreshold = 0.0100
-
-// recallNoiseCeiling is the second gate signal (#858f3a13). The dense arm
-// always returns its nearest neighbours, so on a nonsense query the fused score
-// still lands at ~0.0115 — above recallRelevanceThreshold — and the gate never
-// fired. A fused score below this ceiling means no row ranked near the top of
-// either arm (one arm's rank-1 alone is 1/61 = 0.0164), which is what noise
-// looks like. The sparse_rows COUNT is deliberately not used: live acceptance
-// showed it drifting on the same garbage string (0, then 1, then 3), so any
-// "sparse_rows <= N" cut only catches part of the noise. The ceiling alone
-// also ate a real identifier-only query (same 0.01148, sparse_rows=0), so it
-// only fires when no query word occurs in any returned entry. A missing sparse_rows
-// field (older server) disables the signal; dense_rows must be > 0.
-//
-// 2026-10-03 measurement note: the ceiling cannot move down to separate the
-// classes — on the 03.10 re-record the lost real queries (fused 0.0078–0.0098)
-// sit BELOW garbage (0.011475), so any ceiling that keeps garbage out also
-// keeps them out. Lexical overlap is the only discriminator below the ceiling.
-const recallNoiseCeiling = 0.0120
-
-// recallNoisyResult reports whether the response looks like dense-arm noise:
-// best fused score below recallNoiseCeiling on a server that reports arm
-// counts and returned dense rows, AND no word of the query appears anywhere in
-// the returned entries. The fused score is rank-only, so a garbage query, a
-// real identifier-only query (acceptance #858f3a13, fixture 9) and a real
-// paraphrase all land in the same band; the lexical overlap is what tells the
-// real ones apart — including below recallRelevanceThreshold, which is why
-// that threshold no longer empties a response unconditionally (2026-10-03 fixture: it
-// cut "review-verify-driver" — used key at server rank 1, fused 0.0078, query
-// token in the returned key — before this check could rescue it).
-//
-// A third signal — the raw dense cosine (dense_score, exposed by evc-mesh
-// !1065) — was measured for this gate and rejected (re-recorded 03.10
-// snapshot, 222 cases + 3 live garbage probes): garbage tops out at cosine
-// 0.839–0.864 while the lost real queries top at ~0.86, overlapping bands, so
-// no floor value can separate them. dense_score remains a diagnostic field.
-func recallNoisyResult(result map[string]any, items []any, query string, best float64, scored bool) bool {
-	if !scored || best >= recallNoiseCeiling {
-		return false
-	}
-	if !recallArmCounts(result) {
-		return false
-	}
-	return !recallQueryOverlapsItems(query, items)
-}
-
-// recallArmCounts reports whether the server populated the arm-count envelope
-// the noise gate needs (sparse_rows present, dense_rows > 0). Servers without
-// it are gated by recallRelevanceThreshold alone — the pre-#858f3a13 contract.
-func recallArmCounts(result map[string]any) bool {
-	if _, ok := result["sparse_rows"].(float64); !ok {
-		return false
-	}
-	dense, _ := result["dense_rows"].(float64)
-	return dense > 0
-}
-
-// recallMinOverlapTokenLen: shorter words ("the", "mcp", "py") are too common
-// to count as evidence that an entry answers the query.
-const recallMinOverlapTokenLen = 4
-
-// recallQueryOverlapsItems reports whether any query word of at least
-// recallMinOverlapTokenLen characters appears as a whole word in the key,
-// content or tags of any item. A query with no such word cannot be judged
-// lexically, so it counts as overlapping (the gate stays off).
-func recallQueryOverlapsItems(query string, items []any) bool {
-	split := func(s string) []string {
-		return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
-			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-		})
-	}
-	var qTokens []string
-	for _, t := range split(query) {
-		if len([]rune(t)) >= recallMinOverlapTokenLen {
-			qTokens = append(qTokens, t)
-		}
-	}
-	if len(qTokens) == 0 {
-		return true
-	}
-	have := map[string]struct{}{}
-	for _, it := range items {
-		m, ok := it.(map[string]any)
-		if !ok {
-			continue
-		}
-		for _, f := range []string{"key", "content", "snippet"} {
-			if str, ok := m[f].(string); ok {
-				for _, t := range split(str) {
-					have[t] = struct{}{}
-				}
-			}
-		}
-		if tags, ok := m["tags"].([]any); ok {
-			for _, tg := range tags {
-				if str, ok := tg.(string); ok {
-					for _, t := range split(str) {
-						have[t] = struct{}{}
-					}
-				}
-			}
-		}
-	}
-	for _, t := range qTokens {
-		if _, ok := have[t]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 // recallTopScore returns the highest "score" field among items, and whether any

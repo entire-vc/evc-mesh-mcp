@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -1017,8 +1018,9 @@ type RecallMemoriesParams struct {
 	Offset            int
 }
 
-// RecallMemories searches memories via full-text search with optional filters.
-func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams) (map[string]any, error) {
+// recallQuery encodes the filters shared by /memories/search and the versioned
+// final-recall route; both parse them with the same server-side binder.
+func recallQuery(p RecallMemoriesParams) url.Values {
 	params := make(url.Values)
 	if p.Query != "" {
 		params.Set("q", p.Query)
@@ -1075,13 +1077,48 @@ func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams)
 	if p.Offset > 0 {
 		params.Set("offset", fmt.Sprintf("%d", p.Offset))
 	}
+	return params
+}
+
+// RecallMemories searches memories via full-text search with optional filters.
+// The server applies read feedback to everything this page returns, so callers
+// that trim or reorder afterwards must use RecallFinal instead.
+func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams) (map[string]any, error) {
 	path := "/api/v1/memories/search"
-	if encoded := params.Encode(); encoded != "" {
+	if encoded := recallQuery(p).Encode(); encoded != "" {
 		path += "?" + encoded
 	}
 	var result map[string]any
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
 		return nil, err
+	}
+	return result, nil
+}
+
+// recallFinalVersion is the only final-recall contract this client understands.
+const recallFinalVersion = 1
+
+// RecallFinal calls GET /api/v1/memories/recall-final/v1: the server selects the
+// final page (rerank, noise gate, optional graph admission, trim) and only then
+// writes read feedback for the returned memory IDs. It fails closed — a missing
+// route or a response without final_recall_version 1 is an error, never a
+// fallback to /memories/search, which would boost rows the caller then drops.
+func (c *RESTClient) RecallFinal(ctx context.Context, p RecallMemoriesParams, graph bool) (map[string]any, error) {
+	params := recallQuery(p)
+	if graph {
+		params.Set("graph", "true")
+	}
+	path := "/api/v1/memories/recall-final/v1?" + params.Encode()
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusMethodNotAllowed) {
+			return nil, fmt.Errorf("final recall v%d is not available on this API (HTTP %d); upgrade the API before this client: %w", recallFinalVersion, apiErr.StatusCode, err)
+		}
+		return nil, err
+	}
+	if v, ok := result["final_recall_version"].(float64); !ok || v != float64(recallFinalVersion) {
+		return nil, fmt.Errorf("final recall response lacks final_recall_version %d", recallFinalVersion)
 	}
 	return result, nil
 }
