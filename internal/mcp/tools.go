@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
@@ -941,6 +942,76 @@ func (s *Server) handleAddDependency(ctx context.Context, request mcpsdk.CallToo
 	}
 
 	return jsonResult(result)
+}
+
+// ============================================================================
+// remove_dependency
+// ============================================================================
+
+// handleRemoveDependency cuts the edge task_id -> depends_on_task_id. The edge is
+// looked up in the task's own outgoing set (never the incoming one), so a
+// caller cannot remove an edge that hangs off a different task by passing the
+// pair in the wrong order: that answers "no such dependency" instead.
+func (s *Server) handleRemoveDependency(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	taskID := mcpsdk.ParseString(request, "task_id", "")
+	if taskID == "" {
+		return errResult("task_id is required")
+	}
+	dependsOnID := mcpsdk.ParseString(request, "depends_on_task_id", "")
+	if dependsOnID == "" {
+		return errResult("depends_on_task_id is required")
+	}
+	reason := strings.TrimSpace(mcpsdk.ParseString(request, "reason", ""))
+	if utf8.RuneCountInString(reason) < 10 {
+		return errResult("reason is required (at least 10 characters): every removal is logged")
+	}
+
+	client := s.getRESTClient(ctx)
+	task, err := client.GetTask(ctx, taskID)
+	if err != nil {
+		return errResult("failed to get task: %v", err)
+	}
+	blocked, _ := task["id"].(string)
+	if blocked == "" {
+		blocked = taskID
+	}
+	blocker := dependsOnID
+	if len(blocker) != 36 {
+		other, err := client.GetTask(ctx, blocker)
+		if err != nil {
+			return errResult("failed to get depends_on task: %v", err)
+		}
+		if id, _ := other["id"].(string); id != "" {
+			blocker = id
+		}
+	}
+
+	deps, err := client.GetTaskDependencies(ctx, blocked)
+	if err != nil {
+		return errResult("failed to list dependencies: %v", err)
+	}
+	var depID string
+	for _, e := range deps.Outgoing {
+		if e["depends_on_task_id"] == blocker {
+			depID, _ = e["id"].(string)
+			break
+		}
+	}
+	if depID == "" {
+		return errResult("no dependency: task %s does not depend on %s (the pair is directional: task_id is the blocked card)", blocked, blocker)
+	}
+
+	if err := client.RemoveDependency(ctx, blocked, depID); err != nil {
+		return errResult("failed to remove dependency: %v", err)
+	}
+	log.Printf("remove_dependency: task=%s depends_on=%s dependency_id=%s reason=%q", blocked, blocker, depID, reason)
+
+	return jsonResult(map[string]any{
+		"removed":            true,
+		"dependency_id":      depID,
+		"task_id":            blocked,
+		"depends_on_task_id": blocker,
+	})
 }
 
 // ============================================================================
