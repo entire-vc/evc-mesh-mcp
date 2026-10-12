@@ -76,7 +76,7 @@ func newReplayHandler(raws [][]byte, capture *recallCapture) http.Handler {
 	var mu sync.Mutex
 	next := 0
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/memories/search" {
+		if r.URL.Path != "/api/v1/memories/recall-final/v1" {
 			http.NotFound(w, r)
 			return
 		}
@@ -172,7 +172,7 @@ func TestRecallFixtureLive(t *testing.T) {
 			r.Header.Del("Accept-Encoding")
 		},
 		ModifyResponse: func(resp *http.Response) error {
-			if strings.HasSuffix(resp.Request.URL.Path, "/memories/search") {
+			if strings.HasSuffix(resp.Request.URL.Path, "/memories/recall-final/v1") {
 				b, err := io.ReadAll(resp.Body)
 				if err != nil {
 					return err

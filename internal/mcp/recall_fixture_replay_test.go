@@ -22,13 +22,13 @@ func TestReplayHandlerServesRecordingInOrder(t *testing.T) {
 		return resp.StatusCode, string(b)
 	}
 
-	for _, other := range []string{"/api/v1/tasks", "/unexpected/api/v1/memories/search"} {
+	for _, other := range []string{"/api/v1/tasks", "/unexpected/api/v1/memories/recall-final/v1"} {
 		if code, _ := get(other); code != http.StatusNotFound {
 			t.Errorf("%s must be 404, got %d", other, code)
 		}
 	}
 	for i, want := range []string{`{"n":1}`, `{"n":2}`} {
-		code, body := get("/api/v1/memories/search")
+		code, body := get("/api/v1/memories/recall-final/v1")
 		if code != http.StatusOK || body != want {
 			t.Fatalf("call %d: got %d %q, want 200 %q", i+1, code, body, want)
 		}
@@ -37,7 +37,7 @@ func TestReplayHandlerServesRecordingInOrder(t *testing.T) {
 		}
 	}
 	// Negative control: running past the recording must fail, not wrap around.
-	if code, _ := get("/api/v1/memories/search"); code != http.StatusInternalServerError {
+	if code, _ := get("/api/v1/memories/recall-final/v1"); code != http.StatusInternalServerError {
 		t.Errorf("exhausted replay must be 500, got %d", code)
 	}
 }
