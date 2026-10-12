@@ -3,6 +3,7 @@
 <!-- mcp-name: io.github.entire-vc/evc-mesh-mcp -->
 
 [![Install via Spark](https://spark.entire.vc/badges/evc-mesh-mcp/install.svg)](https://spark.entire.vc/assets/evc-mesh-mcp?utm_source=github&utm_medium=readme)
+[![MCP Badge](https://lobehub.com/badge/mcp/entire-vc-evc-mesh-mcp)](https://lobehub.com/mcp/entire-vc-evc-mesh-mcp)
 
 [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server for [EVC Mesh](https://github.com/entire-vc/evc-mesh) — a task management platform for coordinating humans and AI agents.
 
