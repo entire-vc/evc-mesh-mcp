@@ -3921,13 +3921,19 @@ func (s *Server) handleRecordOwnerDecision(ctx context.Context, request mcpsdk.C
 		if deciderErr != nil {
 			resp["human_gate_decision_error"] = fmt.Sprintf("could not resolve the deciding user's id: %v", deciderErr)
 		} else {
-			decision, hgdErr := s.getRESTClient(ctx).CreateHumanGateDecision(ctx, taskID, map[string]any{
+			hgdBody := map[string]any{
 				"canonical_key": key,
 				"decided_by":    decidedBy,
 				"provenance":    "attested",
 				"channel":       "telegram",
 				"quote":         text,
-			})
+			}
+			// Without question_ref the server binds the decision to the task's single
+			// live Blocking marker, and rejects the call when several are live.
+			if ref := mcpsdk.ParseString(request, "question_ref", ""); ref != "" {
+				hgdBody["question_ref"] = ref
+			}
+			decision, hgdErr := s.getRESTClient(ctx).CreateHumanGateDecision(ctx, taskID, hgdBody)
 			if hgdErr != nil {
 				resp["human_gate_decision_error"] = hgdErr.Error()
 			} else {
