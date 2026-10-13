@@ -34,6 +34,9 @@ default:
 # ── gate ────────────────────────────────────────────────────────────────────
 hold-gate:
   stage: gate
+  # Light gate → dedicated fast lane (#16c94bf8): runner `ci-fast` on VM117, so it
+  # does not queue behind heavy jobs of other projects on the shared runner.
+  tags: [ci-fast]
   image: alpine:latest
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -135,6 +138,9 @@ deploy-drill:
 # red instead of quietly green.
 topology-gate:
   stage: gate
+  # Light gate → dedicated fast lane (#16c94bf8): runner `ci-fast` on VM117, so it
+  # does not queue behind heavy jobs of other projects on the shared runner.
+  tags: [ci-fast]
   image: python:3.12-alpine
   allow_failure: false
   before_script:
@@ -154,6 +160,9 @@ topology-gate:
 # target branch to diff against. See `.gitlab/scripts/commit_author_gate.py`.
 commit-author-gate:
   stage: gate
+  # Light gate → dedicated fast lane (#16c94bf8): runner `ci-fast` on VM117, so it
+  # does not queue behind heavy jobs of other projects on the shared runner.
+  tags: [ci-fast]
   image: python:3.12-alpine
   allow_failure: false
   rules:
