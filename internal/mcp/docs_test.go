@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -24,6 +25,8 @@ type docsFixture struct {
 	server  *httptest.Server
 	projID  string
 	handler http.HandlerFunc
+	// aliases maps a former path to the id of the document that moved away from it.
+	aliases map[string]string
 }
 
 func newDocsFixture(t *testing.T, projID string, docs []map[string]any, bodies map[string]string) *docsFixture {
@@ -62,6 +65,58 @@ func newDocsFixture(t *testing.T, projID string, docs []map[string]any, bodies m
 				"items": items, "total_count": len(items), "page": 1,
 				"page_size": 200, "total_pages": 1, "has_more": false,
 			})
+
+		case strings.HasPrefix(r.URL.Path, "/api/v1/projects/"+projID+"/documents/by-path/"):
+			// The server's resolver, in miniature: live path, then alias of a
+			// former path, then a bare slug that names exactly one live document.
+			want := strings.TrimPrefix(r.URL.Path, "/api/v1/projects/"+projID+"/documents/by-path/")
+			paths := documentPaths(f.docs)
+			var id, movedTo string
+			for did, p := range paths {
+				if p == want {
+					id = did
+				}
+			}
+			if id == "" {
+				if aliased, ok := f.aliases[want]; ok {
+					id, movedTo = aliased, paths[aliased]
+				}
+			}
+			if id == "" && !strings.Contains(want, "/") {
+				var hits []string
+				for did, p := range paths {
+					if p == want || strings.HasSuffix(p, "/"+want) {
+						hits = append(hits, did)
+					}
+				}
+				if len(hits) > 1 {
+					var ps []string
+					for _, h := range hits {
+						ps = append(ps, paths[h])
+					}
+					sort.Strings(ps)
+					w.WriteHeader(http.StatusConflict)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"message": "Ambiguous document slug",
+						"details": "address one by its full path or id: " + strings.Join(ps, ", "),
+					})
+					return
+				}
+				if len(hits) == 1 {
+					id, movedTo = hits[0], paths[hits[0]]
+				}
+			}
+			doc := f.find(id)
+			if doc == nil {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]any{"message": "Document not found"})
+				return
+			}
+			out := map[string]any{"id": id, "title": doc["title"], "version": doc["version"]}
+			if movedTo != "" {
+				out["moved_to"] = movedTo
+			}
+			_ = json.NewEncoder(w).Encode(out)
 
 		case strings.HasSuffix(r.URL.Path, "/outline"):
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/documents/"), "/outline")
@@ -618,5 +673,75 @@ func TestListDocs_LimitDefaultsClampAndOffsetPastEnd(t *testing.T) {
 	past := callDocsTool(t, f.newServer().handleListDocs, map[string]any{"project_id": projID, "offset": 99})
 	if past["count"] != float64(0) || past["total_count"] != float64(2) || past["has_more"] != false {
 		t.Errorf("offset past end: count=%v total_count=%v has_more=%v, want 0/2/false", past["count"], past["total_count"], past["has_more"])
+	}
+}
+
+// A bare slug and a pre-move path both reach the document, and the reply says
+// where it lives now (moved_to). A live path carries no moved_to.
+func TestGetDoc_BareSlugAndOldPathReportMovedTo(t *testing.T) {
+	f, projID, childID := standardFixture(t)
+	f.aliases = map[string]string{"adr-004-old": childID}
+	server := f.newServer()
+
+	for _, ref := range []string{"adr-004", "adr-004-old"} {
+		out := callDocsTool(t, server.handleGetDoc, map[string]any{"doc": ref, "project_id": projID})
+		if out["document_id"] != childID {
+			t.Errorf("%q resolved to %v, want %s", ref, out["document_id"], childID)
+		}
+		if out["moved_to"] != "architecture/adr-004" {
+			t.Errorf("%q: moved_to = %v, want architecture/adr-004", ref, out["moved_to"])
+		}
+	}
+
+	live := callDocsTool(t, server.handleGetDoc, map[string]any{"doc": "architecture/adr-004", "project_id": projID})
+	if _, present := live["moved_to"]; present {
+		t.Errorf("an exact path carries no redirect, got moved_to=%v", live["moved_to"])
+	}
+}
+
+// Two live documents share a slug: 409 with the full paths, never a silent pick.
+func TestGetDoc_AmbiguousBareSlugIs409WithPaths(t *testing.T) {
+	f, projID, _ := standardFixture(t)
+	f.docs = append(f.docs,
+		map[string]any{"id": uuid.New().String(), "project_id": projID, "parent_id": nil, "slug": "specs", "title": "Specs", "version": 1})
+	specsID := f.docs[len(f.docs)-1]["id"]
+	f.docs = append(f.docs,
+		map[string]any{"id": uuid.New().String(), "project_id": projID, "parent_id": specsID, "slug": "adr-004", "title": "ADR 004 again", "version": 1})
+
+	req := mcpsdk.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"doc": "adr-004", "project_id": projID}
+	result, _ := f.newServer().handleGetDoc(context.Background(), req)
+	text := result.Content[0].(mcpsdk.TextContent).Text
+	if !result.IsError || !strings.Contains(text, "architecture/adr-004") || !strings.Contains(text, "specs/adr-004") {
+		t.Errorf("expected an ambiguity error naming both full paths, got: %s", text)
+	}
+}
+
+// The descriptions are the only place an agent learns these rules.
+func TestDocToolDescriptions_ExplainMovedToAnd409AndSlash(t *testing.T) {
+	tools := map[string]mcpsdk.Tool{}
+	for _, tool := range newTestServerTools(t) {
+		tools[tool.Name] = tool
+	}
+	for _, name := range []string{"get_doc", "update_doc", "comment_doc", "list_doc_comments"} {
+		tool, ok := tools[name]
+		if !ok {
+			t.Fatalf("%s is not registered", name)
+		}
+		doc, _ := tool.InputSchema.Properties["doc"].(map[string]any)
+		text := tool.Description + " " + fmt.Sprint(doc["description"])
+		for _, want := range []string{"moved_to", "409"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s: description does not mention %q", name, want)
+			}
+		}
+	}
+	create := tools["create_doc"]
+	slug, _ := create.InputSchema.Properties["slug"].(map[string]any)
+	text := create.Description + " " + fmt.Sprint(slug["description"])
+	for _, want := range []string{"'/'", "parent_id"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("create_doc: description does not mention %q", want)
+		}
 	}
 }

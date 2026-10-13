@@ -1431,6 +1431,25 @@ func (c *RESTClient) GetDocument(ctx context.Context, docID string) (map[string]
 	return result, nil
 }
 
+// GetDocumentByPath resolves a slug path (or a bare slug, or a former path) to a
+// document without its body. The server does the resolving: a live path first,
+// then an alias left behind by a move, then a bare slug that is unique in the
+// project. A hit through either of the last two carries moved_to (the current
+// path); an ambiguous bare slug is a 409 listing the candidates.
+func (c *RESTClient) GetDocumentByPath(ctx context.Context, projectID, docPath string) (map[string]any, error) {
+	segments := strings.Split(strings.Trim(docPath, "/"), "/")
+	for i, seg := range segments {
+		segments[i] = url.PathEscape(seg)
+	}
+	path := "/api/v1/projects/" + projectID + "/documents/by-path/" + strings.Join(segments, "/")
+
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // GetDocumentOutline returns a document's heading structure and version, without
 // the body.
 func (c *RESTClient) GetDocumentOutline(ctx context.Context, docID string) (map[string]any, error) {

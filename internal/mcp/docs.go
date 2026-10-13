@@ -334,52 +334,63 @@ func (s *Server) handleListDocs(ctx context.Context, request mcpsdk.CallToolRequ
 // get_doc
 // ============================================================================
 
+// docRefDescription is the `doc` argument of every tool that addresses an
+// existing document. One text so the four tools cannot drift apart on what a
+// path reference survives.
+const docRefDescription = "Document UUID, or a slug path like 'architecture/adr/adr-004' (a path also needs project_id). " +
+	"A path survives the document being moved: the old path still resolves, and so does a bare slug " +
+	"('adr-004') when exactly one live document in the project has it. When the reference was not the live path, " +
+	"the reply carries moved_to — the document's current path; use that from now on. A bare slug shared by " +
+	"several documents is a 409 ('Ambiguous document slug') listing the full paths: pick one and repeat the call " +
+	"with the full path or the UUID. The UUID never changes."
+
 // resolveDocRef turns the tool's `doc` argument into a document uuid. A uuid is
-// returned as-is; anything else is treated as a slug path and looked up in the
-// project's listing, which is the body-free way to do it.
-func (s *Server) resolveDocRef(ctx context.Context, ref, projectID string) (string, error) {
-	if _, err := uuid.Parse(ref); err == nil {
-		return ref, nil
+// returned as-is; anything else is treated as a slug path and resolved by the
+// server (GET .../documents/by-path/...), which owns the rules: a live path, then
+// the old path of a document that was moved, then a bare slug that names exactly
+// one live document at any depth. movedTo is the document's current path when the
+// reference was not its live path (empty otherwise) — the caller should surface
+// it so the reference can be corrected.
+func (s *Server) resolveDocRef(ctx context.Context, ref, projectID string) (docID, movedTo string, err error) {
+	if _, perr := uuid.Parse(ref); perr == nil {
+		return ref, "", nil
 	}
 
 	if projectID == "" {
-		return "", fmt.Errorf("%q is not a uuid, so it is read as a slug path — pass project_id to resolve it", ref)
-	}
-
-	docs, _, err := s.fetchProjectDocuments(ctx, projectID, false)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve path: %w", err)
+		return "", "", fmt.Errorf("%q is not a uuid, so it is read as a slug path — pass project_id to resolve it", ref)
 	}
 
 	want := strings.Trim(strings.TrimSpace(ref), "/")
-	paths := documentPaths(docs)
-
-	// An exact path match first. A bare slug is accepted too, but only when it
-	// is unambiguous: silently picking one of several same-named leaves would
-	// hand back the wrong document with no signal that a choice was made.
-	var bySlug []string
-	for id, p := range paths {
-		if p == want {
-			return id, nil
+	doc, gerr := s.getRESTClient(ctx).GetDocumentByPath(ctx, projectID, want)
+	if gerr != nil {
+		var apiErr *APIError
+		if errors.As(gerr, &apiErr) {
+			switch apiErr.StatusCode {
+			case http.StatusNotFound:
+				return "", "", fmt.Errorf("no document at path %q in this project", want)
+			case http.StatusConflict:
+				detail, _ := apiErr.Body["details"].(string)
+				return "", "", fmt.Errorf("%q is ambiguous — pass the full path or the uuid. %s", want, detail)
+			}
 		}
-		if segments := strings.Split(p, "/"); segments[len(segments)-1] == want {
-			bySlug = append(bySlug, id)
-		}
+		return "", "", fmt.Errorf("failed to resolve path: %w", gerr)
 	}
 
-	switch len(bySlug) {
-	case 1:
-		return bySlug[0], nil
-	case 0:
-		return "", fmt.Errorf("no document at path %q in this project", want)
-	default:
-		options := make([]string, 0, len(bySlug))
-		for _, id := range bySlug {
-			options = append(options, paths[id])
-		}
-		return "", fmt.Errorf("%q matches %d documents (%s) — pass the full path",
-			want, len(bySlug), strings.Join(options, ", "))
+	id, _ := doc["id"].(string)
+	if id == "" {
+		return "", "", fmt.Errorf("failed to resolve path %q: the server returned no document id", want)
 	}
+	movedTo, _ = doc["moved_to"].(string)
+	return id, movedTo, nil
+}
+
+// withMovedTo stamps the redirect onto a tool reply, so a caller who addressed a
+// document by an old path or a bare slug is told where it lives now.
+func withMovedTo(out map[string]any, movedTo string) map[string]any {
+	if movedTo != "" && out != nil {
+		out["moved_to"] = movedTo
+	}
+	return out
 }
 
 // maxDefaultHeadings bounds the outline returned by a default get_doc.
@@ -432,7 +443,7 @@ func (s *Server) handleGetDoc(ctx context.Context, request mcpsdk.CallToolReques
 	section := strings.TrimSpace(mcpsdk.ParseString(request, "section", ""))
 	versionOnly := mcpsdk.ParseBoolean(request, "version_only", false)
 
-	docID, err := s.resolveDocRef(ctx, ref, projectID)
+	docID, movedTo, err := s.resolveDocRef(ctx, ref, projectID)
 	if err != nil {
 		return errResult("%v", err)
 	}
@@ -449,7 +460,7 @@ func (s *Server) handleGetDoc(ctx context.Context, request mcpsdk.CallToolReques
 		if h, ok := resp["heading"].(map[string]any); ok {
 			resp["heading"] = stripKeys(h, headingNoiseKeys)
 		}
-		return jsonResult(resp)
+		return jsonResult(withMovedTo(resp, movedTo))
 	}
 
 	// The whole page, because it was asked for by name.
@@ -458,7 +469,7 @@ func (s *Server) handleGetDoc(ctx context.Context, request mcpsdk.CallToolReques
 		if err != nil {
 			return errResult("failed to read document: %v", err)
 		}
-		return jsonResult(stripKeys(resp, []string{"storage_key"}))
+		return jsonResult(withMovedTo(stripKeys(resp, []string{"storage_key"}), movedTo))
 	}
 
 	outline, err := client.GetDocumentOutline(ctx, docID)
@@ -469,7 +480,7 @@ func (s *Server) handleGetDoc(ctx context.Context, request mcpsdk.CallToolReques
 	// version_only: the cheapest question there is — "has this changed since I
 	// read it?" — answered without the outline it was computed alongside.
 	if versionOnly {
-		out := stripKeys(outline, []string{"outline"})
+		out := withMovedTo(stripKeys(outline, []string{"outline"}), movedTo)
 		return jsonResult(out)
 	}
 
@@ -480,7 +491,7 @@ func (s *Server) handleGetDoc(ctx context.Context, request mcpsdk.CallToolReques
 
 	headings := trimOutline(asMapSlice(outline["outline"]), depth)
 
-	out := stripKeys(outline, nil)
+	out := withMovedTo(stripKeys(outline, nil), movedTo)
 	out["body_omitted"] = true
 	hint := "body not returned by default. Read one section with section=\"<heading or anchor>\", or the whole page with body=true."
 
@@ -677,7 +688,7 @@ func (s *Server) handleUpdateDoc(ctx context.Context, request mcpsdk.CallToolReq
 		payload["base_version"] = int(mcpsdk.ParseFloat64(request, "base_version", 0))
 	}
 
-	docID, err := s.resolveDocRef(ctx, ref, projectID)
+	docID, movedTo, err := s.resolveDocRef(ctx, ref, projectID)
 	if err != nil {
 		return errResult("%v", err)
 	}
@@ -691,5 +702,5 @@ func (s *Server) handleUpdateDoc(ctx context.Context, request mcpsdk.CallToolReq
 		return errResult("failed to update document: %v", err)
 	}
 
-	return jsonResult(stripKeys(doc, docListNoiseKeys))
+	return jsonResult(withMovedTo(stripKeys(doc, docListNoiseKeys), movedTo))
 }

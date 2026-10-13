@@ -579,8 +579,8 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("list_docs", s.handleListDocs))
 
 	s.addTool(mcpsdk.NewTool("get_doc",
-		mcpsdk.WithDescription("Read a document. By DEFAULT returns metadata plus the outline (headings) and NOT the body — a document is far larger than a task, and a body you read stays in your context for the rest of the session. Read the outline first, then pass section=\"<heading>\" for just that part; body=true returns the whole page and should be the exception. The returned version is what update_doc takes as base_version."),
-		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description("Document UUID, or a slug path like 'architecture/adr/adr-004' (a path also needs project_id).")),
+		mcpsdk.WithDescription("Read a document. By DEFAULT returns metadata plus the outline (headings) and NOT the body — a document is far larger than a task, and a body you read stays in your context for the rest of the session. Read the outline first, then pass section=\"<heading>\" for just that part; body=true returns the whole page and should be the exception. The returned version is what update_doc takes as base_version. If you addressed the document by an old path or a bare slug, the reply carries moved_to (its current path); a bare slug shared by several documents fails with 409 and the list of full paths."),
+		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description(docRefDescription)),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project UUID. Required only when doc is a slug path.")),
 		mcpsdk.WithString("section", mcpsdk.Description("Return only this section: a heading's text, or its anchor from the outline.")),
 		mcpsdk.WithBoolean("body", mcpsdk.Description("Return the full markdown body. Prefer section= when you need one part."), mcpsdk.DefaultBool(false)),
@@ -596,18 +596,18 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("search_docs", s.handleSearchDocs))
 
 	s.addTool(mcpsdk.NewTool("create_doc",
-		mcpsdk.WithDescription("Create a document in a project. Returns its metadata and version — the version is what update_doc takes as base_version, so a create followed by an edit needs no read in between. The body you sent is not echoed back."),
+		mcpsdk.WithDescription("Create a document in a project. Returns its metadata and version — the version is what update_doc takes as base_version, so a create followed by an edit needs no read in between. The body you sent is not echoed back. slug is ONE path segment and must not contain '/' (the request is refused with 400): to put a document in a folder, create or find the parent first and pass parent_id — the document is then reachable as <parent-slug>/<slug>."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project UUID.")),
 		mcpsdk.WithString("title", mcpsdk.Required(), mcpsdk.Description("Document title.")),
 		mcpsdk.WithString("body", mcpsdk.Description("Markdown body.")),
-		mcpsdk.WithString("slug", mcpsdk.Description("URL slug. Derived from the title if omitted.")),
+		mcpsdk.WithString("slug", mcpsdk.Description("One URL segment, derived from the title if omitted. '/' is not allowed (400) — nest with parent_id instead.")),
 		mcpsdk.WithString("parent_id", mcpsdk.Description("Parent document UUID, to nest this one under it.")),
 		mcpsdk.WithNumber("position", mcpsdk.Description("Sort position among siblings.")),
 	), s.tracked("create_doc", s.handleCreateDoc))
 
 	s.addTool(mcpsdk.NewTool("update_doc",
-		mcpsdk.WithDescription("Edit a document. Replacing the body REQUIRES base_version — the version you got from get_doc — and the write is refused with a 409 if anyone changed the document since, so you can never silently overwrite someone else's edit. To add to the end, pass append instead: it needs no base_version, cannot conflict, and does not make you read the document first. Prefer append for reports, decisions and logs."),
-		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description("Document UUID, or a slug path like 'architecture/adr/adr-004' (a path also needs project_id).")),
+		mcpsdk.WithDescription("Edit a document. Replacing the body REQUIRES base_version — the version you got from get_doc — and the write is refused with a 409 if anyone changed the document since, so you can never silently overwrite someone else's edit. To add to the end, pass append instead: it needs no base_version, cannot conflict, and does not make you read the document first. Prefer append for reports, decisions and logs. The doc argument accepts an old path or a bare slug too; the reply then carries moved_to (the current path). Note the two different 409s: a stale base_version, and an ambiguous bare slug (repeat with the full path or UUID)."),
+		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description(docRefDescription)),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project UUID. Required only when doc is a slug path.")),
 		mcpsdk.WithString("append", mcpsdk.Description("Text to add to the END of the document. No base_version needed. Cannot be combined with body.")),
 		mcpsdk.WithString("body", mcpsdk.Description("Replacement markdown for the WHOLE document. Requires base_version.")),
@@ -627,8 +627,8 @@ func (s *Server) registerAdvancedTools() {
 	// discussion is a claim about what people agreed, and it is absent from the
 	// surface rather than refused at runtime.
 	s.addTool(mcpsdk.NewTool("comment_doc",
-		mcpsdk.WithDescription("Comment on a document. To comment on a specific passage, pass quote with the text exactly as the document reads it — the server finds it and anchors the comment there, so you never compute a position yourself (there is no offset parameter, and a position you calculated would silently point at the wrong sentence). Without quote the comment is on the whole document. Your comment appears in the same thread humans see in the document UI."),
-		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description("Document UUID, or a slug path like 'architecture/adr/adr-004' (a path also needs project_id).")),
+		mcpsdk.WithDescription("Comment on a document. To comment on a specific passage, pass quote with the text exactly as the document reads it — the server finds it and anchors the comment there, so you never compute a position yourself (there is no offset parameter, and a position you calculated would silently point at the wrong sentence). Without quote the comment is on the whole document. Your comment appears in the same thread humans see in the document UI. doc may be an old path or a bare slug; the reply then carries moved_to (the current path). An ambiguous bare slug is a 409 listing the full paths."),
+		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description(docRefDescription)),
 		mcpsdk.WithString("body", mcpsdk.Required(), mcpsdk.Description("The comment text. Markdown; @slug mentions notify that person or agent.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project UUID. Required only when doc is a slug path.")),
 		mcpsdk.WithString("quote", mcpsdk.Description("The passage being commented on, copied from the document exactly. One sentence is plenty. Omit to comment on the document as a whole.")),
@@ -637,8 +637,8 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("comment_doc", s.handleCommentDoc))
 
 	s.addTool(mcpsdk.NewTool("list_doc_comments",
-		mcpsdk.WithDescription("Read the comments on a document as threads — each top-level comment with its replies nested under it, the quoted passage it is anchored to, and who wrote it. Resolved threads are hidden unless include_resolved=true. A comment whose quoted text no longer exists in the document is marked orphaned=true in its anchor: it is still shown, and it is not pointing anywhere."),
-		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description("Document UUID, or a slug path like 'architecture/adr/adr-004' (a path also needs project_id).")),
+		mcpsdk.WithDescription("Read the comments on a document as threads — each top-level comment with its replies nested under it, the quoted passage it is anchored to, and who wrote it. Resolved threads are hidden unless include_resolved=true. A comment whose quoted text no longer exists in the document is marked orphaned=true in its anchor: it is still shown, and it is not pointing anywhere. doc may be an old path or a bare slug; the reply then carries moved_to (the current path). An ambiguous bare slug is a 409 listing the full paths."),
+		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description(docRefDescription)),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project UUID. Required only when doc is a slug path.")),
 		mcpsdk.WithBoolean("include_resolved", mcpsdk.Description("Include threads somebody marked resolved."), mcpsdk.DefaultBool(false)),
 	), s.tracked("list_doc_comments", s.handleListDocComments))
