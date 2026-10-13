@@ -175,7 +175,7 @@ func (s *Server) handleCommentDoc(ctx context.Context, request mcpsdk.CallToolRe
 			"reads; to comment on the document as a whole, omit quote entirely.")
 	}
 
-	docID, err := s.resolveDocRef(ctx, ref, projectID)
+	docID, movedTo, err := s.resolveDocRef(ctx, ref, projectID)
 	if err != nil {
 		return errResult("%v", err)
 	}
@@ -211,7 +211,7 @@ func (s *Server) handleCommentDoc(ctx context.Context, request mcpsdk.CallToolRe
 		return commentErrResult(err)
 	}
 
-	return jsonResult(stripKeys(comment, docCommentNoiseKeys))
+	return jsonResult(withMovedTo(stripKeys(comment, docCommentNoiseKeys), movedTo))
 }
 
 // handleListDocComments implements list_doc_comments.
@@ -223,7 +223,7 @@ func (s *Server) handleListDocComments(ctx context.Context, request mcpsdk.CallT
 	projectID := mcpsdk.ParseString(request, "project_id", "")
 	includeResolved := mcpsdk.ParseBoolean(request, "include_resolved", false)
 
-	docID, err := s.resolveDocRef(ctx, ref, projectID)
+	docID, movedTo, err := s.resolveDocRef(ctx, ref, projectID)
 	if err != nil {
 		return errResult("%v", err)
 	}
@@ -249,7 +249,7 @@ func (s *Server) handleListDocComments(ctx context.Context, request mcpsdk.CallT
 		out["truncated"] = fmt.Sprintf("this document has more comments than one call reads; the "+
 			"oldest %d are here and the rest were not read", len(comments))
 	}
-	return jsonResult(out)
+	return jsonResult(withMovedTo(out, movedTo))
 }
 
 // fetchDocComments walks every page of a document's comments.
