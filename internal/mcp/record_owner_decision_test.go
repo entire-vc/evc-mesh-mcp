@@ -638,3 +638,66 @@ func TestPublishedToolNames_LegacyDecisionAliasIsOptIn(t *testing.T) {
 		}
 	}
 }
+
+// #cb3f5274: an explicit question_ref reaches the human-gate-decisions body;
+// without it the field is absent (the server binds the single live marker),
+// and a server-side rejection (several live markers) is surfaced, not hidden.
+func TestHandleRecordOwnerDecision_QuestionRef(t *testing.T) {
+	ownerID := uuid.New().String()
+	taskID := uuid.New().String()
+	ref := uuid.New().String()
+
+	run := func(t *testing.T, args map[string]any, rejectWith string) (map[string]any, map[string]any) {
+		t.Helper()
+		var captured map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/memories":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"memory": map[string]any{"id": uuid.New().String(), "created_at": time.Now().UTC().Format(time.RFC3339)},
+				})
+			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/team"):
+				_ = json.NewEncoder(w).Encode(ownerTeamDirectoryPayload(ownerID))
+			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/tasks/"+taskID+"/human-gate-decisions":
+				_ = json.NewDecoder(r.Body).Decode(&captured)
+				if rejectWith != "" {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]any{"message": rejectWith})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": uuid.New().String()})
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer srv.Close()
+		server := &Server{restClient: NewRESTClient(srv.URL, "test-key"), tracker: NewSessionTracker()}
+		ctx := withTestSession(context.Background(), server, uuid.New())
+		req := buildOwnerDecisionRequestWithTask("да пусть делает", "Go ahead", nil, "", "public", taskID)
+		for k, v := range args {
+			req.Params.Arguments.(map[string]any)[k] = v
+		}
+		result, err := server.handleRecordOwnerDecision(ctx, req)
+		if err != nil {
+			t.Fatalf("handler error: %v", err)
+		}
+		return decodeToolResultJSON(t, result), captured
+	}
+
+	_, body := run(t, map[string]any{"question_ref": ref}, "")
+	if body["question_ref"] != ref {
+		t.Errorf("question_ref = %v, want %v", body["question_ref"], ref)
+	}
+
+	_, body = run(t, nil, "")
+	if _, present := body["question_ref"]; present {
+		t.Errorf("question_ref must be omitted when not given, got %v", body["question_ref"])
+	}
+
+	out, _ := run(t, nil, "question_ref is required: the task has 2 live blocking markers (a, b)")
+	msg, _ := out["human_gate_decision_error"].(string)
+	if !strings.Contains(msg, "2 live blocking markers") {
+		t.Errorf("server rejection not surfaced, human_gate_decision_error = %q", msg)
+	}
+}

@@ -522,6 +522,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("scope", mcpsdk.Description("Optional project_id UUID. Omit for workspace-level decisions.")),
 		mcpsdk.WithString("privacy", mcpsdk.Description("'public' (default, visible in change-feed) or 'private' (recorded but hidden)."), mcpsdk.DefaultString("public")),
 		mcpsdk.WithString("task_id", mcpsdk.Description("Optional task UUID this decision answers. When set, also records a human_gate decision on that task (provenance=attested, channel=telegram, quote=text) — releasing a live human_gate as a consequence. Omit for a plain canonical-only record (unchanged behavior).")),
+		mcpsdk.WithString("question_ref", mcpsdk.Description("Optional comment UUID of the Blocking marker this decision answers (only with task_id). Omit when the task has exactly one live marker — the server binds it. Required when several markers are live; the error lists their ids.")),
 	}
 	s.addTool(mcpsdk.NewTool(toolRecordOwnerDecision, decisionOpts...),
 		s.tracked(toolRecordOwnerDecision, s.handleRecordOwnerDecision))
