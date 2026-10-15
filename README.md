@@ -441,6 +441,17 @@ built from, and `--version` prints it too.
 - [evc-mesh](https://github.com/entire-vc/evc-mesh) — Core platform (API + Web UI)
 - [evc-mesh-openclaw-skill](https://github.com/entire-vc/evc-mesh-openclaw-skill) — OpenClaw skill (bash scripts)
 
+<details>
+<summary>Find us in other directories</summary>
+
+<br>
+
+[![MCP Badge](https://lobehub.com/badge/mcp/entire-vc-evc-mesh-mcp)](https://lobehub.com/mcp/entire-vc-evc-mesh-mcp)
+[![Glama](https://img.shields.io/badge/Glama-listed-1F2937)](https://glama.ai/mcp/servers/entire-vc/evc-mesh-mcp)
+[![Smithery](https://img.shields.io/badge/Smithery-listed-F26B21)](https://smithery.ai/servers/entirevc/evc-mesh-mcp)
+
+</details>
+
 ## License
 
 [MIT](LICENSE)
