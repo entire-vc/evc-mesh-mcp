@@ -68,7 +68,7 @@ retries and fallbacks. A caller that expands the complete snapshot into context
 on every repeat does not save those context bytes.
 
 The authoritative API version contract is implemented by
-[`20261007002_task_version.sql`](https://git.entire.host/entire-vc/evc-mesh/-/blob/541621641b47d4a610c31b822143e61bd2628cc3/migrations/20261007002_task_version.sql):
+`20261007002_task_version.sql` (in the evc-mesh repository, `migrations/`):
 every task update increments `version`, and insert/update/delete activity in
 comments, artifacts and VCS links updates the parent task version without relying
 on wall-clock timestamps. Apply that API migration before conditional rollout.

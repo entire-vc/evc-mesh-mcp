@@ -552,7 +552,7 @@ func TestHandleGetCanonicalUpdates_ForwardsParams(t *testing.T) {
 	req := mcpsdk.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
 		"since": "2026-06-01T10:00:00Z",
-		"agent": "linus",
+		"agent": "alice",
 		"scope": "",
 	}
 
@@ -570,8 +570,8 @@ func TestHandleGetCanonicalUpdates_ForwardsParams(t *testing.T) {
 	if !strings.Contains(capturedURL, "since=2026-06-01") {
 		t.Errorf("expected since param in URL, got %q", capturedURL)
 	}
-	if !strings.Contains(capturedURL, "agent=linus") {
-		t.Errorf("expected agent=linus in URL, got %q", capturedURL)
+	if !strings.Contains(capturedURL, "agent=alice") {
+		t.Errorf("expected agent=alice in URL, got %q", capturedURL)
 	}
 }
 

@@ -1283,7 +1283,10 @@ func compactComment(m map[string]any, includeAuto ...bool) map[string]any {
 		}
 	}
 	if len(includeAuto) == 0 || !includeAuto[0] {
-		if body, ok := out["body"].(string); ok && isAutomaticComment(body) {
+		// A server-authored comment (webhook, gate notices) is automatic by
+		// author, whatever its prefix; the prefix list covers agent-written ones.
+		sysAuthor := m["author_type"] == "system"
+		if body, ok := out["body"].(string); ok && (sysAuthor || isAutomaticComment(body)) {
 			out["body"] = strings.Join(strings.Fields(strings.SplitN(body, "\n", 2)[0]), " ")
 			out["auto_summary"] = true
 		}
@@ -1292,8 +1295,10 @@ func compactComment(m map[string]any, includeAuto ...bool) map[string]any {
 }
 
 func isAutomaticComment(body string) bool {
-	for _, prefix := range []string{"[fiddler] ✅ completed", "[balancer]", "🔀 **fleet-balancer сменил исполнителя:", "🤖 auto:", "INTAKE:", "[INTAKE]", "🔀 INTAKE-DECOMPOSE", "🔼 INTAKE-PROMOTE", "🏁 INTAKE-PARENT-CLOSE"} {
-		if strings.HasPrefix(body, prefix) {
+	// Case-insensitive: the server writes "🤖 Auto:", the list below is lower-case.
+	body = strings.ToLower(body)
+	for _, prefix := range []string{"[fiddler] ✅ completed", "[balancer]", "🔀 **fleet-balancer сменил исполнителя:", "🤖 auto:", "🔒 auto:", "🔓 auto:", "INTAKE:", "[INTAKE]", "🔀 INTAKE-DECOMPOSE", "🔼 INTAKE-PROMOTE", "🏁 INTAKE-PARENT-CLOSE"} {
+		if strings.HasPrefix(body, strings.ToLower(prefix)) {
 			return true
 		}
 	}

@@ -254,7 +254,7 @@ func (s *Server) MCPServer() *mcpserver.MCPServer {
 func (s *Server) registerCoreTools() {
 	// --- ACP / Session tools ---
 	s.addTool(mcpsdk.NewTool("heartbeat",
-		mcpsdk.WithDescription("Send heartbeat to stay visible. Call at session START with status=online, periodically during work with status=busy. Reports current_task_id, message, and metadata."),
+		mcpsdk.WithDescription("Send a heartbeat to stay visible, with status online or busy. Reports current_task_id, message, and metadata."),
 		mcpsdk.WithString("current_task_id", mcpsdk.Description("ID of the task currently being worked on.")),
 		mcpsdk.WithString("status", mcpsdk.Description("Agent status: online, busy, error.")),
 		mcpsdk.WithString("message", mcpsdk.Description("Short human-readable status message (e.g. 'running tests', 'waiting for review').")),
@@ -264,7 +264,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("heartbeat", s.handleHeartbeat))
 
 	s.addTool(mcpsdk.NewTool("get_project_knowledge",
-		mcpsdk.WithDescription("Get ALL PERMANENT KNOWLEDGE for a project: decisions, conventions, accumulated context. Call at session start (ACP Step 2). Returns workspace-level + project-level memories. For RECENT events, use get_context instead."),
+		mcpsdk.WithDescription("Get ALL PERMANENT KNOWLEDGE for a project: decisions, conventions, accumulated context. Returns workspace-level + project-level memories. Recent events are returned by get_context."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project UUID.")),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max workspace-tier memories (default 100, max 500).")),
 		mcpsdk.WithNumber("offset", mcpsdk.Description("Pagination offset for workspace-tier (default 0).")),
@@ -273,12 +273,12 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("get_project_knowledge", s.handleGetProjectKnowledge))
 
 	s.addTool(mcpsdk.NewTool("get_my_rules",
-		mcpsdk.WithDescription("Get ALL governance rules that apply to you: workflow constraints, assignment policies, behavioral requirements. Includes workspace and project-level rules with source annotations. Call at session start (ACP Step 3)."),
+		mcpsdk.WithDescription("Get ALL governance rules that apply to you: workflow constraints, assignment policies, behavioral requirements. Includes workspace and project-level rules with source annotations."),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Optional project ID to get project-specific effective rules.")),
 	), s.tracked("get_my_rules", s.handleGetMyRules))
 
 	s.addTool(mcpsdk.NewTool("get_context",
-		mcpsdk.WithDescription("Get RECENT ACTIVITY for a project (last 24h by default): event stream with summaries, decisions, errors, plus accumulated project knowledge. Use for ACP Step 4 — what happened recently. For searching specific knowledge, use recall."),
+		mcpsdk.WithDescription("Get RECENT ACTIVITY for a project (last 24h by default): event stream with summaries, decisions, errors, plus accumulated project knowledge. Covers what happened recently."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
 		mcpsdk.WithString("since", mcpsdk.Description("Only events after this timestamp (RFC3339).")),
 		mcpsdk.WithArray("event_types", mcpsdk.Description("Filter by event types."), mcpsdk.WithStringItems()),
@@ -287,7 +287,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("get_context", s.handleGetContext))
 
 	s.addTool(mcpsdk.NewTool("get_my_tasks",
-		mcpsdk.WithDescription("Get YOUR assigned tasks (ACP Step 5). Filter by status_category to focus on active work. Use at session start and after completing tasks to pick up the next assignment. Descriptions are complete. Envelope fields (url, created_by/created_at, parent_task_id, assignee_id) and valueless fields (0-counters, due_date=null, human_gate=false) are omitted — pass full=true for the complete items, or get_task for one card's full details."),
+		mcpsdk.WithDescription("Get YOUR assigned tasks. Filterable by status_category to focus on active work. Descriptions are complete. Envelope fields (url, created_by/created_at, parent_task_id, assignee_id) and valueless fields (0-counters, due_date=null, human_gate=false) are omitted; full=true returns the complete items and get_task returns one card's full details."),
 		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: backlog, todo, in_progress, review, done, cancelled.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Filter by project.")),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 50).")),
@@ -299,7 +299,7 @@ func (s *Server) registerCoreTools() {
 
 	// --- Task CRUD ---
 	s.addTool(mcpsdk.NewTool("list_tasks",
-		mcpsdk.WithDescription("List tasks with strict filters. Provide project_id for a project listing or workspace_id plus search for cross-project search. Unknown parameters and invalid categories are errors. Compact items contain id, title, status slug, priority, assignee_name, labels, updated_at, runtime_state (working/waiting/queued/stopped with since/lane/ref/stale, when known) and routing parent_task_id/start_after when set; workspace results also contain project_id. Pass full=true for complete REST items; listing descriptions are subject to the API page budget, so use get_task for guaranteed full details."),
+		mcpsdk.WithDescription("List tasks with strict filters. Provide project_id for a project listing or workspace_id plus search for cross-project search. Unknown parameters and invalid categories are errors. Compact items contain id, title, status slug, priority, assignee_name, labels, updated_at, runtime_state (working/waiting/queued/stopped with since/lane/ref/stale, when known) and routing parent_task_id/start_after when set; workspace results also contain project_id. full=true returns complete REST items; listing descriptions are subject to the API page budget, while get_task returns full details."),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project ID (required unless workspace_id is provided).")),
 		mcpsdk.WithString("workspace_id", mcpsdk.Description("Workspace ID for global cross-project search (requires search parameter).")),
 		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: backlog, todo, in_progress, review, done, cancelled.")),
@@ -319,7 +319,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("list_tasks", s.handleListTasks))
 
 	s.addTool(mcpsdk.NewTool("get_task",
-		mcpsdk.WithDescription("Get task details: compact decision fields, active human_gate=true and status slug; descriptions and ordinary comment bodies are always complete. Comment IDs support reply/after; timestamps are UTC to the minute. Known automation comments are one-line summaries (include_auto=true restores their complete bodies). full=true restores non-capability REST fields. If status lookup is unavailable, status_id and an explicit status_lookup_error remain. Comments return the newest comments_limit entries (default 5, max 200) with pagination markers. Use since=RFC3339 from task.updated_at to avoid repeating an unchanged task and older comments."),
+		mcpsdk.WithDescription("Get task details: compact decision fields, active human_gate=true and status slug; descriptions and ordinary comment bodies are always complete. Comment IDs support reply/after; timestamps are UTC to the minute. Known automation comments are one-line summaries (include_auto=true restores their complete bodies). full=true restores non-capability REST fields. If status lookup is unavailable, status_id and an explicit status_lookup_error remain. Comments return the newest comments_limit entries (default 5, max 200) with pagination markers. since=RFC3339 (from task.updated_at) skips an unchanged task and older comments."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID (full UUID or 6–12 char hex short-ID prefix).")),
 		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 timestamp from an earlier call in this session (e.g. that response's task.updated_at, or your own last-call time). With it: include_comments returns only comments created after it, and the full task body (description and the rest) is included only if the task's own updated_at is after it too — the response then carries task_changed=true/false so you always know which you got, and a trimmed stub (id/status/assignee_name/updated_at in compact reads; status_id plus status_lookup_error if lookup fails, or the original status_id and assignee fields with full=true) instead of the full task when nothing changed, to avoid re-paying for the same ~5k tokens on a repeat call. Omit for the unfiltered default: full task body, but the comment tail still obeys comments_limit (default 5, max 200) — a longer thread needs list_comments paging.")),
 		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the task (full description, non-capability fields, whole inline comments) instead of the compact view (default false)."), mcpsdk.DefaultBool(false)),
@@ -332,7 +332,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("get_task", s.handleGetTask))
 
 	s.addTool(mcpsdk.NewTool("create_task",
-		mcpsdk.WithDescription("Create a new task. Check get_my_tasks and list_tasks FIRST to avoid duplicates. Set status_slug for initial status (defaults to project's first status)."),
+		mcpsdk.WithDescription("Create a new task. status_slug sets the initial status (defaults to project's first status)."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
 		mcpsdk.WithString("title", mcpsdk.Required(), mcpsdk.Description("Task title.")),
 		mcpsdk.WithString("description", mcpsdk.Description("Task description.")),
@@ -350,7 +350,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("create_task", s.handleCreateTask))
 
 	s.addTool(mcpsdk.NewTool("update_task",
-		mcpsdk.WithDescription("Update task fields. Returns a lean confirmation by default (id, status_id, assignee, updated_at) — the card's static fields are not echoed back; pass full=true or call get_task when you need them."),
+		mcpsdk.WithDescription("Update task fields. Returns a lean confirmation by default (id, status_id, assignee, updated_at) — the card's static fields are not echoed back; full=true or get_task returns them."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("title", mcpsdk.Description("New title.")),
 		mcpsdk.WithString("description", mcpsdk.Description("New description.")),
@@ -366,7 +366,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("update_task", s.handleUpdateTask))
 
 	s.addTool(mcpsdk.NewTool("move_task",
-		mcpsdk.WithDescription("Change task status (e.g. todo → in_progress → done). Use status SLUGS (not UUIDs). On move to 'review', task auto-reassigns to creator unless assignee_id is provided. Returns {task, new_status} with a lean task by default (id, status_id, assignee, updated_at — the post-move assignee is always included so an auto-reassign is visible); full=true returns the whole reloaded task."),
+		mcpsdk.WithDescription("Change task status (e.g. todo → in_progress → done). Status is given as a slug (not a UUID). On move to 'review', task auto-reassigns to creator unless assignee_id is provided. Returns {task, new_status} with a lean task by default (id, status_id, assignee, updated_at — the post-move assignee is always included so an auto-reassign is visible); full=true returns the whole reloaded task."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("status_slug", mcpsdk.Required(), mcpsdk.Description("Target status slug (e.g. 'in_progress', 'done').")),
 		mcpsdk.WithString("comment", mcpsdk.Description("Optional comment to add when moving.")),
@@ -385,7 +385,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("assign_task", s.handleAssignTask))
 
 	s.addTool(mcpsdk.NewTool("get_task_context",
-		mcpsdk.WithDescription("Get EVERYTHING about ONE TASK in a single call: full details + comments + artifacts + dependencies + activity. Use when working on a specific task instead of calling get_task + list_comments + list_artifacts separately."),
+		mcpsdk.WithDescription("Get EVERYTHING about ONE TASK in a single call: full details + comments + artifacts + dependencies + activity. Combines the results of get_task, list_comments and list_artifacts for one task in a single response."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID (full UUID or 6–12 char hex short-ID prefix).")),
 	), s.tracked("get_task_context", s.handleGetTaskContext))
 
@@ -401,7 +401,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("add_comment", s.handleAddComment))
 
 	s.addTool(mcpsdk.NewTool("add_vcs_link",
-		mcpsdk.WithDescription("Link a task to a pull request, commit, or branch. This is what makes the task↔PR join real: a task with no VCS link cannot be matched to the code that implements it, so PR-driven status automation and any 'what shipped for this task?' report simply will not see it. Call it as soon as the PR exists. Only task_id and url are needed — provider, link_type and external_id are inferred from a GitHub or GitLab URL. If the PR is ALREADY merged (or closed) by the time you call this — e.g. you finished, merged, and are linking retroactively — pass status='merged' (or 'closed'). Without it the link starts as 'open' and the done-evidence gate will block move→done on it forever: no GitHub webhook fires for a merge that happened before the link existed."),
+		mcpsdk.WithDescription("Link a task to a pull request, commit, or branch. The link is the task↔PR join that PR-driven status automation and 'what shipped for this task?' reports read. Only task_id and url are needed — provider, link_type and external_id are inferred from a GitHub or GitLab URL. The optional status parameter ('merged' or 'closed') records a PR that was already merged or closed before it was linked. Without it the link starts as 'open', and the done-evidence gate blocks move→done on it, since no GitHub webhook fires for a merge that happened before the link existed."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("url", mcpsdk.Required(), mcpsdk.Description("Link URL, e.g. https://github.com/owner/repo/pull/123.")),
 		mcpsdk.WithString("provider", mcpsdk.Description("VCS provider: github, gitlab. Inferred from the URL host; defaults to github.")),
@@ -412,7 +412,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("add_vcs_link", s.handleAddVCSLink))
 
 	s.addTool(mcpsdk.NewTool("publish_event",
-		mcpsdk.WithDescription("Publish an event to the event bus. For summaries, use event_type='summary'. Add memory={persist:true, key:'decision-name'} to also save as permanent memory. Replaces the deprecated publish_summary tool."),
+		mcpsdk.WithDescription("Publish an event to the event bus. event_type='summary' publishes a summary. Add memory={persist:true, key:'decision-name'} to also save as permanent memory. Replaces the deprecated publish_summary tool."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
 		mcpsdk.WithString("event_type", mcpsdk.Required(), mcpsdk.Description("Event type: summary, status_change, context_update, error, dependency_resolved, custom.")),
 		mcpsdk.WithString("subject", mcpsdk.Required(), mcpsdk.Description("Event subject line.")),
@@ -425,7 +425,7 @@ func (s *Server) registerCoreTools() {
 
 	// --- Memory ---
 	s.addTool(mcpsdk.NewTool("recall",
-		mcpsdk.WithDescription("SEARCH memory by keywords. Use to find a SPECIFIC piece of knowledge, e.g. 'API convention' or 'license decision'. Returns ranked results with scores. Default view is compact: per item key, tags, score and the first ~300 chars of content (a trailing … marks a cut; timestamps, scope and bookkeeping fields are omitted). For the whole text of one entry call get_memory(key); full=true returns every item uncut with all stored fields (created_at included). Below the relevance threshold, returns an empty list with an explanation instead of weak matches. For loading ALL project knowledge at session start, use get_project_knowledge instead. Set include_archived=true to retrieve archived memories."),
+		mcpsdk.WithDescription("SEARCH memory by keywords. Finds a SPECIFIC piece of knowledge, e.g. 'API convention' or 'license decision'. Returns ranked results with scores. Default view is compact: per item key, tags, score and the first ~300 chars of content (a trailing … marks a cut; timestamps, scope and bookkeeping fields are omitted). get_memory(key) returns the whole text of one entry; full=true returns every item uncut with all stored fields (created_at included). Below the relevance threshold, returns an empty list with an explanation instead of weak matches. include_archived=true also returns archived memories."),
 		mcpsdk.WithString("query", mcpsdk.Required(), mcpsdk.Description("Full-text search query.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Filter to a specific project.")),
 		mcpsdk.WithString("scope", mcpsdk.Description("Filter by scope: workspace, project, agent, or all (default).")),
@@ -447,7 +447,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("recall", s.handleRecall))
 
 	s.addTool(mcpsdk.NewTool("get_memory",
-		mcpsdk.WithDescription("Full text of ONE memory by exact key (the `key` field recall returns). Use after recall when an item's content ends with the `…` cut marker and you need the rest. Errors if no entry has exactly that key."),
+		mcpsdk.WithDescription("Full text of ONE memory by exact key (the `key` field recall returns). Returns the full content of an entry whose recall result ends with the `…` cut marker. Errors if no entry has exactly that key."),
 		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Exact memory key, as returned by recall.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project of a project-scoped entry, if the key exists in several.")),
 		mcpsdk.WithString("scope", mcpsdk.Description("Filter by scope: workspace, project, agent, or all (default).")),
@@ -455,7 +455,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("get_memory", s.handleGetMemory))
 
 	s.addTool(mcpsdk.NewTool("recall_with_graph",
-		mcpsdk.WithDescription("Search memory with Knowledge Graph expansion. Seeds from hybrid recall, then BFS-traverses memory_edges up to hops depth. Returns memories ranked by composite score with hop_distance and provenance fields. Use when you want broader context — related decisions, connected incidents, derived learnings."),
+		mcpsdk.WithDescription("Search memory with Knowledge Graph expansion. Seeds from hybrid recall, then BFS-traverses memory_edges up to hops depth. Returns memories ranked by composite score with hop_distance and provenance fields. Returns broader context: related decisions, connected incidents, derived learnings."),
 		mcpsdk.WithString("q", mcpsdk.Required(), mcpsdk.Description("Search query (keywords or natural language).")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Filter to a specific project.")),
 		mcpsdk.WithString("task_id", mcpsdk.Description("Optional task ID — used as cache key discriminator for session-scoped traversal.")),
@@ -464,12 +464,12 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("recall_with_graph", s.handleRecallWithGraph))
 
 	s.addTool(mcpsdk.NewTool("remember",
-		mcpsdk.WithDescription("Save knowledge to persistent memory. Use for decisions, conventions, preferences. UPSERT by key — calling with same key updates the existing entry. "+
+		mcpsdk.WithDescription("Save knowledge to persistent memory. Stores decisions, conventions, preferences. UPSERT by key — calling with same key updates the existing entry. "+
 			"Content is screened on write and REFUSED with a named reason (never silently stripped or stored) if it contains invisible/bidi characters, an LLM role tag, an instruction to ignore previous/system instructions, a PEM private key, a prefixed API token (sk-/ghp_/xox*/AKIA), or a literal assignment to a *_PASSWORD/_SECRET/_TOKEN/_API_KEY name. "+
-			"LIMITATION — this screen is partial and must not be relied on as a secret filter: it CANNOT see a secret that has no recognisable prefix and no field name next to it (a bare value pasted on its own line), nor names it does not know. Do not paste credentials here on the assumption they will be caught; record where a secret lives, never its value."),
+			"LIMITATION — this screen is partial and is not a secret filter: it cannot see a secret that has no recognisable prefix and no field name next to it (a bare value pasted on its own line), nor names it does not know. Credentials pasted here are not guaranteed to be caught; content stores where a secret lives, not its value."),
 		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Slug key for UPSERT (e.g. 'api-convention', 'license-decision'). "+
 			"ENFORCED server-side as ^[a-z0-9][a-z0-9-]*[a-z0-9]$ — lowercase alphanumeric and hyphens only, at least two characters, no leading or trailing hyphen. "+
-			"Hyphens, NEVER colons: a colon-delimited key such as 'episode:alice:2026-09-07' is REFUSED with a validation error — it is not normalised or accepted with a warning.")),
+			"Hyphens only, no colons: a colon-delimited key such as 'episode:alice:2026-09-07' is refused with a validation error — it is not normalised or accepted with a warning.")),
 		mcpsdk.WithString("content", mcpsdk.Required(), mcpsdk.Description("What to remember (markdown).")),
 		mcpsdk.WithString("scope", mcpsdk.Description("workspace | project | agent (default: project).")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project ID (required for project scope).")),
@@ -497,10 +497,10 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("forget", s.handleForget))
 
 	s.addTool(mcpsdk.NewTool("set_project_knowledge",
-		mcpsdk.WithDescription("Write a structured fact to project knowledge. UPSERT by key — calling with same key updates the existing entry. Use for deploy URLs, stack conventions, gotchas. These facts are visible via get_project_knowledge."),
+		mcpsdk.WithDescription("Write a structured fact to project knowledge. UPSERT by key — calling with same key updates the existing entry. Stores deploy URLs, stack conventions, gotchas. These facts are visible via get_project_knowledge."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID to store knowledge for.")),
 		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Slug key for UPSERT (e.g. 'deploy-url', 'stack-convention'). "+
-			"Same enforced pattern as remember: ^[a-z0-9][a-z0-9-]*[a-z0-9]$ — hyphens, NEVER colons; a colon-delimited key is REFUSED, not normalised.")),
+			"Same enforced pattern as remember: ^[a-z0-9][a-z0-9-]*[a-z0-9]$ — hyphens only, no colons; a colon-delimited key is refused, not normalised.")),
 		mcpsdk.WithString("value", mcpsdk.Required(), mcpsdk.Description("The knowledge to store (markdown, max 4000 chars).")),
 		mcpsdk.WithString("category", mcpsdk.Description("Optional category: deploy, stack, conventions, gotchas, api, auth, etc.")),
 		mcpsdk.WithArray("tags", mcpsdk.Description("Additional tags for filtering."), mcpsdk.WithStringItems()),
@@ -532,7 +532,7 @@ func (s *Server) registerCoreTools() {
 	}
 
 	s.addTool(mcpsdk.NewTool("get_canonical_updates",
-		mcpsdk.WithDescription("Fetch canonical decisions broadcast since a given time. Call at ACP step 6 (session start) to catch up on owner directives since your previous session. Returns only privacy:public records targeted at you or all agents."),
+		mcpsdk.WithDescription("Fetch canonical decisions broadcast since a given time. Returns only privacy:public records targeted at you or all agents."),
 		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 cursor. Defaults to your previous session's start time (server-resolved). Omit on first call.")),
 		mcpsdk.WithString("agent", mcpsdk.Description("Your agent slug (e.g. 'alice'). Used to filter propagate_to:<slug> records. Omit to get only propagate_to:all records.")),
 		mcpsdk.WithString("scope", mcpsdk.Description("Optional project UUID to restrict to project-scoped decisions.")),
@@ -555,7 +555,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("report_error", s.handleReportError))
 
 	s.addTool(mcpsdk.NewTool("session_report",
-		mcpsdk.WithDescription("Report session metrics. Call before session end. Returns compliance score and session stats."),
+		mcpsdk.WithDescription("Report session metrics. Returns compliance score and session stats."),
 		mcpsdk.WithString("model", mcpsdk.Description("LLM model used (e.g. 'claude-sonnet-4').")),
 		mcpsdk.WithNumber("tokens_in", mcpsdk.Description("Total input tokens this session.")),
 		mcpsdk.WithNumber("tokens_out", mcpsdk.Description("Total output tokens this session.")),
@@ -572,7 +572,7 @@ func (s *Server) registerAdvancedTools() {
 	// so the surface is narrow by construction: read the map (list_docs), find a
 	// page by content (search_docs), then read the part you need (get_doc).
 	s.addTool(mcpsdk.NewTool("list_docs",
-		mcpsdk.WithDescription("List a project's documents — id, title, slug path, version, who touched them last. Carries NO document bodies, so it is safe to call on a whole project: use it as the map, then get_doc for one page. Returns path and has_children for navigating the tree. Paged: the reply carries total_count and has_more; when has_more is true pass offset to read the rest."),
+		mcpsdk.WithDescription("List a project's documents — id, title, slug path, version, who touched them last. Carries NO document bodies, so it is cheap on a whole project and serves as a map of it (get_doc returns one page). Returns path and has_children for navigating the tree. Paged: the reply carries total_count and has_more; when has_more is true, offset reads the rest."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project UUID.")),
 		mcpsdk.WithBoolean("include_archived", mcpsdk.Description("Include archived documents."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Page size (default 50, max 200).")),
@@ -580,7 +580,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("list_docs", s.handleListDocs))
 
 	s.addTool(mcpsdk.NewTool("get_doc",
-		mcpsdk.WithDescription("Read a document. By DEFAULT returns metadata plus the outline (headings) and NOT the body — a document is far larger than a task, and a body you read stays in your context for the rest of the session. Read the outline first, then pass section=\"<heading>\" for just that part; body=true returns the whole page and should be the exception. The returned version is what update_doc takes as base_version. If you addressed the document by an old path or a bare slug, the reply carries moved_to (its current path); a bare slug shared by several documents fails with 409 and the list of full paths."),
+		mcpsdk.WithDescription("Read a document. By DEFAULT returns metadata plus the outline (headings) and NOT the body — a document is far larger than a task, and a body you read stays in your context for the rest of the session. The outline lists headings; section=\"<heading>\" returns just that part; body=true returns the whole page. The returned version is what update_doc takes as base_version. If you addressed the document by an old path or a bare slug, the reply carries moved_to (its current path); a bare slug shared by several documents fails with 409 and the list of full paths."),
 		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description(docRefDescription)),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project UUID. Required only when doc is a slug path.")),
 		mcpsdk.WithString("section", mcpsdk.Description("Return only this section: a heading's text, or its anchor from the outline.")),
@@ -597,7 +597,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("search_docs", s.handleSearchDocs))
 
 	s.addTool(mcpsdk.NewTool("create_doc",
-		mcpsdk.WithDescription("Create a document in a project. Returns its metadata and version — the version is what update_doc takes as base_version, so a create followed by an edit needs no read in between. The body you sent is not echoed back. slug is ONE path segment and must not contain '/' (the request is refused with 400): to put a document in a folder, create or find the parent first and pass parent_id — the document is then reachable as <parent-slug>/<slug>."),
+		mcpsdk.WithDescription("Create a document in a project. Returns its metadata and version — the version is what update_doc takes as base_version, so a create followed by an edit needs no read in between. The body you sent is not echoed back. slug is ONE path segment and must not contain '/' (the request is refused with 400): a document in a folder is created with parent_id set to the parent's id, and is then reachable as <parent-slug>/<slug>."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project UUID.")),
 		mcpsdk.WithString("title", mcpsdk.Required(), mcpsdk.Description("Document title.")),
 		mcpsdk.WithString("body", mcpsdk.Description("Markdown body.")),
@@ -607,7 +607,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("create_doc", s.handleCreateDoc))
 
 	s.addTool(mcpsdk.NewTool("update_doc",
-		mcpsdk.WithDescription("Edit a document. Replacing the body REQUIRES base_version — the version you got from get_doc — and the write is refused with a 409 if anyone changed the document since, so you can never silently overwrite someone else's edit. To add to the end, pass append instead: it needs no base_version, cannot conflict, and does not make you read the document first. Prefer append for reports, decisions and logs. The doc argument accepts an old path or a bare slug too; the reply then carries moved_to (the current path). Note the two different 409s: a stale base_version, and an ambiguous bare slug (repeat with the full path or UUID)."),
+		mcpsdk.WithDescription("Edit a document. Replacing the body REQUIRES base_version — the version you got from get_doc — and the write is refused with a 409 if anyone changed the document since, so you can never silently overwrite someone else's edit. The append parameter adds to the end: it needs no base_version, cannot conflict, and needs no prior read of the document. The doc argument accepts an old path or a bare slug too; the reply then carries moved_to (the current path). Note the two different 409s: a stale base_version, and an ambiguous bare slug (resolved by the full path or UUID)."),
 		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description(docRefDescription)),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project UUID. Required only when doc is a slug path.")),
 		mcpsdk.WithString("append", mcpsdk.Description("Text to add to the END of the document. No base_version needed. Cannot be combined with body.")),
@@ -628,7 +628,7 @@ func (s *Server) registerAdvancedTools() {
 	// discussion is a claim about what people agreed, and it is absent from the
 	// surface rather than refused at runtime.
 	s.addTool(mcpsdk.NewTool("comment_doc",
-		mcpsdk.WithDescription("Comment on a document. To comment on a specific passage, pass quote with the text exactly as the document reads it — the server finds it and anchors the comment there, so you never compute a position yourself (there is no offset parameter, and a position you calculated would silently point at the wrong sentence). Without quote the comment is on the whole document. Your comment appears in the same thread humans see in the document UI. doc may be an old path or a bare slug; the reply then carries moved_to (the current path). An ambiguous bare slug is a 409 listing the full paths."),
+		mcpsdk.WithDescription("Comment on a document. The quote parameter anchors a comment to a specific passage; it holds the text exactly as the document reads it — the server finds it and anchors the comment there, so no position is computed by the caller (there is no offset parameter, and a position you calculated would silently point at the wrong sentence). Without quote the comment is on the whole document. Your comment appears in the same thread humans see in the document UI. doc may be an old path or a bare slug; the reply then carries moved_to (the current path). An ambiguous bare slug is a 409 listing the full paths."),
 		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description(docRefDescription)),
 		mcpsdk.WithString("body", mcpsdk.Required(), mcpsdk.Description("The comment text. Markdown; @slug mentions notify that person or agent.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project UUID. Required only when doc is a slug path.")),
@@ -679,7 +679,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("add_dependency", s.handleAddDependency))
 
 	s.addTool(mcpsdk.NewTool("remove_dependency",
-		mcpsdk.WithDescription("Remove a dependency edge: task_id (the blocked card) no longer depends on depends_on_task_id. Use to clear a stray or reversed blocks link that holds a card open. Direction matters: pass the pair in the order add_dependency took it. reason is required and logged."),
+		mcpsdk.WithDescription("Remove a dependency edge: task_id (the blocked card) no longer depends on depends_on_task_id. Clears a stray or reversed blocks link that holds a card open. Direction matters: the pair is given in the order add_dependency took it. reason is required and logged."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("The blocked task (the one that has the dependency).")),
 		mcpsdk.WithString("depends_on_task_id", mcpsdk.Required(), mcpsdk.Description("The blocker the edge points at.")),
 		mcpsdk.WithString("reason", mcpsdk.Required(), mcpsdk.Description("Why the link is removed (min 10 chars); written to the server log.")),
@@ -687,13 +687,13 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Atomic Task Checkout ---
 	s.addTool(mcpsdk.NewTool("checkout_task",
-		mcpsdk.WithDescription("Atomically acquire an exclusive lock on a task. Prevents other agents from checking out the same task simultaneously. The lock is TTL-based and will expire automatically after ttl_minutes (default 120). Use before starting work on a task to ensure exclusive access."),
+		mcpsdk.WithDescription("Atomically acquire an exclusive lock on a task. Prevents other agents from checking out the same task simultaneously. The lock is TTL-based and will expire automatically after ttl_minutes (default 120). The lock gives the holder exclusive access to the task."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to check out.")),
 		mcpsdk.WithNumber("ttl_minutes", mcpsdk.Description("Lock TTL in minutes (default 120).")),
 	), s.tracked("checkout_task", s.handleCheckoutTask))
 
 	s.addTool(mcpsdk.NewTool("release_task",
-		mcpsdk.WithDescription("Release the exclusive lock on a task acquired via checkout_task. Call when done with the task or if you need to hand it off. The lock is also released automatically when it expires."),
+		mcpsdk.WithDescription("Release the exclusive lock on a task acquired via checkout_task. The lock is also released automatically when it expires."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to release.")),
 	), s.tracked("release_task", s.handleReleaseTask))
 
@@ -709,7 +709,7 @@ func (s *Server) registerAdvancedTools() {
 	// with its own marker dictionary — which is how a driver came to read its own
 	// instructional boilerplate back as a raised blocker.
 	s.addTool(mcpsdk.NewTool("set_human_gate",
-		mcpsdk.WithDescription("Arm the human gate on a task: freeze it and record WHO is waiting, WHAT was asked, and WHAT you will do if nobody answers. Use INSTEAD of writing a '❓ Blocking @<person>' comment by hand — the marker still works, but this path records the whole ask on the task, so nothing has to re-read the thread. recommended_default is REQUIRED: a gate with no stated default can only ever be resolved by finding a human. You must answer four questions (credential_exists / reversible / blocked_by_other_task / customer_visible_now), each with one line of justification. The server REFUSES the arm when your own answers say nobody needs to be asked: if you hold the credential, the action is reversible, and nothing a customer sees or pays changes right now, capture a rollback anchor and just do it. If the blocker is another card, the server tells you to use add_dependency instead."),
+		mcpsdk.WithDescription("Arm the human gate on a task: freeze it and record WHO is waiting, WHAT was asked, and WHAT you will do if nobody answers. Records the whole ask on the task (who is waiting, what was asked, the default), so nothing has to re-read the thread; the '❓ Blocking @<person>' comment marker is still recognised. recommended_default is REQUIRED: a gate with no stated default can only ever be resolved by finding a human. The call takes four answers (credential_exists / reversible / blocked_by_other_task / customer_visible_now), each with one line of justification. The server refuses the arm when the answers show nobody needs to be asked: the credential is held, the action is reversible, and nothing a customer sees or pays changes right now."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to gate.")),
 		mcpsdk.WithString("reason", mcpsdk.Required(), mcpsdk.Description("The question itself, in your own words.")),
 		mcpsdk.WithString("recommended_default", mcpsdk.Required(), mcpsdk.Description("What you will do if nobody answers. Required — an ask with no default cannot time out.")),
@@ -737,13 +737,13 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("set_human_gate", s.handleSetHumanGate))
 
 	s.addTool(mcpsdk.NewTool("clear_human_gate",
-		mcpsdk.WithDescription("Release a human gate. Read human_gate_info on get_task(full=true) first and go by clear_path. clear_path=\"clear_endpoint\" means YOU armed this gate through set_human_gate and it carries no marker comment — this tool releases it, and a withdrawal comment would be a silent no-op. clear_path=\"withdraw_marker\" means the ask lives in a \"Blocking @\" comment: this tool refuses, and you take it down by posting a short negator comment instead. Everything else is user-only — a gate a human armed, or one raw-armed via PATCH/UI with no author — and an agent key gets a 403 naming the exit it CAN reach: record the human's answer via a human-gate decision. Re-read human_gate after any release; a posted comment is not a cleared gate."),
+		mcpsdk.WithDescription("Release a human gate. human_gate_info on get_task(full=true) reports clear_path. clear_path=\"clear_endpoint\" means YOU armed this gate through set_human_gate and it carries no marker comment — this tool releases it, and a withdrawal comment would be a silent no-op. clear_path=\"withdraw_marker\" means the ask lives in a \"Blocking @\" comment: this tool refuses, and the gate is taken down by a short negator comment. Everything else is user-only — a gate a human armed, or one raw-armed via PATCH/UI with no author — and an agent key gets a 403 naming the exit it CAN reach: a human-gate decision records the human's answer. A posted comment does not by itself clear the gate; human_gate on get_task shows the current state."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID whose gate to clear.")),
 	), s.tracked("clear_human_gate", s.handleClearHumanGate))
 
 	// --- Comments & Artifacts ---
 	s.addTool(mcpsdk.NewTool("list_comments",
-		mcpsdk.WithDescription("List comments newest first (limit default 10), with pagination. Compact fields: id for reply/after, author_name, created_at in UTC to the minute, entire ordinary body. Known automation prefixes get one-line summaries; include_auto=true restores their bodies. full=true restores non-capability REST fields. after accepts a comment UUID or RFC3339 timestamp and returns only newer comments (exclusive), paginated within that delta; unknown IDs are refused. Use order=asc for chronological reading."),
+		mcpsdk.WithDescription("List comments newest first (limit default 10), with pagination. Compact fields: id for reply/after, author_name, created_at in UTC to the minute, entire ordinary body. Known automation prefixes get one-line summaries; include_auto=true restores their bodies. full=true restores non-capability REST fields. after accepts a comment UUID or RFC3339 timestamp and returns only newer comments (exclusive), paginated within that delta; unknown IDs are refused. order=asc gives chronological reading."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithBoolean("include_internal", mcpsdk.Description("Include internal (agent-only) comments."), mcpsdk.DefaultBool(true)),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max comments to return (default 10, newest first; ordinary bodies are complete).")),
@@ -755,7 +755,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("list_comments", s.handleListComments))
 
 	s.addTool(mcpsdk.NewTool("upload_artifact",
-		mcpsdk.WithDescription("Upload an artifact (file, code, log, etc.) to a task. "+artifactDownloadHowTo+" Inline content travels through the model context, so for a binary larger than a few KB prefer the REST endpoint instead: POST /api/v1/tasks/<task_id>/artifacts as multipart/form-data with -H 'X-Agent-Key: $MESH_AGENT_KEY' -F 'name=<file>' -F 'artifact_type=image' -F 'file=@<path>;type=image/png' — the bytes then never enter the context and cannot be truncated on the way."),
+		mcpsdk.WithDescription("Upload an artifact (file, code, log, etc.) to a task. "+artifactDownloadHowTo+" Content is sent inline, so a binary larger than a few KB may be truncated in transit."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("name", mcpsdk.Required(), mcpsdk.Description("Artifact filename.")),
 		mcpsdk.WithString("content", mcpsdk.Required(), mcpsdk.Description("Artifact content. Plain text by default; set encoding=\"base64\" to send binary.")),
@@ -767,7 +767,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("upload_artifact", s.handleUploadArtifact))
 
 	s.addTool(mcpsdk.NewTool("list_artifacts",
-		mcpsdk.WithDescription("List artifacts attached to a task. Each carries download_path; a browser_only_url block, when present, is for a human and must not be fetched. "+artifactDownloadHowTo),
+		mcpsdk.WithDescription("List artifacts attached to a task. Each carries download_path; a browser_only_url block, when present, is a human-only page. "+artifactDownloadHowTo),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 	), s.tracked("list_artifacts", s.handleListArtifacts))
 
@@ -779,7 +779,7 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Event Bus ---
 	s.addTool(mcpsdk.NewTool("publish_summary",
-		mcpsdk.WithDescription("Publish a work summary event (convenience wrapper for publish_event with type=summary). Kept for backward compatibility — prefer publish_event with event_type='summary'."),
+		mcpsdk.WithDescription("Publish a work summary event (convenience wrapper for publish_event with type=summary). Kept for backward compatibility; publish_event with event_type='summary' is the current equivalent."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
 		mcpsdk.WithString("task_id", mcpsdk.Description("Related task ID.")),
 		mcpsdk.WithString("summary", mcpsdk.Required(), mcpsdk.Description("Summary of work done.")),
@@ -818,7 +818,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("get_team_directory", s.handleGetTeamDirectory))
 
 	s.addTool(mcpsdk.NewTool("get_project_rules",
-		mcpsdk.WithDescription("Get all rules configured for a project (all scopes: workspace + project). Kept for backward compatibility — prefer get_my_rules for agent-scoped effective rules."),
+		mcpsdk.WithDescription("Get all rules configured for a project (all scopes: workspace + project). Kept for backward compatibility; get_my_rules returns agent-scoped effective rules."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Project ID.")),
 	), s.tracked("get_project_rules", s.handleGetProjectRules))
 
@@ -859,14 +859,14 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Push Notifications ---
 	s.addTool(mcpsdk.NewTool("poll_tasks",
-		mcpsdk.WithDescription("Long-poll for new task assignments. Blocks until a task is assigned to this agent or the timeout expires. Returns current assigned tasks and whether any change occurred. Tasks use the lean get_my_tasks view (first-line descriptions, no envelope fields); full=true returns the complete items. Kept for backward compatibility — prefer get_my_tasks for non-blocking access."),
+		mcpsdk.WithDescription("Long-poll for new task assignments. Blocks until a task is assigned to this agent or the timeout expires. Returns current assigned tasks and whether any change occurred. Tasks use the lean get_my_tasks view (first-line descriptions, no envelope fields); full=true returns the complete items. Kept for backward compatibility; get_my_tasks is the non-blocking equivalent."),
 		mcpsdk.WithBoolean("full", mcpsdk.Description("Return complete task items instead of the lean view (default false)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithNumber("timeout", mcpsdk.Description("Maximum seconds to wait for new assignments (default 30, max 120).")),
 	), s.tracked("poll_tasks", s.handlePollTasks))
 
 	// --- Recurring Tasks ---
 	s.addTool(mcpsdk.NewTool("create_recurring_task",
-		mcpsdk.WithDescription("Creates a recurring task schedule that automatically spawns task instances on a schedule. Each instance gets access to the previous instance's summary. Use this for regular automated work: weekly reports, daily checks, periodic audits."),
+		mcpsdk.WithDescription("Creates a recurring task schedule that automatically spawns task instances on a schedule. Each instance gets access to the previous instance's summary. Suited to regular automated work such as weekly reports, daily checks and periodic audits."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("Target project UUID.")),
 		mcpsdk.WithString("title_template", mcpsdk.Required(), mcpsdk.Description("Task title template. Supports {{.Date}}, {{.Number}}, {{.Week}}, {{.Month}}.")),
 		mcpsdk.WithString("frequency", mcpsdk.Required(), mcpsdk.Description("Recurrence frequency: daily, weekly, monthly, custom. Use 'custom' with cron_expr for fine-grained control.")),
@@ -889,7 +889,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("list_recurring_schedules", s.handleListRecurringSchedules))
 
 	s.addTool(mcpsdk.NewTool("get_recurring_history",
-		mcpsdk.WithDescription("Returns the history of all instances for a recurring task schedule. ALWAYS call this when you receive a recurring task — it gives you context on what previous instances accomplished, what issues were found, and what artifacts were produced. Use it to continue work intelligently rather than starting from scratch."),
+		mcpsdk.WithDescription("Returns the history of all instances for a recurring task schedule. Each entry describes what a previous instance accomplished, what issues were found, and what artifacts were produced, which gives context for the current instance of a recurring task."),
 		mcpsdk.WithString("recurring_schedule_id", mcpsdk.Required(), mcpsdk.Description("UUID of the recurring schedule. Available in task.recurring_schedule_id field.")),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Number of most recent instances to return. Default: 5. Use higher value for deep historical context.")),
 	), s.tracked("get_recurring_history", s.handleGetRecurringHistory))
@@ -920,7 +920,7 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Canonical knowledge layer ---
 	s.addTool(mcpsdk.NewTool("get_canonical",
-		mcpsdk.WithDescription("Query the canonical knowledge layer: returns curated facts, decisions, and strategy docs for a topic, merged from project_memories (key canonical:*) and workspace_memories (kind:canonical). Excludes ephemeral session-checkpoints. Slug aliases are resolved automatically (e.g. mesh-dev == evc-mesh). Call before authoring any doc that might conflict with existing canonical knowledge."),
+		mcpsdk.WithDescription("Query the canonical knowledge layer: returns curated facts, decisions, and strategy docs for a topic, merged from project_memories (key canonical:*) and workspace_memories (kind:canonical). Excludes ephemeral session-checkpoints. Slug aliases are resolved automatically (e.g. mesh-dev == evc-mesh)."),
 		mcpsdk.WithString("topic", mcpsdk.Required(), mcpsdk.Description("Topic or keyword to search (e.g. 'auth middleware', 'evc-spark roadmap').")),
 		mcpsdk.WithString("project", mcpsdk.Description("Optional project slug to narrow results (e.g. 'evc-mesh', 'evc-spark'). Aliases resolved automatically.")),
 	), s.tracked("get_canonical", s.handleGetCanonical))

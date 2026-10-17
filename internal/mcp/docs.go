@@ -573,9 +573,20 @@ func conflictResult(apiErr *APIError) (*mcpsdk.CallToolResult, error) {
 	code := ""
 	if apiErr.Body != nil {
 		code = asString(apiErr.Body, "code")
+		if code == "" {
+			// apierror.Error carries the HTTP status in "code" (a number) and the
+			// machine code in "error_code".
+			code = asString(apiErr.Body, "error_code")
+		}
 	}
 
 	switch code {
+	case "document_slug_taken":
+		return errResult("409 slug taken — NOTHING WAS WRITTEN. "+
+			"A live document with this slug already exists in the target folder (server: %s). This is not a "+
+			"version conflict: retrying with another base_version will fail the same way. "+
+			"Rename or move one of the two documents, pick another slug, or delete "+
+			"the other document if it is an empty duplicate.", apiErr.Message)
 	case "external_source_conflict":
 		sourcePath := "unknown"
 		if apiErr.Body != nil {
@@ -609,10 +620,18 @@ func conflictResult(apiErr *APIError) (*mcpsdk.CallToolResult, error) {
 			sourcePath)
 	default:
 		current := "unknown"
+		hasCurrent := false
 		if apiErr.Body != nil {
 			if v, ok := asInt(apiErr.Body, "current_version"); ok {
 				current = strconv.Itoa(v)
+				hasCurrent = true
 			}
+		}
+		if code != "document_version_conflict" && !hasCurrent {
+			// Some other 409 (the server named no version): claiming a version race
+			// here sends the caller to retry with a number that does not exist.
+			return errResult("409 conflict — NOTHING WAS WRITTEN. The server refused the write and "+
+				"it is not a version conflict (no current_version was given): %s", apiErr.Message)
 		}
 		return errResult("409 version conflict — NOTHING WAS WRITTEN. "+
 			"The document is now at version %s; somebody else wrote to it after you read it. "+
