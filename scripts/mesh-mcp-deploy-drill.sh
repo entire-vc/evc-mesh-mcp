@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
 # Exercises mesh-mcp-remote-deploy.sh against a scratch directory: same script,
-# same host, real file operations, systemctl and HTTP stubbed out. It is what
+# real file operations, systemctl and HTTP stubbed out. It is what
 # makes "the rollback anchor works" a re-runnable claim instead of a sentence.
 #
-# Run it on the deploy target:
-#   scp scripts/mesh-mcp-remote-deploy.sh scripts/mesh-mcp-deploy-drill.sh prod-host:/tmp/
-#   ssh prod-host 'bash /tmp/mesh-mcp-deploy-drill.sh /tmp/mesh-mcp-remote-deploy.sh'
+# Run it on the deploy target (any Linux host with bash):
+#   scp scripts/mesh-mcp-remote-deploy.sh scripts/mesh-mcp-deploy-drill.sh <deploy-host>:/tmp/
+#   ssh <deploy-host> 'bash /tmp/mesh-mcp-deploy-drill.sh /tmp/mesh-mcp-remote-deploy.sh'
 #
 # Every case below failed at least once during development; three real defects
 # in the anchor naming were found this way and are described at new_anchor_name.

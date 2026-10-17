@@ -104,7 +104,7 @@ func wave2Comment(id string, body string, internal bool) map[string]any {
 	return map[string]any{
 		"id": id, "task_id": "task-1",
 		"author_id":   uuid.New().String(),
-		"author_name": "Linus",
+		"author_name": "Alice",
 		"author_type": "agent",
 		"body":        body,
 		"created_at":  "2026-10-05T10:00:00Z",
@@ -469,7 +469,7 @@ func TestGetTeamDirectoryWave2_ZoneOneLine(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"workspace": map[string]any{"id": "w"},
 			"agents": []any{map[string]any{
-				"id": "a1", "name": "Linus", "role": "developer",
+				"id": "a1", "name": "Alice", "role": "developer",
 				"responsibility_zone": strings.Repeat("з", 200),
 				"computed_status":     "online",
 				"capabilities":        map[string]any{"go": true},

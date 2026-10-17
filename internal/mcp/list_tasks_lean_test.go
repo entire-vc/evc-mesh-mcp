@@ -19,12 +19,12 @@ import (
 func listTasksEnvelopeFixture() map[string]any {
 	item := map[string]any{
 		"id": "56b00943-cdbb-4598-b1e2-de928e82661c", "title": "T", "status_id": "st-1",
-		"priority": "medium", "labels": []any{"mcp"}, "assignee_name": "Linus",
+		"priority": "medium", "labels": []any{"mcp"}, "assignee_name": "Alice",
 		"due_date": nil, "updated_at": "2026-10-03T11:18:59Z", "project_id": "p-1",
 		"description": longTaskDescription, "has_description": true, "human_gate": false,
 		"url": "https://mesh.entire.host/t/x", "parent_task_id": nil,
 		"assignee_id": "a-1", "assignee_type": "agent", "assigned_by": "",
-		"created_by": "a-2", "created_by_name": "Garfield", "created_by_type": "agent",
+		"created_by": "a-2", "created_by_name": "Bob", "created_by_type": "agent",
 		"created_at": "2026-10-03T11:18:59Z", "completed_at": nil,
 		"artifact_count": float64(0), "vcs_link_count": float64(0), "completion_signal": false,
 		"delegation_level": "auto", "position": float64(0), "human_gate_class": "hard",
@@ -129,7 +129,7 @@ func TestHandleListTasks_Default_CompactFields(t *testing.T) {
 		t.Fatalf("page envelope changed: %v", out)
 	}
 	item := listTasksItem(t, out)
-	want := map[string]any{"id": "56b00943-cdbb-4598-b1e2-de928e82661c", "title": "T", "status": "todo", "priority": "medium", "labels": []any{"mcp"}, "assignee_name": "Linus", "updated_at": "2026-10-03T11:18:59Z"}
+	want := map[string]any{"id": "56b00943-cdbb-4598-b1e2-de928e82661c", "title": "T", "status": "todo", "priority": "medium", "labels": []any{"mcp"}, "assignee_name": "Alice", "updated_at": "2026-10-03T11:18:59Z"}
 	if !reflect.DeepEqual(item, want) {
 		t.Fatalf("compact fields: got %v, want %v", item, want)
 	}

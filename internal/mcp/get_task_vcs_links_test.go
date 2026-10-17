@@ -41,7 +41,7 @@ func getTaskVCSLinksHarness(t *testing.T, taskID string) (server *Server, vcsLin
 						"provider":    "gitlab",
 						"link_type":   "pr",
 						"external_id": "14",
-						"url":         "https://git.entire.host/entire-vc/evc-mesh/-/merge_requests/14",
+						"url":         "https://gitlab.example.invalid/acme/tracker/-/merge_requests/14",
 						"status":      "merged",
 						"created_at":  "2026-08-23T10:00:00Z",
 					},

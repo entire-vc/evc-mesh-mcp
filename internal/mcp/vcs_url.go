@@ -83,7 +83,7 @@ func parseVCSURL(raw string) vcsURLFacts {
 	case host == "gitlab.com" || strings.HasSuffix(host, ".gitlab.com"):
 		facts.Provider = "gitlab"
 	default:
-		// Self-hosted instances (our own git.entire.host included) are
+		// Self-hosted instances (a private GitLab included) are
 		// indistinguishable from any other host by hostname alone. The path
 		// grammar below still gives GitLab away unambiguously — its literal
 		// "-" resource separator has no GitHub equivalent — so provider
@@ -99,7 +99,7 @@ func parseVCSURL(raw string) vcsURLFacts {
 
 	// GitLab puts a literal "-" between the project path and the resource.
 	// Seeing it is conclusive proof of GitLab even on an unrecognised host —
-	// this is what makes https://git.entire.host/<group>/<repo>/-/merge_requests/<n>
+	// this is what makes https://gitlab.example.com/<group>/<repo>/-/merge_requests/<n>
 	// resolve correctly instead of silently defaulting to github below.
 	rest := segments[2:]
 	if rest[0] == "-" {

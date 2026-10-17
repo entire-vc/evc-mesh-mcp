@@ -90,36 +90,36 @@ func TestParseVCSURL(t *testing.T) {
 			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "17", Repository: "group/proj"},
 		},
 		{
-			// Our own self-hosted GitLab (git.entire.host) is an
+			// A self-hosted GitLab is an
 			// unrecognised host, but its merge-request URLs carry GitLab's
 			// literal "-" resource separator — that alone is enough to tell
 			// it apart from a self-hosted GitHub Enterprise "pull" URL.
 			name: "self-hosted gitlab merge request",
-			url:  "https://git.entire.host/entire-vc/team-relay-ops/-/merge_requests/14",
-			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "14", Repository: "entire-vc/team-relay-ops"},
+			url:  "https://gitlab.example.invalid/acme/ops-repo/-/merge_requests/14",
+			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "14", Repository: "acme/ops-repo"},
 		},
 		{
 			name: "contenthub merge request 326",
-			url:  "https://git.entire.host/entire-vc/contenthub/-/merge_requests/326",
-			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "326", Repository: "entire-vc/contenthub"},
+			url:  "https://gitlab.example.invalid/acme/webapp/-/merge_requests/326",
+			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "326", Repository: "acme/webapp"},
 		},
 		{
 			name: "contenthub merge request 327",
-			url:  "https://git.entire.host/entire-vc/contenthub/-/merge_requests/327",
-			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "327", Repository: "entire-vc/contenthub"},
+			url:  "https://gitlab.example.invalid/acme/webapp/-/merge_requests/327",
+			want: vcsURLFacts{Provider: "gitlab", LinkType: "pr", ExternalID: "327", Repository: "acme/webapp"},
 		},
 		{
 			name: "contenthub github control",
-			url:  "https://github.com/entire-vc/contenthub/pull/326",
-			want: vcsURLFacts{Provider: "github", LinkType: "pr", ExternalID: "326", Repository: "entire-vc/contenthub"},
+			url:  "https://github.com/acme/webapp/pull/326",
+			want: vcsURLFacts{Provider: "github", LinkType: "pr", ExternalID: "326", Repository: "acme/webapp"},
 		},
 		{
 			// Negative control for the fix above: a github.com PR URL must
 			// keep resolving to github, not get swept up by the new GitLab
 			// path-grammar inference.
 			name: "github pull request still resolves to github",
-			url:  "https://github.com/entire-vc/team-relay-ops/pull/14",
-			want: vcsURLFacts{Provider: "github", LinkType: "pr", ExternalID: "14", Repository: "entire-vc/team-relay-ops"},
+			url:  "https://github.com/acme/ops-repo/pull/14",
+			want: vcsURLFacts{Provider: "github", LinkType: "pr", ExternalID: "14", Repository: "acme/ops-repo"},
 		},
 		{
 			name: "host-only url yields nothing",
@@ -420,7 +420,7 @@ func TestHandleAddVCSLink_OmittedStatusIsNotSent(t *testing.T) {
 	}
 }
 
-// Before this fix, a git.entire.host MR URL silently got
+// Before this fix, a self-hosted GitLab MR URL silently got
 // provider=github (parseVCSURL's host switch didn't recognise our own
 // GitLab), and the done-evidence gate could then never verify it live.
 func TestHandleAddVCSLink_SelfHostedGitLabURLInfersGitLabProvider(t *testing.T) {
@@ -430,7 +430,7 @@ func TestHandleAddVCSLink_SelfHostedGitLabURLInfersGitLabProvider(t *testing.T) 
 
 	result := callAddVCSLink(t, server, map[string]any{
 		"task_id": taskID,
-		"url":     "https://git.entire.host/entire-vc/team-relay-ops/-/merge_requests/14",
+		"url":     "https://gitlab.example.invalid/acme/ops-repo/-/merge_requests/14",
 	})
 	if result.IsError {
 		t.Fatalf("tool returned an error result: %v", result.Content)
