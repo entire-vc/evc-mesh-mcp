@@ -7,7 +7,7 @@ import (
 
 // The server can refuse a stale conditional write and can record a reason, but
 // an agent can only use either through this tool's schema. A parameter that
-// exists on the API and not here is, from the fleet's point of view, a feature
+// exists on the API and not here is, from the team's point of view, a feature
 // that does not exist — which is exactly why MESH_MEMORY_REQUIRE_REASON cannot
 // be switched on until this ships.
 func TestRememberTool_ExposesReasonAndExpectedVersion(t *testing.T) {
@@ -32,7 +32,7 @@ func TestRememberTool_ExposesReasonAndExpectedVersion(t *testing.T) {
 	}
 
 	// Neither may be required. Making them required here would reject every
-	// existing caller at the tool boundary — the same fleet-wide breakage the
+	// existing caller at the tool boundary — the same workspace-wide breakage the
 	// server-side flag is staged to avoid, just moved one layer out.
 	for _, req := range tool.Tool.InputSchema.Required {
 		if req == "reason" || req == "expected_version" {

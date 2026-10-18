@@ -12,7 +12,7 @@ import (
 )
 
 func runtimeStateFixture() map[string]any {
-	return map[string]any{"kind": "waiting", "since": "2026-10-10T10:00:00Z", "ref": "pipeline:g/p#7", "lane": "linus", "source": "explicit", "stale": false}
+	return map[string]any{"kind": "waiting", "since": "2026-10-10T10:00:00Z", "ref": "pipeline:g/p#7", "lane": "alice", "source": "explicit", "stale": false}
 }
 
 func TestListTasks_RuntimeKind_ForwardedToREST(t *testing.T) {

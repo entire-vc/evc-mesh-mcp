@@ -37,10 +37,9 @@ process still loses its cache; this change does not introduce recovery by chat.
 tests nested/typed/RawMessage filtering, both result slots, metadata, immutable
 inputs, snapshot deltas and capability forwarding through checkout/extend/release.
 
-The installed binaries are `~/bin/mesh-mcp` on the Mac (stdio) and
-`/opt/evc-mesh/bin/mesh-mcp` on the production VM (native `mesh-mcp.service`, SSE and
-Streamable HTTP). Public full-profile HTTP is `https://mesh.entire.host/mcp`.
-Both transports use the same tool serialization. Replace binaries atomically;
+The server runs as a local stdio binary or as a long-lived SSE / Streamable HTTP
+service (for the hosted product: `https://mesh.entire.host/mcp`). Both transports
+use the same tool serialization. Replace binaries atomically;
 existing stdio processes retain the previous inode until restarted.
 
 The live probe creates an owned `no-intake` canary, checks a nonempty REST capability
@@ -48,10 +47,10 @@ as positive control, reads it through installed MCP without logging values, veri
 metadata and checkout/extend/release, and cancels the canary in cleanup:
 
 ```sh
-python3 scripts/verify-lease-output.py --target stdio --target https://mesh.entire.host/mcp --target https://mesh.entire.host/mcp/sse
+# Internal deployment acceptance probe is omitted from this public snapshot.
 ```
 
-Use `--expect-leak` on the previous release as the negative control. Credentials
-come from the named `MESH_AGENT_KEY` field in `~/.config/agents/linus.env` (override
-`--credential-file` for another owner). Reports contain booleans/counts/fixture IDs,
+Run the probe against the previous release first as a negative control: it must
+fail there. Credentials come from a `MESH_AGENT_KEY` entry in a local env file
+(`--credential-file`). Reports contain booleans/counts/fixture IDs,
 never capabilities or raw tool responses. No permanent credential rotation occurs.

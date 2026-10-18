@@ -21,7 +21,7 @@ func twentyRowFixture() map[string]any {
 		}
 		it["id"] = uuid.New().String()
 		it["title"] = fmt.Sprintf("[Runtime R%d] Mesh: ready/running/waiting, triage human gate и ёмкость исполнения", i)
-		it["labels"] = []any{"fleet-eng", "runtime-routing", "pin-assignee"}
+		it["labels"] = []any{"team-eng", "routing", "pinned"}
 		it["parent_task_id"] = uuid.New().String()
 		items = append(items, it)
 	}

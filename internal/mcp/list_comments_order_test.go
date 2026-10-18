@@ -14,7 +14,7 @@ import (
 
 // list_comments defaulted to the server's own default (sort_dir=asc), so
 // list_comments(task_id, limit=2) returned the OLDEST two comments of a thread
-// (live red 03.10, Riker: first 2 of 17). An agent wanting "the last 3" had no
+// (live red 03.10, reporter: first 2 of 17). An agent wanting "the last 3" had no
 // way to ask — the natural call returned the wrong end. The default flips to
 // newest-first; these tests pin the outgoing query, schema_gap-style, because a
 // result-only assertion cannot tell "forwarded" from "dropped".

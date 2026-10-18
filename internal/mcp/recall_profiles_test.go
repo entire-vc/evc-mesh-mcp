@@ -43,7 +43,7 @@ func TestClassifyQuery_Factual(t *testing.T) {
 	cases := []string{
 		"RECALL_GRAPH_ENABLED setting",
 		"MESH_API_KEY value",
-		"4e2c1857-a501-48b7-90a2-5766345d99d3",
+		"550e8400-e29b-41d4-a716-446655440000",
 		"/api/v1/memories/search",
 		"~/bin/mesh-mcp path",
 	}
@@ -94,7 +94,7 @@ func TestClassifyQuery_Priority(t *testing.T) {
 // Mutation check (re-run after editing this file): put
 // `ApplyDecay: true, HalfLifeDays: 7, OrderBy: "decayed_relevance:desc"` back
 // on any case in GetProfileParams — this test must go red, and it is the only
-// thing standing between an intuition about time and a fleet-wide reranking.
+// thing standing between an intuition about time and a workspace-wide reranking.
 func TestNoProfileArmsRecencyDecay(t *testing.T) {
 	for _, p := range []RecallProfile{
 		ProfileMultiSession, ProfileFactual, ProfileDefault,

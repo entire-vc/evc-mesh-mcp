@@ -20,7 +20,7 @@ const longTaskDescription = "Fix the retry backoff in the SSE reconnect path.\n"
 	"Body: the reconnect loop resets the backoff on every streamed keepalive, so a flapping " +
 	"endpoint hammers the server. Repro: kill the NATS connection mid-stream, watch the " +
 	"reconnect interval stay at 1s. Fix in internal/sse/reconnect.go, add a test pinning the " +
-	"exponential schedule, and check the fleet log for the reconnect storm signature afterwards."
+	"exponential schedule, and check the team log for the reconnect storm signature afterwards."
 
 // cyrillicFirstLineLong has a first line of 300 Cyrillic runes: cutting it at
 // 200 must be rune-safe, not byte-safe (a byte cut mid-rune yields mojibake).
@@ -41,7 +41,7 @@ func myTasksFixture() map[string]any {
 				"status_id":       "st-1",
 				"priority":        "high",
 				"labels":          []any{"backend", "sse"},
-				"assignee_name":   "Linus",
+				"assignee_name":   "Alice",
 				"assignee_id":     "agent-1",
 				"assignee_type":   "agent",
 				"description":     longTaskDescription,
@@ -53,7 +53,7 @@ func myTasksFixture() map[string]any {
 				"status_id":       "st-1",
 				"priority":        "medium",
 				"labels":          []any{"chore"},
-				"assignee_name":   "Linus",
+				"assignee_name":   "Alice",
 				"description":     "Already compact: fits in one short line.",
 				"has_description": true,
 			},
@@ -62,7 +62,7 @@ func myTasksFixture() map[string]any {
 				"title":           "Cyrillic long first line",
 				"status_id":       "st-1",
 				"priority":        "low",
-				"assignee_name":   "Linus",
+				"assignee_name":   "Alice",
 				"description":     cyrillicFirstLineLong,
 				"has_description": true,
 			},
@@ -71,7 +71,7 @@ func myTasksFixture() map[string]any {
 				"title":           "No description (server-blanked page)",
 				"status_id":       "st-1",
 				"priority":        "none",
-				"assignee_name":   "Linus",
+				"assignee_name":   "Alice",
 				"description":     "",
 				"has_description": false,
 			},
@@ -229,13 +229,13 @@ func TestHandleGetMyTasks_FullTrue_ReturnsFullDescriptions(t *testing.T) {
 // every envelope field the lean default view must drop.
 func leanEnvelopeFixture() map[string]any {
 	item := map[string]any{
-		"id": "82b388a0-81b9-4296-a3d5-614149865a75", "title": "T", "status_id": "st-1",
-		"priority": "medium", "labels": []any{"mcp"}, "assignee_name": "Garfield",
+		"id": "550e8400-e29b-41d4-a716-446655440000", "title": "T", "status_id": "st-1",
+		"priority": "medium", "labels": []any{"mcp"}, "assignee_name": "Bob",
 		"due_date": nil, "updated_at": "2026-10-03T00:51:35Z", "project_id": "p-1",
 		"description": "d", "has_description": true, "human_gate": false,
 		"url": "https://mesh.entire.host/t/x", "parent_task_id": nil,
 		"assignee_id": "a-1", "assignee_type": "agent", "assigned_by": "",
-		"created_by": "a-2", "created_by_name": "Linus", "created_by_type": "agent",
+		"created_by": "a-2", "created_by_name": "Alice", "created_by_type": "agent",
 		"created_at": "2026-09-24T00:18:46Z", "completed_at": nil,
 		"artifact_count": float64(0), "vcs_link_count": float64(0), "completion_signal": false,
 		"delegation_level": "auto", "position": float64(0), "human_gate_class": "hard",

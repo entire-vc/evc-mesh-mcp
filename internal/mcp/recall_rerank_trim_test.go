@@ -263,7 +263,7 @@ func TestCompactRecallItems_EveryItemCompact(t *testing.T) {
 	out := compactRecallItems(items)
 	for i, it := range out {
 		m := it.(map[string]any)
-		// Wave 2 (#dc719c63): the compact keep-list shrank to what a reader
+		// Compact view: the compact keep-list shrank to what a reader
 		// acts on — key/tags/score/content. created_at, importance_score and
 		// scope moved to full=true only.
 		for _, f := range []string{"key", "tags", "score", "content"} {
@@ -301,7 +301,7 @@ func TestCompactRecallItem_ShortContentNotFlagged(t *testing.T) {
 	}
 }
 
-// Wave 2 (#dc719c63): timestamps left the compact view entirely — created_at
+// Compact view: timestamps left the compact view entirely — created_at
 // (and its old updated_at fallback) is a full=true field now.
 func TestCompactRecallItem_NoTimestamps(t *testing.T) {
 	out := compactRecallItem(map[string]any{"key": "k", "created_at": "2026-10-01", "updated_at": "2026-10-02"})
@@ -415,7 +415,7 @@ func TestHandleRecall_AboveThreshold_CompactForEveryItem(t *testing.T) {
 	}
 	for i, it := range gotItems {
 		m := it.(map[string]any)
-		// Wave 2 (#dc719c63): the cut is marked by a trailing ellipsis, not
+		// Compact view: the cut is marked by a trailing ellipsis, not
 		// by content_truncated/content_chars fields.
 		if n := len([]rune(m["content"].(string))); n != recallContentChars+1 {
 			t.Errorf("item %d content %d runes, want %d + ellipsis", i, n, recallContentChars)

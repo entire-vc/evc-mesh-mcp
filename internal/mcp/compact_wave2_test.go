@@ -1,6 +1,6 @@
 package mcp
 
-// Wave 2 of the compact-responses work (card #dc719c63, parent #80bb6658):
+// Second stage of the compact-responses work:
 // the compact view is the DEFAULT for recall, list_comments, get_task,
 // list_tasks and get_team_directory; full=true restores the verbatim response
 // everywhere. Red control: on wave-1 main every compact assertion here failed.
@@ -66,7 +66,7 @@ func TestRecallWave2Compact_DefaultFieldsOnly(t *testing.T) {
 		t.Errorf("content = %d runes, want 300 + ellipsis", n)
 	}
 	if !strings.HasSuffix(c, "…") {
-		t.Error("a cut content must end with the ellipsis mark (no content_truncated field in wave 2)")
+		t.Error("a cut content must end with the ellipsis mark (no content_truncated field)")
 	}
 }
 
@@ -104,7 +104,7 @@ func wave2Comment(id string, body string, internal bool) map[string]any {
 	return map[string]any{
 		"id": id, "task_id": "task-1",
 		"author_id":   uuid.New().String(),
-		"author_name": "Linus",
+		"author_name": "Alice",
 		"author_type": "agent",
 		"body":        body,
 		"created_at":  "2026-10-05T10:00:00Z",
@@ -469,7 +469,7 @@ func TestGetTeamDirectoryWave2_ZoneOneLine(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"workspace": map[string]any{"id": "w"},
 			"agents": []any{map[string]any{
-				"id": "a1", "name": "Linus", "role": "developer",
+				"id": "a1", "name": "Alice", "role": "developer",
 				"responsibility_zone": strings.Repeat("з", 200),
 				"computed_status":     "online",
 				"capabilities":        map[string]any{"go": true},

@@ -295,8 +295,8 @@ func main() {
 
 		// Two servers, two profiles: full (default, backward compatible — every
 		// existing client connects here) and core (a lighter tool set for
-		// lightweight/embedded agents). This mirrors evc-mesh/cmd/mcp's
-		// already-deployed dual-profile SSE setup, so prod-host can run this
+		// lightweight/embedded agents). This mirrors the main server's
+		// already-deployed dual-profile SSE setup, so a single deployment can run this
 		// binary instead of maintaining a second copy of the same MCP tools.
 		fullSrv := mcpserver.NewServer(mcpserver.ServerConfig{
 			RESTClient: sharedRestClient,

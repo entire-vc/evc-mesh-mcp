@@ -35,7 +35,7 @@ func TestRESTClient_GetTaskComments_RequestsNewestPageAndRestoresChronologicalOr
 	defer srv.Close()
 
 	c := NewRESTClient(srv.URL, "test-key")
-	result, err := c.GetTaskComments(context.Background(), "8a98ddd3-566c-4e81-b2d1-b92103d2ef03", 50)
+	result, err := c.GetTaskComments(context.Background(), "550e8400-e29b-41d4-a716-446655440000", 50)
 	if err != nil {
 		t.Fatalf("GetTaskComments returned error: %v", err)
 	}

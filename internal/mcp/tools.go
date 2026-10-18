@@ -161,10 +161,10 @@ func (s *Server) handleListTasks(ctx context.Context, request mcpsdk.CallToolReq
 
 	limit := mcpsdk.ParseInt(request, "limit", 20)
 	full := mcpsdk.ParseBoolean(request, "full", false)
-	// Wave 2 (#dc719c63): the compact view caps the page at
+	// Compact view: the compact view caps the page at
 	// listTasksCompactLimitCeiling items. A live probe measured limit=200
 	// handing back 118k chars of lean items — the single biggest list_tasks
-	// response in the fleet — while no routing decision needs 200 cards at
+	// response in the workspace — while no routing decision needs 200 cards at
 	// once. full=true keeps the API's own 200 ceiling, and a clamped call
 	// says so in the response (limit_clamped_to) so paging math stays honest.
 	limitClamped := false
@@ -325,7 +325,7 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 				arr = commentsSince(arr, since)
 			}
 			// Inline comments share the list_comments compact shape in the
-			// default view (wave 2, #dc719c63): id/author_name/created_at/
+			// compact default view: id/author_name/created_at/
 			// complete body. full=true returns complete REST objects.
 			if !full {
 				arr = compactCommentItems(arr, mcpsdk.ParseBoolean(request, "include_auto", false))
@@ -478,7 +478,7 @@ const maxTaskCommentsLimit = 200
 // assignee — including move-to-review's auto-reassign), nothing else. The
 // description and the other static fields are the fat the caller either just
 // sent (update_task) or can get with one get_task — echoing them on every
-// mutation cost ~1.5k chars per call fleet-wide (Jacques, 03.10).
+// mutation cost ~1.5k chars per call.
 var leanMutationTaskFields = []string{
 	"id", "status_id", "assignee_id", "assignee_type", "assignee_name", "updated_at",
 }
@@ -1256,7 +1256,7 @@ func (s *Server) handleListComments(ctx context.Context, request mcpsdk.CallTool
 		return errResult("failed to list comments: %v", err)
 	}
 
-	// Compact view by default (wave 2, #dc719c63): the REST page carries 12
+	// Compact view by default: the REST page carries 12
 	// fields per comment — a live probe measured
 	// 1.6k chars per comment, most of it author_id/task_id/url/metadata the
 	// caller already knows or never uses. The compact item keeps what a
@@ -1283,7 +1283,10 @@ func compactComment(m map[string]any, includeAuto ...bool) map[string]any {
 		}
 	}
 	if len(includeAuto) == 0 || !includeAuto[0] {
-		if body, ok := out["body"].(string); ok && isAutomaticComment(body) {
+		// A server-authored comment (webhook, gate notices) is automatic by
+		// author, whatever its prefix; the prefix list covers agent-written ones.
+		sysAuthor := m["author_type"] == "system"
+		if body, ok := out["body"].(string); ok && (sysAuthor || isAutomaticComment(body)) {
 			out["body"] = strings.Join(strings.Fields(strings.SplitN(body, "\n", 2)[0]), " ")
 			out["auto_summary"] = true
 		}
@@ -1292,8 +1295,10 @@ func compactComment(m map[string]any, includeAuto ...bool) map[string]any {
 }
 
 func isAutomaticComment(body string) bool {
-	for _, prefix := range []string{"[fiddler] ✅ completed", "[balancer]", "🔀 **fleet-balancer сменил исполнителя:", "🤖 auto:", "INTAKE:", "[INTAKE]", "🔀 INTAKE-DECOMPOSE", "🔼 INTAKE-PROMOTE", "🏁 INTAKE-PARENT-CLOSE"} {
-		if strings.HasPrefix(body, prefix) {
+	// Case-insensitive: the server writes "🤖 Auto:", the list below is lower-case.
+	body = strings.ToLower(body)
+	for _, prefix := range []string{"[fiddler] ✅ completed", "[balancer]", "🔀 **fleet-balancer сменил исполнителя:", "🤖 auto:", "🔒 auto:", "🔓 auto:", "INTAKE:", "[INTAKE]", "🔀 INTAKE-DECOMPOSE", "🔼 INTAKE-PROMOTE", "🏁 INTAKE-PARENT-CLOSE"} {
+		if strings.HasPrefix(body, strings.ToLower(prefix)) {
 			return true
 		}
 	}
@@ -2228,11 +2233,10 @@ func (s *Server) handleGetTeamDirectory(ctx context.Context, request mcpsdk.Call
 }
 
 // teamDirectoryZoneChars caps the project column (responsibility_zone) in
-// the compact directory to one line. Wave 2 (#dc719c63): a live probe put
-// the zone column at 54% of the whole compact payload — 200 CHARS is up to
-// 400 BYTES of UTF-8 Russian, and the fleet's own growth (41 agents and
-// counting) multiplied it. 60 chars still name the zone; the full text is a
-// full=true field.
+// the compact directory to one line. A live probe put the zone column at 54%
+// of the whole compact payload — 200 CHARS is up to 400 BYTES of UTF-8
+// Russian, and team growth multiplied it. 60 chars still name the zone; the
+// full text is a full=true field.
 const teamDirectoryZoneChars = 60
 
 // teamDirectoryColumns are the row-array columns compactTeamDirectory emits
@@ -3119,7 +3123,7 @@ func keyMatchBoost(key, query string) int {
 }
 
 // recallContentChars caps the content of every item in the default (compact)
-// recall view. Measured on the fleet: 349 recall calls/day averaging 7.9k chars
+// recall view. Measured on live traffic: responses averaged ~8k chars
 // per response, almost all of it content nobody reads past the first lines. A cut
 // item says so and carries its full length; full=true or get_memory(key)
 // returns it whole.
@@ -3128,8 +3132,8 @@ const recallContentChars = 300
 // recallCompactFields is the allow-list of fields kept per item in the compact
 // view. Everything else (scope, importance_score, created_at and the other
 // write-path bookkeeping, dedup hash, decay scores, version...) is dropped:
-// it restates the order or is only useful to the server, and a fleet probe
-// (2026-10-05, #dc719c63) put the bookkeeping at ~140 bytes of a ~600-byte
+// it restates the order or is only useful to the server, and a live probe
+// (2026-10) put the bookkeeping at ~140 bytes of a ~600-byte
 // item. graph_boost/provenance stay because they change how a reader must
 // interpret the hit. Timestamps and scores-of-the-write-path are full=true
 // fields now.
@@ -3154,7 +3158,7 @@ func compactRecallItems(items []any) []any {
 // compactRecallItem returns a copy of m limited to recallCompactFields plus
 // content cut to recallContentChars (rune-safe). A cut is marked by a trailing
 // ellipsis in the content itself — the content_truncated/content_chars fields
-// left the compact view in wave 2 (#dc719c63); get_memory(key) or full=true
+// are no longer returned; get_memory(key) or full=true
 // fetches the whole entry. project_id is kept only for project-scoped entries
 // (it is what get_memory needs to disambiguate the key); archived/status
 // survive only while they carry a non-default value, so include_archived
@@ -3559,6 +3563,10 @@ type setHumanGateArgs struct {
 	RecommendedDefault string
 	Class              string
 	Deadline           *time.Time
+	// Addressee is the person asked; the server refuses an agent or unknown name.
+	Addressee    string
+	Supersedes   string
+	CanonicalKey string
 	// Predicate is the four-question check. Sent to the server, which
 	// decides — the client does NOT pre-judge it. Deliberate: two implementations of one
 	// predicate drift, and the server's answer is the one that governs the write.
@@ -3588,6 +3596,13 @@ func parseSetHumanGateArgs(request mcpsdk.CallToolRequest) (*setHumanGateArgs, s
 			"answers (e.g. \"merge; the gateway is inactive so no client can be charged\")."
 	}
 
+	addressee := strings.TrimSpace(mcpsdk.ParseString(request, "addressee", ""))
+	if addressee == "" {
+		return nil, "addressee is required — the @name of the PERSON you are asking. An agent is not " +
+			"an addressee: hand work to an agent with assign_task. Equivalent: a comment line " +
+			"`❓ Blocking @<person>: <question>`."
+	}
+
 	class := strings.TrimSpace(mcpsdk.ParseString(request, "class", ""))
 	if class != "" && class != "hard" && class != "soft" {
 		return nil, fmt.Sprintf("class must be 'hard' or 'soft' (got %q)", class)
@@ -3608,7 +3623,7 @@ func parseSetHumanGateArgs(request mcpsdk.CallToolRequest) (*setHumanGateArgs, s
 	// Four-question predicate. Validated for PRESENCE here (so the caller is told what
 	// to write, in words the HTTP 422 cannot carry), but never EVALUATED here — the
 	// server decides. A second copy of the decision rule in the client is exactly the
-	// drift this fleet keeps paying for.
+	// drift this workspace keeps paying for.
 	predicate := map[string]any{}
 	for _, f := range []struct {
 		boolKey, reasonKey string
@@ -3644,6 +3659,9 @@ func parseSetHumanGateArgs(request mcpsdk.CallToolRequest) (*setHumanGateArgs, s
 		RecommendedDefault: recommendedDefault,
 		Class:              class,
 		Deadline:           deadline,
+		Addressee:          addressee,
+		Supersedes:         strings.TrimSpace(mcpsdk.ParseString(request, "supersedes", "")),
+		CanonicalKey:       strings.TrimSpace(mcpsdk.ParseString(request, "canonical_key", "")),
 		Predicate:          predicate,
 	}, ""
 }
@@ -3655,7 +3673,7 @@ func (s *Server) handleSetHumanGate(ctx context.Context, request mcpsdk.CallTool
 	}
 
 	result, err := s.getRESTClient(ctx).SetHumanGate(ctx, args.TaskID, args.Reason,
-		args.RecommendedDefault, args.Class, args.Deadline, args.Predicate)
+		args.RecommendedDefault, args.Class, args.Deadline, args.Predicate, args.Addressee, args.Supersedes, args.CanonicalKey)
 	if err != nil {
 		return errResult("set_human_gate failed: %v", err)
 	}

@@ -46,6 +46,8 @@ func TestHandleSetHumanGate_SendsPredicateOnTheWire(t *testing.T) {
 		"task_id":             "11111111-1111-1111-1111-111111111111",
 		"reason":              "мёржим сейчас или ждём?",
 		"recommended_default": "жду ответа до дедлайна",
+		"supersedes":          "ответ не покрывает откат",
+		"canonical_key":       "merge-gateway",
 	})
 
 	res, err := s.handleSetHumanGate(context.Background(), req)
@@ -61,6 +63,12 @@ func TestHandleSetHumanGate_SendsPredicateOnTheWire(t *testing.T) {
 	}
 
 	// The whole point: the predicate must actually be IN the request body.
+	if gotBody["supersedes"] != "ответ не покрывает откат" || gotBody["canonical_key"] != "merge-gateway" {
+		t.Errorf("supersedes and canonical_key must reach the server body, got %v / %v", gotBody["supersedes"], gotBody["canonical_key"])
+	}
+	if gotBody["addressee"] != "alice" {
+		t.Errorf("addressee must reach the server body, got %v", gotBody["addressee"])
+	}
 	p, ok := gotBody["predicate"].(map[string]any)
 	if !ok {
 		t.Fatalf("predicate missing from the request body — the server would 422 every "+
