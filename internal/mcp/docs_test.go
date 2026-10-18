@@ -570,7 +570,7 @@ func TestGetDoc_PathErrorsAreActionable(t *testing.T) {
 }
 
 // AC7: a server ahead of this binary must degrade to "extra data", never to a
-// broken tool. On 19.08 a changed /dependencies shape broke get_task fleet-wide
+// broken tool. A changed /dependencies shape broke get_task workspace-wide
 // for exactly this reason.
 func TestDocs_UnknownServerFieldsSurviveAndDoNotBreak(t *testing.T) {
 	f, projID, childID := standardFixture(t)

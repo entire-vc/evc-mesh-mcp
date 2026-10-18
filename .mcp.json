@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "evc-mesh": {
+      "command": "evc-mesh-mcp",
+      "env": {
+        "MESH_API_URL": "${MESH_API_URL}",
+        "MESH_AGENT_KEY": "${MESH_AGENT_KEY}",
+        "MESH_MCP_PROFILE": "full"
+      }
+    }
+  }
+}

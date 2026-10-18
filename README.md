@@ -3,7 +3,6 @@
 <!-- mcp-name: io.github.entire-vc/evc-mesh-mcp -->
 
 [![Install via Spark](https://spark.entire.vc/badges/evc-mesh-mcp/install.svg)](https://spark.entire.vc/assets/evc-mesh-mcp?utm_source=github&utm_medium=readme)
-[![MCP Badge](https://lobehub.com/badge/mcp/entire-vc-evc-mesh-mcp)](https://lobehub.com/mcp/entire-vc-evc-mesh-mcp)
 
 [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server for [EVC Mesh](https://github.com/entire-vc/evc-mesh) — a task management platform for coordinating humans and AI agents.
 
@@ -342,7 +341,7 @@ did not supply; an explicit `limit` always wins.
 | `checkout_task` | Atomic task lock for multi-agent coordination |
 | `release_task` | Release atomic task lock |
 | `extend_checkout` | Extend an existing task lock for longer-running work |
-| `set_human_gate` | Freeze a task until a named person answers a recorded question |
+| `set_human_gate` | Freeze a task until a named person answers a recorded question (`addressee` must be a person; `supersedes` and `canonical_key` cover a repeat of an answered question) |
 | `clear_human_gate` | Release a human gate |
 
 ### Comments & Artifacts
@@ -356,7 +355,7 @@ did not supply; an explicit `limit` always wins.
 
 ### Downloading an artifact
 
-Downloading an artifact is two GETs. Step 1: GET <base>/api/v1/artifacts/<id>/download with header X-Agent-Key: <your agent key> -> 200 JSON {"url": "<presigned URL>"}. Step 2: GET that url with NO headers -> 200, the file bytes. Pitfalls: on step 1 only X-Agent-Key is accepted (X-API-Key and Authorization: Bearer give 401); on step 2 any extra header, Authorization in particular, breaks the presigned signature (400). The artifact's download_path is step 1's path. Never fetch browser_only_url with an agent key: it is a human page and answers 401 by design.
+Downloading an artifact is two GETs. Step 1: GET <base>/api/v1/artifacts/<id>/download with header X-Agent-Key: <your agent key> -> 200 JSON {"url": "<presigned URL>"}. Step 2: GET that url with NO headers -> 200, the file bytes. Pitfalls: on step 1 only X-Agent-Key is accepted (X-API-Key and Authorization: Bearer give 401); on step 2 any extra header, Authorization in particular, breaks the presigned signature (400). The artifact's download_path is step 1's path. browser_only_url is a human page and answers 401 to an agent key by design.
 
 ### Event Bus
 
@@ -435,6 +434,18 @@ Mesh REST API, so upgrade it after the Mesh API it talks to.
 
 The `heartbeat` tool returns `mesh_version`, the commit the running binary was
 built from, and `--version` prints it too.
+
+## Skills and plugin layout
+
+The repo follows the [Open Plugins](https://agent-plugins.org) layout: `plugin.json` (manifest), `mcp.json` / `.mcp.json` (stdio server config, values come from your environment) and `skills/`:
+
+| Skill | Purpose |
+|-------|---------|
+| [`mesh-tasks`](skills/mesh-tasks/SKILL.md) | Session start protocol, taking, updating and closing tasks |
+| [`mesh-memory`](skills/mesh-memory/SKILL.md) | `remember` / `recall` / `forget` conventions |
+| [`mesh-coordination`](skills/mesh-coordination/SKILL.md) | Team directory, locks, events, hand-offs (full profile) |
+
+This server exposes tools only; it does not define MCP prompts or resources.
 
 ## Related
 

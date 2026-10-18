@@ -504,3 +504,51 @@ func TestUpdateDoc_ExternalSourceWriteLandedDoesNotClaimNothingWasWritten(t *tes
 		t.Errorf("does not name where it landed: %s", text)
 	}
 }
+
+// A slug collision on a move is a 409 too, but retrying with another
+// base_version cannot help: it must not be rendered as a version race with
+// "version unknown".
+func TestUpdateDoc_SlugTakenIsNotReportedAsAVersionConflict(t *testing.T) {
+	st := newDocStore(t, "original\n")
+	st.forcedConflict = map[string]any{
+		"code":       409,
+		"error_code": "document_slug_taken",
+		"message":    "slug is already taken in the target folder",
+	}
+
+	text, isErr := callTool(t, st.newServer().handleUpdateDoc, map[string]any{
+		"doc": st.docID, "title": "x", "base_version": 1,
+	})
+	if !isErr {
+		t.Fatalf("expected a conflict result: %s", text)
+	}
+	if !strings.Contains(text, "slug taken") {
+		t.Errorf("does not name the slug collision: %s", text)
+	}
+	if !strings.Contains(text, "slug is already taken in the target folder") {
+		t.Errorf("drops the server message: %s", text)
+	}
+	if strings.Contains(text, "version unknown") || strings.Contains(text, "409 version conflict") || strings.Contains(text, "retry with base_version") {
+		t.Errorf("a slug collision is rendered as a version conflict: %s", text)
+	}
+}
+
+// A 409 that names neither a known code nor a current_version is not a version
+// race either; the server's own message is shown instead of "version unknown".
+func TestUpdateDoc_UnnamedConflictDoesNotClaimAVersionRace(t *testing.T) {
+	st := newDocStore(t, "original\n")
+	st.forcedConflict = map[string]any{"code": 409, "error_code": "conflict", "message": "something else is in the way"}
+
+	text, isErr := callTool(t, st.newServer().handleUpdateDoc, map[string]any{
+		"doc": st.docID, "title": "x", "base_version": 1,
+	})
+	if !isErr {
+		t.Fatalf("expected a conflict result: %s", text)
+	}
+	if strings.Contains(text, "unknown") {
+		t.Errorf("renders a version race with an unknown version: %s", text)
+	}
+	if !strings.Contains(text, "something else is in the way") {
+		t.Errorf("server message is dropped: %s", text)
+	}
+}

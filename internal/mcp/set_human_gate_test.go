@@ -20,6 +20,7 @@ import (
 // written for instead of silently becoming predicate tests.
 func predicateArgs(extra map[string]any) map[string]any {
 	m := map[string]any{
+		"addressee":             "alice",
 		"credential_exists":     true,
 		"credential_reason":     "token is already in the agent environment",
 		"reversible":            false,
@@ -60,6 +61,15 @@ func TestSetHumanGate_RefusesIncompleteAskBeforeAnyRoundTrip(t *testing.T) {
 			name:     "whitespace-only default is not a default",
 			args:     predicateArgs(map[string]any{"task_id": "t", "reason": "r", "recommended_default": "   "}),
 			wantWord: "recommended_default",
+		},
+		{
+			name: "no addressee — the server could not tell which person is asked",
+			args: func() map[string]any {
+				m := predicateArgs(map[string]any{"task_id": "t", "reason": "r", "recommended_default": "d"})
+				delete(m, "addressee")
+				return m
+			}(),
+			wantWord: "addressee",
 		},
 		{
 			name:     "class outside the enum",

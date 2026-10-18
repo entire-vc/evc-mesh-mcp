@@ -13,7 +13,7 @@ import (
 )
 
 // Mutations returned the whole card — description and all (~1.5k chars per
-// call, Jacques 03.10) — for a confirmation the caller usually needs as
+// call) — for a confirmation the caller usually needs as
 // "id + status + assignee". The default response is now that lean projection;
 // full=true restores the verbatim pre-change shape (the same contract as
 // get_my_tasks / list_tasks / recall).

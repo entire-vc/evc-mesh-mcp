@@ -166,6 +166,6 @@ func TestTeamDirectory_ProjectColumnCappedToOneLine(t *testing.T) {
 		t.Errorf("zone row0 = %q", rows[0][3])
 	}
 	if n := len([]rune(rows[1][3].(string))); n != 60 {
-		t.Errorf("zone row1 = %d runes, want 60 (wave 2, one line)", n)
+		t.Errorf("zone row1 = %d runes, want 60 (one line)", n)
 	}
 }

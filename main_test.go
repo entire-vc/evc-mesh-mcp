@@ -79,7 +79,7 @@ func TestAuthenticateWithRetry_RecoversFromTransient502(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "agent-1", "name": "linus"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "agent-1", "name": "alice"})
 	}))
 	defer srv.Close()
 
@@ -92,8 +92,8 @@ func TestAuthenticateWithRetry_RecoversFromTransient502(t *testing.T) {
 	if err != nil {
 		t.Fatalf("authenticateWithRetry returned error after a transient 502: %v", err)
 	}
-	if agentInfo["name"] != "linus" {
-		t.Errorf("got agent info %v, want name=linus", agentInfo)
+	if agentInfo["name"] != "alice" {
+		t.Errorf("got agent info %v, want name=alice", agentInfo)
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
 		t.Errorf("server received %d calls, want exactly 2 (one 502, one success)", got)

@@ -199,7 +199,7 @@ func TestWave3AfterWalkFiltersBeforePaging(t *testing.T) {
 }
 
 func TestWave3AutoSummaryAndEscape(t *testing.T) {
-	for _, prefix := range []string{"[fiddler] ✅ completed", "[balancer] assigned", "🔀 **fleet-balancer сменил исполнителя: Khan → Hugh**", "INTAKE: accepted", "🔀 INTAKE-DECOMPOSE", "🔼 INTAKE-PROMOTE", "🏁 INTAKE-PARENT-CLOSE"} {
+	for _, prefix := range []string{"[fiddler] ✅ completed", "[balancer] assigned", "🔀 **fleet-balancer сменил исполнителя: alice → bob**", "INTAKE: accepted", "🔀 INTAKE-DECOMPOSE", "🔼 INTAKE-PROMOTE", "🏁 INTAKE-PARENT-CLOSE"} {
 		t.Run(prefix, func(t *testing.T) {
 			body := prefix + "\nsecond line\nthird line"
 			s := newCommentsTestServer(t, []map[string]any{wave2Comment("auto", body, false), wave2Comment("human", "Decision\n"+strings.Repeat("x", 2000), false)})
@@ -221,5 +221,25 @@ func TestWave3AutoSummaryAndEscape(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCompactComment_ServerAuthoredIsAutoSummary(t *testing.T) {
+	long := "🤖 Auto: MR !5 merged. Task moved to review.\nsecond line"
+	got := compactComment(map[string]any{"id": "1", "body": long, "author_type": "agent"})
+	if got["auto_summary"] != true || got["body"] != "🤖 Auto: MR !5 merged. Task moved to review." {
+		t.Fatalf("capitalised Auto prefix not summarised: %v", got)
+	}
+	got = compactComment(map[string]any{"id": "2", "body": "no prefix\nline two", "author_type": "system"})
+	if got["auto_summary"] != true {
+		t.Fatalf("system author not summarised: %v", got)
+	}
+	got = compactComment(map[string]any{"id": "3", "body": "human text\nline two", "author_type": "user"})
+	if got["auto_summary"] != nil || got["body"] != "human text\nline two" {
+		t.Fatalf("ordinary comment altered: %v", got)
+	}
+	got = compactComment(map[string]any{"id": "4", "body": long, "author_type": "system"}, true)
+	if got["auto_summary"] != nil || got["body"] != long {
+		t.Fatalf("include_auto must restore body: %v", got)
 	}
 }

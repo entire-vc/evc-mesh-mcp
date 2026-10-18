@@ -14,11 +14,11 @@ const artifactDownloadHowTo = "Downloading an artifact is two GETs. " +
 	"Step 2: GET that url with NO headers -> 200, the file bytes. " +
 	"Pitfalls: on step 1 only X-Agent-Key is accepted (X-API-Key and Authorization: Bearer give 401); " +
 	"on step 2 any extra header, Authorization in particular, breaks the presigned signature (400). " +
-	"The artifact's download_path is step 1's path. Never fetch browser_only_url with an agent key: it is a human page and answers 401 by design."
+	"The artifact's download_path is step 1's path. browser_only_url is a human page and answers 401 to an agent key by design."
 
 // browserOnlyNote explains, in the output itself, what the URL beside it is for.
 const browserOnlyNote = "Human-only page (docs.entire.vc, needs a Team Relay browser session). " +
-	"It answers 401 for an agent key by design, so do not fetch it. To get the bytes use download_path (two GETs, see the tool description)."
+	"It answers 401 for an agent key by design. The bytes are served by download_path (two GETs, see the tool description)."
 
 // shapeArtifact makes an artifact's two URLs distinguishable for an agent. The
 // backend hands out download_path (the API, by agent key) and, inside metadata,

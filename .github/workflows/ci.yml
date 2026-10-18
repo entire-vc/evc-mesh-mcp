@@ -51,11 +51,17 @@ jobs:
       # standing between the rollback anchor and a defect nobody notices until
       # the day a rollback is actually needed — three real ordering bugs in the
       # anchor naming were caught this way before the first deploy ever ran.
+      # The deploy script is private and is not part of the public export; there
+      # the drill has nothing to exercise and its steps are skipped (the job
+      # stays green). hashFiles is not available in a job-level `if`, hence
+      # the guard on each step.
       - name: Run the drill
+        if: hashFiles('scripts/mesh-mcp-remote-deploy.sh') != ''
         run: bash scripts/mesh-mcp-deploy-drill.sh scripts/mesh-mcp-remote-deploy.sh
       # A suite that cannot fail proves nothing. This re-runs it against a
       # deliberately broken copy and requires it to go red.
       - name: Negative control — the drill must fail on a broken script
+        if: hashFiles('scripts/mesh-mcp-remote-deploy.sh') != ''
         run: |
           sed 's/\[ "\$seq" -ge "\$n" \]/[ "$seq" -eq "$n" ]/' \
             scripts/mesh-mcp-remote-deploy.sh > /tmp/mutant.sh
