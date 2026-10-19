@@ -4,9 +4,15 @@
 
 [![Install via Spark](https://spark.entire.vc/badges/evc-mesh-mcp/install.svg)](https://spark.entire.vc/assets/evc-mesh-mcp?utm_source=github&utm_medium=readme)
 
-[Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server for [EVC Mesh](https://github.com/entire-vc/evc-mesh) — a task management platform for coordinating humans and AI agents.
+> Tasks, comments, shared memory and handoffs for teams of people and AI agents, over MCP.
 
-Connects AI agents (Claude Code, Cursor, Cline, OpenClaw, etc.) to EVC Mesh via MCP tools for task management, persistent memory, event publishing, and multi-agent coordination.
+EVC Mesh is an open-source task manager built for teams where people and AI agents work side by side. This [Model Context Protocol](https://modelcontextprotocol.io/) server connects your agent to a [Mesh](https://github.com/entire-vc/evc-mesh) workspace: it can pick up assigned tasks, check out work, comment, move tasks through your workflow, hand off to teammates, and keep decisions in shared project memory.
+
+Two tool profiles: `core` (26 tools, for everyday task work) and `full` (65 tools, including recurring tasks, docs and workspace admin). Every tool is marked read-only or write, so clients can ask before changing anything.
+
+You need a Mesh workspace and an agent key from it. Mesh is self-hosted (Apache-2.0, `docker compose` setup in the [evc-mesh](https://github.com/entire-vc/evc-mesh) repository). Set `MESH_API_URL` to your instance and `MESH_AGENT_KEY` to the agent's key. Workspaces on the hosted instance are by invitation.
+
+Works with Cursor, Cline, OpenClaw and other MCP clients.
 
 **This is the actively developed copy.** [`evc-mesh`](https://github.com/entire-vc/evc-mesh) also ships an MCP server (`./cmd/mcp`, same `internal/mcp` tool set) that it builds and deploys itself — the two exist because Go's `internal/` visibility rules mean one repo can't import the other's package, not because they're meant to diverge. New tools and fixes land here first.
 
@@ -52,7 +58,7 @@ The MCP server supports two profiles to optimize context window usage:
 | Profile | Tools | Context overhead | Best for |
 |---------|-------|-----------------|----------|
 | **core** | 26 | ~8K tokens (4% of 200K) | Claude Code, Cursor, small-context models |
-| **full** | 64 | ~18K tokens (9% of 200K) | Power users, automation agents, admin ops |
+| **full** | 65 | ~18K tokens (9% of 200K) | Power users, automation agents, admin ops |
 
 Set via `MESH_MCP_PROFILE` environment variable. Default: `full`.
 
@@ -148,7 +154,7 @@ SSE mode serves **two profiles simultaneously** on different paths:
 
 | Path | Profile | Description |
 |------|---------|-------------|
-| `/sse` + `/message` | full | All 64 tools (backward compatible) |
+| `/sse` + `/message` | full | All 65 tools (backward compatible) |
 | `/core/sse` + `/core/message` | core | 26 essential tools |
 
 The same process also serves the **Streamable HTTP** transport (stateless, one
@@ -328,7 +334,7 @@ did not supply; an explicit `limit` always wins.
 | `report_error` | Report an error on a task |
 | `session_report` | Report session metrics (model, tokens, cost) |
 
-## MCP Tools — Full Profile (adds 38 more, 64 total)
+## MCP Tools — Full Profile (adds 39 more, 65 total)
 
 ### Additional Task Tools
 

@@ -607,11 +607,13 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("create_doc", s.handleCreateDoc))
 
 	s.addTool(mcpsdk.NewTool("update_doc",
-		mcpsdk.WithDescription("Edit a document. Replacing the body REQUIRES base_version — the version you got from get_doc — and the write is refused with a 409 if anyone changed the document since, so you can never silently overwrite someone else's edit. The append parameter adds to the end: it needs no base_version, cannot conflict, and needs no prior read of the document. The doc argument accepts an old path or a bare slug too; the reply then carries moved_to (the current path). Note the two different 409s: a stale base_version, and an ambiguous bare slug (resolved by the full path or UUID)."),
+		mcpsdk.WithDescription("Edit a document. To change ONE section, pass section=<heading or anchor> with body=<that section's new text, heading line included>: only that section is replaced and the rest of the document is kept. Without section, body is the WHOLE document — never send back the text of a single section as body (the server refuses a body that halves the document and drops its headings, unless allow_shrink=true). Replacing the body REQUIRES base_version — the version you got from get_doc — and the write is refused with a 409 if anyone changed the document since, so you can never silently overwrite someone else's edit. The append parameter adds to the end: it needs no base_version, cannot conflict, and needs no prior read of the document. The doc argument accepts an old path or a bare slug too; the reply then carries moved_to (the current path). Note the two different 409s: a stale base_version, and an ambiguous bare slug (resolved by the full path or UUID)."),
 		mcpsdk.WithString("doc", mcpsdk.Required(), mcpsdk.Description(docRefDescription)),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project UUID. Required only when doc is a slug path.")),
 		mcpsdk.WithString("append", mcpsdk.Description("Text to add to the END of the document. No base_version needed. Cannot be combined with body.")),
-		mcpsdk.WithString("body", mcpsdk.Description("Replacement markdown for the WHOLE document. Requires base_version.")),
+		mcpsdk.WithString("body", mcpsdk.Description("Replacement markdown for the WHOLE document, or for the one section named by section. Requires base_version.")),
+		mcpsdk.WithString("section", mcpsdk.Description("Heading text or anchor of the one section to replace (as in get_doc section=). body is then that section's new text, heading line included; the rest of the document is untouched.")),
+		mcpsdk.WithBoolean("allow_shrink", mcpsdk.Description("Only for a deliberate whole-document replacement that drops sections: lifts the guard that refuses a body halving the document.")),
 		mcpsdk.WithNumber("base_version", mcpsdk.Description("The version you read from get_doc. Required for any write other than append.")),
 		mcpsdk.WithString("title", mcpsdk.Description("New title.")),
 		mcpsdk.WithString("parent_id", mcpsdk.Description("New parent document UUID.")),

@@ -1,7 +1,7 @@
 {
   "name": "evc-mesh",
   "version": "0.1.0",
-  "description": "MCP server and skills for EVC Mesh: task management, persistent memory and multi-agent coordination for human + AI teams.",
+  "description": "Tasks, comments, shared memory and handoffs for teams of people and AI agents, over MCP.",
   "repository": "https://github.com/entire-vc/evc-mesh-mcp",
   "homepage": "https://github.com/entire-vc/evc-mesh",
   "license": "MIT",
