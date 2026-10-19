@@ -668,6 +668,16 @@ func (s *Server) handleUpdateDoc(ctx context.Context, request mcpsdk.CallToolReq
 	if hasAppend {
 		payload["append_body"] = mcpsdk.ParseString(request, "append", "")
 	}
+	if hasArgument(request, "section") {
+		if !hasBody {
+			return errResult("section needs body: the new text of that section, heading line included, " +
+				"exactly as get_doc section=... returned it. The rest of the document is left untouched.")
+		}
+		payload["section"] = mcpsdk.ParseString(request, "section", "")
+	}
+	if hasArgument(request, "allow_shrink") {
+		payload["allow_shrink"] = mcpsdk.ParseBoolean(request, "allow_shrink", false)
+	}
 	if hasArgument(request, "title") {
 		payload["title"] = mcpsdk.ParseString(request, "title", "")
 	}

@@ -36,6 +36,10 @@ type docStore struct {
 	// external_source_write_landed), which the real API returns for reasons
 	// unrelated to base_version.
 	forcedConflict map[string]any
+
+	// lastPatch is the last PATCH payload, for tests that assert on what the
+	// tool forwarded rather than on what the fake did with it.
+	lastPatch map[string]any
 }
 
 func newDocStore(t *testing.T, body string) *docStore {
@@ -63,6 +67,7 @@ func newDocStore(t *testing.T, body string) *docStore {
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			st.mu.Lock()
 			defer st.mu.Unlock()
+			st.lastPatch = req
 
 			if st.forcedConflict != nil {
 				w.WriteHeader(http.StatusConflict)
@@ -550,5 +555,54 @@ func TestUpdateDoc_UnnamedConflictDoesNotClaimAVersionRace(t *testing.T) {
 	}
 	if !strings.Contains(text, "something else is in the way") {
 		t.Errorf("server message is dropped: %s", text)
+	}
+}
+
+// The incident path: edit one section. The tool must forward section so the
+// server splices it, and must refuse section without body rather than send a
+// write that means nothing.
+func TestUpdateDoc_SectionIsForwardedAndNeedsBody(t *testing.T) {
+	st := newDocStore(t, "## A\n\na\n\n## B\n\nb\n")
+
+	text, isErr := callTool(t, st.newServer().handleUpdateDoc, map[string]any{
+		"doc": st.docID, "base_version": 1, "section": "B", "body": "## B\n\nedited\n",
+	})
+	if isErr {
+		t.Fatalf("section write failed: %s", text)
+	}
+	if st.lastPatch["section"] != "B" || st.lastPatch["body"] != "## B\n\nedited\n" {
+		t.Errorf("payload = %v, want section=B and the section body", st.lastPatch)
+	}
+
+	st.lastPatch = nil
+	text, isErr = callTool(t, st.newServer().handleUpdateDoc, map[string]any{
+		"doc": st.docID, "base_version": 2, "section": "B",
+	})
+	if !isErr || !strings.Contains(text, "section needs body") {
+		t.Errorf("section without body: isErr=%v text=%q", isErr, text)
+	}
+	if st.lastPatch != nil {
+		t.Errorf("a refused call must not reach the API, got %v", st.lastPatch)
+	}
+}
+
+func TestUpdateDoc_AllowShrinkIsForwarded(t *testing.T) {
+	st := newDocStore(t, "## A\n\na\n")
+
+	text, isErr := callTool(t, st.newServer().handleUpdateDoc, map[string]any{
+		"doc": st.docID, "base_version": 1, "body": "## A\n", "allow_shrink": true,
+	})
+	if isErr {
+		t.Fatalf("write failed: %s", text)
+	}
+	if st.lastPatch["allow_shrink"] != true {
+		t.Errorf("payload = %v, want allow_shrink=true", st.lastPatch)
+	}
+
+	callTool(t, st.newServer().handleUpdateDoc, map[string]any{
+		"doc": st.docID, "base_version": 2, "body": "## A\n\nb\n",
+	})
+	if _, present := st.lastPatch["allow_shrink"]; present {
+		t.Errorf("allow_shrink must not be sent when the caller did not pass it: %v", st.lastPatch)
 	}
 }
