@@ -287,7 +287,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("get_context", s.handleGetContext))
 
 	s.addTool(mcpsdk.NewTool("get_my_tasks",
-		mcpsdk.WithDescription("Get YOUR assigned tasks. Filterable by status_category to focus on active work. Descriptions are complete. Envelope fields (url, created_by/created_at, parent_task_id, assignee_id) and valueless fields (0-counters, due_date=null, human_gate=false) are omitted; full=true returns the complete items and get_task returns one card's full details."),
+		mcpsdk.WithDescription("Get YOUR assigned tasks. Filterable by status_category to focus on active work. Default (cold) view is compact: only in_progress, review and the top 5 todo are listed (envelope `omitted` counts the rest; full=true or status_category returns them), descriptions are omitted (has_description marks them; get_task(id) or full=true returns the full text). Envelope fields (created_by/created_at, assignee_id) and valueless fields (0-counters, due_date=null, human_gate=false) are omitted; full=true returns the complete items and get_task returns one card's full details."),
 		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: backlog, todo, in_progress, review, done, cancelled.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Filter by project.")),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 50).")),
