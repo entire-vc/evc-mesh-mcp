@@ -61,15 +61,15 @@ func NewRESTClient(baseURL, agentKey string) *RESTClient {
 
 // SetForwardedOrigin configures the client to send X-Forwarded-Host and
 // X-Forwarded-Proto on every request, derived from publicURL (e.g.
-// "https://mesh.entire.host" or "https://mesh.entire.host/mcp" — any path is
+// "https://mesh.example.invalid" or "https://mesh.example.invalid/mcp" — any path is
 // ignored, only scheme+host matter).
 //
 // This exists for a colocated SSE transport whose baseURL is a loopback
-// address (http://localhost:8005): the backend's computeTaskURL /
+// address (localhost, port 8005): the backend's computeTaskURL /
 // computeDocumentURL build the canonical link it returns to callers from the
 // *incoming request's* Host (overridable only via X-Forwarded-Host), not from
 // any of its own config. Without this, a task/doc URL requested by an SSE
-// client comes back as http://localhost:<port>/t/<id> — correct from the
+// client comes back as a loopback-host URL ending in /t/<id> — correct from the
 // backend's point of view, useless to anyone off that VM.
 //
 // A malformed or empty publicURL is a no-op: forwarding stays off and every
@@ -87,6 +87,23 @@ func (c *RESTClient) SetForwardedOrigin(publicURL string) {
 	}
 	c.forwardedHost = u.Host
 	c.forwardedProto = u.Scheme
+}
+
+// taskURLPrefix is the "<origin>/t/" the backend puts in front of a task id in
+// the url it returns: the public origin when forwarding is set, else the
+// scheme+host of baseURL. "" when neither parses.
+func (c *RESTClient) taskURLPrefix() string {
+	if c == nil {
+		return ""
+	}
+	if c.forwardedHost != "" {
+		return c.forwardedProto + "://" + c.forwardedHost + "/t/"
+	}
+	u, err := url.Parse(c.baseURL)
+	if err != nil || u.Host == "" || u.Scheme == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host + "/t/"
 }
 
 // applyForwardedHeaders sets X-Forwarded-Host/X-Forwarded-Proto on req when

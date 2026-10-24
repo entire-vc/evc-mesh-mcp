@@ -60,8 +60,8 @@ func TestMyTasksRevisionRepeat(t *testing.T) {
 	cold := callGetMyTasks(t, s, map[string]any{})
 	revision := revisionOf(t, cold)
 	item := cold["tasks"].([]any)[0].(map[string]any)
-	if item["description"] != fixture["tasks"].([]any)[0].(map[string]any)["description"] {
-		t.Fatal("cold cut full Unicode text")
+	if _, has := item["description"]; has || item["has_description"] != true {
+		t.Fatalf("compact cold must omit description and flag it: %v", item)
 	}
 	if !bytes.Equal(snapshotJSON(t, item["comments"]), snapshotJSON(t, fixture["tasks"].([]any)[0].(map[string]any)["comments"])) {
 		t.Fatal("ordinary comments cut")
@@ -134,6 +134,15 @@ func applyMyTasksWire(t *testing.T, base, delta map[string]any) map[string]any {
 	return rebuilt
 }
 
+// withoutDescriptions normalises a rebuilt snapshot to the compact cold form.
+func withoutDescriptions(snapshot map[string]any) map[string]any {
+	for _, item := range snapshot["tasks"].([]any) {
+		delete(item.(map[string]any), "description")
+		item.(map[string]any)["has_description"] = true
+	}
+	return snapshot
+}
+
 func TestMyTasksDeltaExactRoundtrip(t *testing.T) {
 	fixture := revisionFixture()
 	s := myTasksHarness(t, fixture)
@@ -147,9 +156,14 @@ func TestMyTasksDeltaExactRoundtrip(t *testing.T) {
 	if len(delta["changed"].([]any)) != 2 || len(delta["removed_ids"].([]any)) != 1 {
 		t.Fatal("new/changed/deleted wire incomplete")
 	}
+	if delta["envelope"].(map[string]any)["description_omitted"] != myTasksDescriptionNote {
+		t.Fatal("delta envelope lost the description omission notice")
+	}
 	want := callGetMyTasks(t, s, map[string]any{})
 	rebuilt := applyMyTasksWire(t, base, delta)
-	if !bytes.Equal(snapshotJSON(t, rebuilt), snapshotJSON(t, want)) {
+	// Changed/new items arrive complete; the compact cold lacks descriptions,
+	// so compare with the delta items' text stripped.
+	if !bytes.Equal(snapshotJSON(t, withoutDescriptions(rebuilt)), snapshotJSON(t, want)) {
 		t.Fatal("delta did not reconstruct exact canonical cold")
 	}
 	// Reorder without replacing unchanged items; empty changed/removed arrays,
@@ -159,7 +173,7 @@ func TestMyTasksDeltaExactRoundtrip(t *testing.T) {
 	if len(next["changed"].([]any)) != 0 {
 		t.Fatal("reorder needlessly retransmitted text")
 	}
-	if !bytes.Equal(snapshotJSON(t, applyMyTasksWire(t, want, next)), snapshotJSON(t, callGetMyTasks(t, s, map[string]any{}))) {
+	if !bytes.Equal(snapshotJSON(t, withoutDescriptions(applyMyTasksWire(t, want, next))), snapshotJSON(t, callGetMyTasks(t, s, map[string]any{}))) {
 		t.Fatal("order roundtrip failed")
 	}
 }

@@ -1960,13 +1960,28 @@ var myTasksLeanDropWhenEmpty = []string{
 // project_id) and gate/checkout context are never touched; due_date and
 // human_gate are value-conditional (see myTasksLeanDropWhenEmpty).
 func leanTaskSummaries(tasks []any) []any {
+	return leanTaskSummariesKeep(tasks)
+}
+
+// leanTaskSummariesKeep is leanTaskSummaries that leaves the named drop-list
+// fields in place (get_my_tasks keeps url and, when set, parent_task_id).
+func leanTaskSummariesKeep(tasks []any, keep ...string) []any {
 	for _, it := range tasks {
 		m, ok := it.(map[string]any)
 		if !ok {
 			continue
 		}
+	drop:
 		for _, k := range myTasksLeanDropKeys {
+			for _, kept := range keep {
+				if k == kept {
+					continue drop
+				}
+			}
 			delete(m, k)
+		}
+		if isEmptyJSONValue(m["parent_task_id"]) {
+			delete(m, "parent_task_id")
 		}
 		for _, k := range myTasksLeanDropWhenEmpty {
 			if isEmptyJSONValue(m[k]) {
