@@ -26,7 +26,8 @@ Pick one:
 ## 3. Add it to the MCP settings
 
 Use the absolute path to the binary. The tool profile is set with
-`MESH_MCP_PROFILE` (`core` = 26 everyday tools, `full` = 65 tools; default `full`).
+`MESH_MCP_PROFILE` (`core` = 26 everyday tools, `full` = 69 tools; default `full`
+for the binary, `core` for the Docker image).
 
 ```json
 {

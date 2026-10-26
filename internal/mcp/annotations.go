@@ -61,6 +61,7 @@ var toolKinds = map[string]toolKind{
 	"recall":                   kindRead,
 	"recall_with_graph":        kindRead,
 	"search_docs":              kindRead,
+	"get_project_updates":      kindRead,
 
 	// creates new state
 	"add_comment":           kindAdditive,
@@ -73,6 +74,7 @@ var toolKinds = map[string]toolKind{
 	"create_task":           kindAdditive,
 	"publish_event":         kindAdditive,
 	"publish_summary":       kindAdditive,
+	"post_project_update":   kindAdditive,
 	"register_sub_agent":    kindAdditive,
 	"report_error":          kindAdditive,
 	"session_report":        kindAdditive,
@@ -82,11 +84,13 @@ var toolKinds = map[string]toolKind{
 	"extend_checkout":       kindAdditiveIdempotent,
 	"checkout_task":         kindAdditiveIdempotent,
 	"subscribe_events":      kindAdditiveIdempotent,
+	"mark_vcs_deployed":     kindAdditiveIdempotent,
 
 	// overwrites or removes existing state
 	"forget":                    kindOverwrite,
 	"delete_recurring_schedule": kindOverwrite,
 	"remove_dependency":         kindOverwrite,
+	"update_dependency":         kindOverwrite,
 	"import_workspace_config":   kindOverwrite,
 	toolRecordOwnerDecision:     kindOverwrite,
 	toolLegacyDecisionAlias:     kindOverwrite,

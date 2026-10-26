@@ -460,3 +460,64 @@ func TestHandleAddVCSLink_RequiredArguments(t *testing.T) {
 		t.Error("expected an error result when url is missing")
 	}
 }
+
+func TestAddVCSLink_RecordsDeliveryStateThroughMetadataPatch(t *testing.T) {
+	taskID := uuid.New().String()
+	linkID := uuid.New().String()
+	var patch map[string]any
+	var patchPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": linkID, "task_id": taskID})
+		case http.MethodPatch:
+			patchPath = r.URL.Path
+			_ = json.NewDecoder(r.Body).Decode(&patch)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": linkID, "is_shipped": true})
+		}
+	}))
+	defer srv.Close()
+	server := &Server{
+		restClient: NewRESTClient(srv.URL, "test-key"),
+		tracker:    NewSessionTracker(),
+		session:    &AgentSession{AgentID: uuid.New(), WorkspaceID: uuid.New()},
+	}
+	sha := strings.Repeat("a", 40)
+
+	res := callAddVCSLink(t, server, map[string]any{
+		"task_id": taskID, "url": "https://github.com/acme/app/pull/7",
+		"merged_sha": sha, "implementation_sha": sha, "deployed_sha": sha, "environment": "prod",
+		"ci_status": "success", "ci_pipeline_id": 16187, "ci_sha": sha,
+		"acceptance_result": "passed", "acceptance_by": "verifier",
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error result: %+v", res.Content)
+	}
+	if want := "/api/v1/tasks/" + taskID + "/vcs-links/" + linkID + "/metadata"; patchPath != want {
+		t.Fatalf("patch path = %q, want %q", patchPath, want)
+	}
+	dep, _ := patch["deployed"].(map[string]any)
+	if dep["sha"] != sha || dep["environment"] != "prod" || patch["merged_sha"] != sha {
+		t.Errorf("deployed/merged not forwarded: %+v", patch)
+	}
+	if acc, _ := patch["acceptance"].(map[string]any); acc["result"] != "passed" || acc["by"] != "verifier" {
+		t.Errorf("acceptance not forwarded: %+v", patch)
+	}
+	if patch["implementation_sha"] != sha {
+		t.Errorf("implementation_sha not forwarded: %+v", patch)
+	}
+	ci, _ := patch["ci_verdict"].(map[string]any)
+	if ci["status"] != "success" || ci["sha"] != sha || ci["pipeline_id"] != float64(16187) {
+		t.Errorf("ci_verdict not forwarded: %+v", patch)
+	}
+
+	// deployed_sha without environment is refused before any request is made.
+	res = callAddVCSLink(t, server, map[string]any{
+		"task_id": taskID, "url": "https://github.com/acme/app/pull/7", "deployed_sha": sha,
+	})
+	if !res.IsError {
+		t.Error("deployed_sha without environment must be an error")
+	}
+}

@@ -530,6 +530,15 @@ func (c *RESTClient) AddDependency(ctx context.Context, taskID string, body map[
 	return result, nil
 }
 
+// UpdateDependency patches the condition/evidence of one edge hanging off taskID.
+func (c *RESTClient) UpdateDependency(ctx context.Context, taskID, depID string, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/v1/tasks/"+taskID+"/dependencies/"+depID, body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // RemoveDependency deletes one dependency edge hanging off taskID.
 func (c *RESTClient) RemoveDependency(ctx context.Context, taskID, depID string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/tasks/"+taskID+"/dependencies/"+depID, nil, nil)
@@ -560,6 +569,29 @@ func (c *RESTClient) AddComment(ctx context.Context, taskID string, body map[str
 func (c *RESTClient) AddVCSLink(ctx context.Context, taskID string, body map[string]any) (map[string]any, error) {
 	var result map[string]any
 	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/vcs-links", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// MarkVCSLinkDeployed records a deploy (sha, env) on a pr link; the server sets
+// deployed_at and keeps the first one when the same deploy is reported again.
+func (c *RESTClient) MarkVCSLinkDeployed(ctx context.Context, taskID, linkID, sha, env string) (map[string]any, error) {
+	var result map[string]any
+	body := map[string]any{"sha": sha, "env": env}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/vcs-links/"+linkID+"/deployment", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// PatchVCSLinkMetadata merges delivery-state keys (implementation_sha,
+// merged_sha, ci_verdict, deployed, acceptance, ship_sha) into a pr link's
+// metadata; the server validates them and skips keys that already hold the
+// same value.
+func (c *RESTClient) PatchVCSLinkMetadata(ctx context.Context, taskID, linkID string, patch map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/v1/tasks/"+taskID+"/vcs-links/"+linkID+"/metadata", patch, &result); err != nil {
 		return nil, err
 	}
 	return result, nil

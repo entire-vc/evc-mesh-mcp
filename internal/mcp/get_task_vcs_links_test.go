@@ -44,6 +44,13 @@ func getTaskVCSLinksHarness(t *testing.T, taskID string) (server *Server, vcsLin
 						"url":         "https://gitlab.example.invalid/acme/tracker/-/merge_requests/14",
 						"status":      "merged",
 						"created_at":  "2026-08-23T10:00:00Z",
+						"is_shipped":  true,
+						"delivery": map[string]any{
+							"merged_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+							"deployed":   map[string]any{"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "environment": "prod"},
+							"acceptance": map[string]any{"result": "passed"},
+							"is_shipped": true,
+						},
 					},
 					{
 						"id":          "22222222-2222-2222-2222-222222222222",
@@ -152,6 +159,19 @@ func TestHandleGetTask_IncludeVCSLinksTrue(t *testing.T) {
 		if _, present := first[field]; !present {
 			t.Errorf("vcs_links[0] is missing field %q: %#v", field, first)
 		}
+	}
+	if first["is_shipped"] != true {
+		t.Errorf("vcs_links[0].is_shipped = %v, want true passed through", first["is_shipped"])
+	}
+	delivery, ok := first["delivery"].(map[string]any)
+	if !ok {
+		t.Fatalf("vcs_links[0].delivery missing or not an object: %#v", first["delivery"])
+	}
+	if dep, _ := delivery["deployed"].(map[string]any); dep["environment"] != "prod" {
+		t.Errorf("delivery.deployed not passed through: %#v", delivery)
+	}
+	if acc, _ := delivery["acceptance"].(map[string]any); acc["result"] != "passed" {
+		t.Errorf("delivery.acceptance not passed through: %#v", delivery)
 	}
 	second, ok := links[1].(map[string]any)
 	if !ok {

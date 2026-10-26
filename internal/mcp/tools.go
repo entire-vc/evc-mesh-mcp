@@ -90,11 +90,15 @@ func (s *Server) handleGetProject(ctx context.Context, request mcpsdk.CallToolRe
 		return errResult("failed to list custom fields: %v", err)
 	}
 
-	return jsonResult(map[string]any{
+	out := map[string]any{
 		"project":       project,
 		"statuses":      statuses,
 		"custom_fields": fields,
-	})
+	}
+	if block := s.latestProjectUpdateBlock(ctx, projectID); block != nil {
+		out["latest_update"] = block
+	}
+	return jsonResult(out)
 }
 
 // ============================================================================
@@ -916,6 +920,23 @@ func (s *Server) handleCreateSubtask(ctx context.Context, request mcpsdk.CallToo
 	return jsonResult(result)
 }
 
+// dependencyConditions are the values of a dependency edge's condition, in the
+// order the tools list them. The server is the authority (it answers 400 for
+// anything else); the enum only keeps clients from guessing.
+var dependencyConditions = []string{
+	"task_done", "access_ready", "contract_ready", "artifact_published", "shipped", "deployed", "accepted",
+}
+
+// dependencyConditionHelp explains each condition in one line; shared by
+// add_dependency and update_dependency so the two never drift.
+const dependencyConditionHelp = "What a blocks edge waits for. " +
+	"task_done (default): the blocker reaches done or cancelled. " +
+	"access_ready / contract_ready / artifact_published: released by evidence_url, or when the blocker reaches done or cancelled. " +
+	"shipped: the blocker is marked shipped or reaches done (cancelled does not release it). " +
+	"deployed: the blocker is marked shipped or a VCS link of it has a recorded deploy (see mark_vcs_deployed); merged/done alone does not release it. " +
+	"accepted: the blocker reaches done (cancelled does not release it). " +
+	"Evidence (evidence_url) releases an edge of any condition."
+
 // ============================================================================
 // 9. add_dependency
 // ============================================================================
@@ -935,12 +956,85 @@ func (s *Server) handleAddDependency(ctx context.Context, request mcpsdk.CallToo
 		"depends_on_task_id": dependsOnID,
 		"dependency_type":    mcpsdk.ParseString(request, "dependency_type", "blocks"),
 	}
+	if condition := mcpsdk.ParseString(request, "condition", ""); condition != "" {
+		body["condition"] = condition
+	}
+	if evidence := mcpsdk.ParseString(request, "evidence_url", ""); evidence != "" {
+		body["evidence_url"] = evidence
+	}
 
 	result, err := s.getRESTClient(ctx).AddDependency(ctx, taskID, body)
 	if err != nil {
 		return errResult("failed to add dependency: %v", err)
 	}
 
+	return jsonResult(result)
+}
+
+// ============================================================================
+// update_dependency
+// ============================================================================
+
+// handleUpdateDependency finds the edge task_id -> depends_on_task_id in the
+// task's outgoing set (same directional lookup as remove_dependency) and
+// patches its condition/evidence.
+func (s *Server) handleUpdateDependency(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	taskID := mcpsdk.ParseString(request, "task_id", "")
+	if taskID == "" {
+		return errResult("task_id is required")
+	}
+	dependsOnID := mcpsdk.ParseString(request, "depends_on_task_id", "")
+	if dependsOnID == "" {
+		return errResult("depends_on_task_id is required")
+	}
+	body := map[string]any{}
+	if _, ok := request.GetArguments()["condition"]; ok {
+		body["condition"] = mcpsdk.ParseString(request, "condition", "")
+	}
+	if _, ok := request.GetArguments()["evidence_url"]; ok {
+		body["evidence_url"] = mcpsdk.ParseString(request, "evidence_url", "")
+	}
+	if len(body) == 0 {
+		return errResult("condition or evidence_url is required")
+	}
+
+	client := s.getRESTClient(ctx)
+	task, err := client.GetTask(ctx, taskID)
+	if err != nil {
+		return errResult("failed to get task: %v", err)
+	}
+	blocked, _ := task["id"].(string)
+	if blocked == "" {
+		blocked = taskID
+	}
+	blocker := dependsOnID
+	if len(blocker) != 36 {
+		other, err := client.GetTask(ctx, blocker)
+		if err != nil {
+			return errResult("failed to get depends_on task: %v", err)
+		}
+		if id, _ := other["id"].(string); id != "" {
+			blocker = id
+		}
+	}
+	deps, err := client.GetTaskDependencies(ctx, blocked)
+	if err != nil {
+		return errResult("failed to list dependencies: %v", err)
+	}
+	var depID string
+	for _, e := range deps.Outgoing {
+		if e["depends_on_task_id"] == blocker {
+			depID, _ = e["id"].(string)
+			break
+		}
+	}
+	if depID == "" {
+		return errResult("no dependency: task %s does not depend on %s (the pair is directional: task_id is the blocked card)", blocked, blocker)
+	}
+	result, err := client.UpdateDependency(ctx, blocked, depID, body)
+	if err != nil {
+		return errResult("failed to update dependency: %v", err)
+	}
 	return jsonResult(result)
 }
 
@@ -1175,12 +1269,102 @@ func (s *Server) handleAddVCSLink(ctx context.Context, request mcpsdk.CallToolRe
 		reqBody["status"] = normalizeVCSLinkStatus(status)
 	}
 
+	patch, perr := vcsDeliveryPatch(request)
+	if perr != "" {
+		return errResult("%s", perr)
+	}
+
 	result, err := s.getRESTClient(ctx).AddVCSLink(ctx, taskID, reqBody)
 	if err != nil {
 		return errResult("failed to add VCS link: %v", err)
 	}
 
+	// Delivery facts go through the metadata PATCH (validated and idempotent
+	// per key server-side), so re-running add_vcs_link with the same values
+	// is a no-op rather than a rewrite.
+	if len(patch) > 0 {
+		linkID, _ := result["id"].(string)
+		if linkID == "" {
+			return errResult("link created but its id is missing from the response; delivery state not recorded")
+		}
+		patched, err := s.getRESTClient(ctx).PatchVCSLinkMetadata(ctx, taskID, linkID, patch)
+		if err != nil {
+			return errResult("link added (id %s) but recording delivery state failed: %v", linkID, err)
+		}
+		return jsonResult(patched)
+	}
+
 	return jsonResult(result)
+}
+
+// handleMarkVCSDeployed records a deploy on a pr link through the dedicated
+// endpoint; the server validates sha and env.
+func (s *Server) handleMarkVCSDeployed(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	session := s.getSession(ctx)
+	if session == nil {
+		return errResult("not authenticated: no agent session")
+	}
+	taskID := strings.TrimSpace(mcpsdk.ParseString(request, "task_id", ""))
+	linkID := strings.TrimSpace(mcpsdk.ParseString(request, "link_id", ""))
+	sha := strings.TrimSpace(mcpsdk.ParseString(request, "sha", ""))
+	env := strings.TrimSpace(mcpsdk.ParseString(request, "env", ""))
+	for name, v := range map[string]string{"task_id": taskID, "link_id": linkID, "sha": sha, "env": env} {
+		if v == "" {
+			return errResult("%s is required", name)
+		}
+	}
+	result, err := s.getRESTClient(ctx).MarkVCSLinkDeployed(ctx, taskID, linkID, sha, env)
+	if err != nil {
+		return errResult("failed to mark VCS link deployed: %v", err)
+	}
+	return jsonResult(result)
+}
+
+// vcsDeliveryPatch collects the optional delivery-state parameters of
+// add_vcs_link into a metadata patch. The second return value is a
+// user-facing error when a group is incomplete.
+func vcsDeliveryPatch(request mcpsdk.CallToolRequest) (map[string]any, string) {
+	patch := map[string]any{}
+	for param, key := range map[string]string{
+		"implementation_sha": "implementation_sha",
+		"merged_sha":         "merged_sha",
+	} {
+		if v := strings.TrimSpace(mcpsdk.ParseString(request, param, "")); v != "" {
+			patch[key] = v
+		}
+	}
+	if st := strings.TrimSpace(mcpsdk.ParseString(request, "ci_status", "")); st != "" {
+		ci := map[string]any{"status": st}
+		if id := mcpsdk.ParseInt(request, "ci_pipeline_id", 0); id > 0 {
+			ci["pipeline_id"] = id
+		}
+		if sha := strings.TrimSpace(mcpsdk.ParseString(request, "ci_sha", "")); sha != "" {
+			ci["sha"] = sha
+		}
+		patch["ci_verdict"] = ci
+	}
+	dsha := strings.TrimSpace(mcpsdk.ParseString(request, "deployed_sha", ""))
+	env := strings.TrimSpace(mcpsdk.ParseString(request, "environment", ""))
+	if dsha != "" || env != "" {
+		if dsha == "" || env == "" {
+			return nil, "deployed_sha and environment must be given together"
+		}
+		dep := map[string]any{"sha": dsha, "environment": env}
+		if at := strings.TrimSpace(mcpsdk.ParseString(request, "deployed_at", "")); at != "" {
+			dep["at"] = at
+		}
+		patch["deployed"] = dep
+	}
+	if res := strings.TrimSpace(mcpsdk.ParseString(request, "acceptance_result", "")); res != "" {
+		acc := map[string]any{"result": res}
+		for param, key := range map[string]string{"acceptance_by": "by", "acceptance_evidence_url": "evidence_url", "acceptance_sha": "sha"} {
+			if v := strings.TrimSpace(mcpsdk.ParseString(request, param, "")); v != "" {
+				acc[key] = v
+			}
+		}
+		patch["acceptance"] = acc
+	}
+	return patch, ""
 }
 
 // ============================================================================
@@ -1727,6 +1911,14 @@ func (s *Server) handleGetTaskContext(ctx context.Context, request mcpsdk.CallTo
 		}
 	}
 
+	if task != nil {
+		if projectID, _ := task["project_id"].(string); projectID != "" {
+			if block := s.latestProjectUpdateBlock(ctx, projectID); block != nil {
+				result["project_update"] = block
+			}
+		}
+	}
+
 	if arts, ok := result["artifacts"]; ok {
 		shapeArtifactList(arts)
 	}
@@ -1952,7 +2144,7 @@ var myTasksLeanDropKeys = []string{
 // 49 — a set deadline or an armed gate must survive, the empty forms don't.
 var myTasksLeanDropWhenEmpty = []string{
 	"custom_fields", "dod_checks", "estimated_hours", "start_after", "subtask_count",
-	"artifact_count", "vcs_link_count", "completion_signal", "due_date", "human_gate",
+	"artifact_count", "vcs_link_count", "completion_signal", "due_date", "human_gate", "acceptance_missing",
 }
 
 // leanTaskSummaries strips the envelope fields above from each item. Routing
