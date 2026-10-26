@@ -8,7 +8,7 @@
 
 EVC Mesh is an open-source task manager built for teams where people and AI agents work side by side. This [Model Context Protocol](https://modelcontextprotocol.io/) server connects your agent to a [Mesh](https://github.com/entire-vc/evc-mesh) workspace: it can pick up assigned tasks, check out work, comment, move tasks through your workflow, hand off to teammates, and keep decisions in shared project memory.
 
-Two tool profiles: `core` (26 tools, for everyday task work) and `full` (65 tools, including recurring tasks, docs and workspace admin). Every tool is marked read-only or write, so clients can ask before changing anything.
+Two tool profiles: `core` (26 tools, for everyday task work) and `full` (69 tools, including recurring tasks, docs and workspace admin). Every tool is marked read-only or write, so clients can ask before changing anything.
 
 You need a Mesh workspace and an agent key from it. Mesh is self-hosted (Apache-2.0, `docker compose` setup in the [evc-mesh](https://github.com/entire-vc/evc-mesh) repository). Set `MESH_API_URL` to your instance and `MESH_AGENT_KEY` to the agent's key. Workspaces on the hosted instance are by invitation.
 
@@ -46,8 +46,9 @@ docker run -i --rm \
 ```
 
 `-i` is required — the server speaks MCP over stdio, and Docker only wires up
-stdin when the container runs interactively. Add `-e MESH_MCP_PROFILE=core`
-to switch profiles (see [Tool Profiles](#tool-profiles) below). The image is
+stdin when the container runs interactively. The image starts with the `core`
+profile; add `-e MESH_MCP_PROFILE=full` for every tool (see
+[Tool Profiles](#tool-profiles) below). The image is
 published for `linux/amd64` and `linux/arm64` from `Dockerfile` in this repo
 on every tagged release (`docs/RELEASING.md`).
 
@@ -58,9 +59,10 @@ The MCP server supports two profiles to optimize context window usage:
 | Profile | Tools | Context overhead | Best for |
 |---------|-------|-----------------|----------|
 | **core** | 26 | ~8K tokens (4% of 200K) | Claude Code, Cursor, small-context models |
-| **full** | 65 | ~18K tokens (9% of 200K) | Power users, automation agents, admin ops |
+| **full** | 69 | ~18K tokens (9% of 200K) | Power users, automation agents, admin ops |
 
-Set via `MESH_MCP_PROFILE` environment variable. Default: `full`.
+Set via `MESH_MCP_PROFILE` environment variable. Default: `full` for the
+binary, `core` for the Docker image (`-e MESH_MCP_PROFILE=full` switches it).
 
 ## Configuration
 
@@ -68,7 +70,7 @@ Set via `MESH_MCP_PROFILE` environment variable. Default: `full`.
 |----------|----------|---------|-------------|
 | `MESH_API_URL` | Yes | `http://localhost:8005` | Base URL of the Mesh API |
 | `MESH_AGENT_KEY` | Yes (stdio) | — | Agent API key (`agk_...`) |
-| `MESH_MCP_PROFILE` | No | `full` | Tool profile for stdio: `core` or `full` (SSE serves both) |
+| `MESH_MCP_PROFILE` | No | `full` (Docker image: `core`) | Tool profile for stdio: `core` or `full` (SSE serves both) |
 | `MESH_MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio` or `sse` |
 | `MESH_MCP_HOST` | No | `0.0.0.0` | SSE server bind host |
 | `MESH_MCP_PORT` | No | `8081` | SSE server bind port |
@@ -154,7 +156,7 @@ SSE mode serves **two profiles simultaneously** on different paths:
 
 | Path | Profile | Description |
 |------|---------|-------------|
-| `/sse` + `/message` | full | All 65 tools (backward compatible) |
+| `/sse` + `/message` | full | All 69 tools (backward compatible) |
 | `/core/sse` + `/core/message` | core | 26 essential tools |
 
 The same process also serves the **Streamable HTTP** transport (stateless, one
@@ -334,7 +336,7 @@ did not supply; an explicit `limit` always wins.
 | `report_error` | Report an error on a task |
 | `session_report` | Report session metrics (model, tokens, cost) |
 
-## MCP Tools — Full Profile (adds 39 more, 65 total)
+## MCP Tools — Full Profile (adds 43 more, 69 total)
 
 ### Additional Task Tools
 
@@ -342,7 +344,9 @@ did not supply; an explicit `limit` always wins.
 |------|-------------|
 | `get_project` | Get project details with statuses and custom fields |
 | `create_subtask` | Create subtask under a parent (`status_slug` optional; defaults to the project's default status, not the parent's) |
-| `add_dependency` | Add dependency between tasks |
+| `add_dependency` | Add dependency between tasks; optional `condition` (`task_done`, `access_ready`, `contract_ready`, `artifact_published`, `shipped`, `deployed`, `accepted`) says what a `blocks` edge waits for |
+| `update_dependency` | Set `condition` / `evidence_url` on an existing dependency edge; evidence on a non-`task_done` edge releases the dependent without the blocker being done |
+| `mark_vcs_deployed` | Record a deploy (`sha`, `env`) on a PR link: sets `deployed_sha` / `deployed_env` / `deployed_at` and releases dependents waiting on a `deployed` edge |
 | `remove_dependency` | Remove a dependency edge (`task_id` blocked, `depends_on_task_id` blocker; `reason` required and logged) |
 | `checkout_task` | Atomic task lock for multi-agent coordination |
 | `release_task` | Release atomic task lock |
@@ -412,6 +416,8 @@ Downloading an artifact is two GETs. Step 1: GET <base>/api/v1/artifacts/<id>/do
 | `update_doc` | Edit a document (optimistic concurrency via `base_version`) |
 | `comment_doc` | Comment on a document or a quoted passage |
 | `list_doc_comments` | Read a document's comment threads |
+| `post_project_update` | Post the project's daily status report to its Updates section |
+| `get_project_updates` | Read a project's Updates feed, newest first |
 | `get_canonical` | Query curated facts and decisions for a topic |
 
 ## Architecture

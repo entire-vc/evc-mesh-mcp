@@ -151,7 +151,7 @@ func main() {
 	if profile == "" {
 		profile = mcpserver.ProfileFull
 	}
-	if profile != mcpserver.ProfileCore && profile != mcpserver.ProfileFull {
+	if transport == "stdio" && profile != mcpserver.ProfileCore && profile != mcpserver.ProfileFull {
 		log.Fatalf("Invalid MESH_MCP_PROFILE %q: must be 'core' or 'full'", profile)
 	}
 
