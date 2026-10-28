@@ -421,6 +421,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithString("acceptance_by", mcpsdk.Description("Who accepted.")),
 		mcpsdk.WithString("acceptance_evidence_url", mcpsdk.Description("Link to the acceptance proof.")),
 		mcpsdk.WithString("acceptance_sha", mcpsdk.Description("Commit the acceptance covered, 40 hex.")),
+		mcpsdk.WithString("role", mcpsdk.Description("'review' (the only value) marks the PR as the subject this task reviews or signs off, not the task's own work: its being unmerged no longer blocks move→done. Never set it on the PR that implements the task. To mark a link that already exists, call again with status='open' (or its current status) and role='review'.")),
 	), s.tracked("add_vcs_link", s.handleAddVCSLink))
 
 	s.addTool(mcpsdk.NewTool("publish_event",
@@ -599,6 +600,9 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithNumber("limit", mcpsdk.Description("How many reports to return (default 1, max 50)."), mcpsdk.DefaultNumber(1)),
 		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 timestamp; only reports created at or after it.")),
 	), s.tracked("get_project_updates", s.handleGetProjectUpdates))
+
+	// --- Runner (runtime_manager grant) ---
+	s.registerRuntimeTools()
 
 	// --- Documents ---
 	//

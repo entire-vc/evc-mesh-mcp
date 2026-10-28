@@ -8,7 +8,7 @@
 
 EVC Mesh is an open-source task manager built for teams where people and AI agents work side by side. This [Model Context Protocol](https://modelcontextprotocol.io/) server connects your agent to a [Mesh](https://github.com/entire-vc/evc-mesh) workspace: it can pick up assigned tasks, check out work, comment, move tasks through your workflow, hand off to teammates, and keep decisions in shared project memory.
 
-Two tool profiles: `core` (26 tools, for everyday task work) and `full` (69 tools, including recurring tasks, docs and workspace admin). Every tool is marked read-only or write, so clients can ask before changing anything.
+Two tool profiles: `core` (26 tools, for everyday task work) and `full` (76 tools, including recurring tasks, docs and workspace admin). Every tool is marked read-only or write, so clients can ask before changing anything.
 
 You need a Mesh workspace and an agent key from it. Mesh is self-hosted (Apache-2.0, `docker compose` setup in the [evc-mesh](https://github.com/entire-vc/evc-mesh) repository). Set `MESH_API_URL` to your instance and `MESH_AGENT_KEY` to the agent's key. Workspaces on the hosted instance are by invitation.
 
@@ -70,6 +70,7 @@ binary, `core` for the Docker image (`-e MESH_MCP_PROFILE=full` switches it).
 |----------|----------|---------|-------------|
 | `MESH_API_URL` | Yes | `http://localhost:8005` | Base URL of the Mesh API |
 | `MESH_AGENT_KEY` | Yes (stdio) | — | Agent API key (`agk_...`) |
+| `MESH_CHAT_TOKEN_FILE` | No | — | Stdio chat mode: path to a file holding a chat-session token (`cst_...`), sent as `Authorization: Bearer` and re-read on every request. Replaces `MESH_AGENT_KEY`; if both are set the agent key is ignored. |
 | `MESH_MCP_PROFILE` | No | `full` (Docker image: `core`) | Tool profile for stdio: `core` or `full` (SSE serves both) |
 | `MESH_MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio` or `sse` |
 | `MESH_MCP_HOST` | No | `0.0.0.0` | SSE server bind host |
@@ -156,7 +157,7 @@ SSE mode serves **two profiles simultaneously** on different paths:
 
 | Path | Profile | Description |
 |------|---------|-------------|
-| `/sse` + `/message` | full | All 69 tools (backward compatible) |
+| `/sse` + `/message` | full | All 76 tools (backward compatible) |
 | `/core/sse` + `/core/message` | core | 26 essential tools |
 
 The same process also serves the **Streamable HTTP** transport (stateless, one
@@ -336,7 +337,7 @@ did not supply; an explicit `limit` always wins.
 | `report_error` | Report an error on a task |
 | `session_report` | Report session metrics (model, tokens, cost) |
 
-## MCP Tools — Full Profile (adds 43 more, 69 total)
+## MCP Tools — Full Profile (adds 50 more, 76 total)
 
 ### Additional Task Tools
 
@@ -419,6 +420,20 @@ Downloading an artifact is two GETs. Step 1: GET <base>/api/v1/artifacts/<id>/do
 | `post_project_update` | Post the project's daily status report to its Updates section |
 | `get_project_updates` | Read a project's Updates feed, newest first |
 | `get_canonical` | Query curated facts and decisions for a topic |
+
+### Runner
+
+Need the operator's "Can manage My Runner" grant; without it the server's 403 is returned as is.
+
+| Tool | Description |
+|------|-------------|
+| `get_operator_runtime` | Read the operator's runner settings (My Runner) with its revision |
+| `save_operator_runtime` | Replace the operator's runner settings (`if_revision` guarded) |
+| `get_operator_runtime_history` | List earlier revisions of the operator's runner settings |
+| `set_agent_limits` | Set an operator agent's `max_concurrent_tasks` |
+| `get_workspace_runtime` | Read a workspace's runner catalog (operator must be its admin) |
+| `get_workspace_runtime_revisions` | List stored revisions of a workspace's runner catalog |
+| `save_workspace_runtime` | Replace a workspace's runner catalog (`if_revision` guarded) |
 
 ## Architecture
 

@@ -513,6 +513,18 @@ func TestAddVCSLink_RecordsDeliveryStateThroughMetadataPatch(t *testing.T) {
 		t.Errorf("ci_verdict not forwarded: %+v", patch)
 	}
 
+	// role travels through the same patch; the server validates the value.
+	patch = nil
+	res = callAddVCSLink(t, server, map[string]any{
+		"task_id": taskID, "url": "https://github.com/acme/app/pull/7", "status": "open", "role": "review",
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error result: %+v", res.Content)
+	}
+	if patch["role"] != "review" || len(patch) != 1 {
+		t.Errorf("role not forwarded alone: %+v", patch)
+	}
+
 	// deployed_sha without environment is refused before any request is made.
 	res = callAddVCSLink(t, server, map[string]any{
 		"task_id": taskID, "url": "https://github.com/acme/app/pull/7", "deployed_sha": sha,

@@ -98,10 +98,11 @@ func isCredentialRejection(err error) bool {
 }
 
 // unconfiguredHint is returned by every tool call when stdio mode starts
-// without an agent key.
+// without an agent key or a chat token file.
 const unconfiguredHint = "EVC Mesh is not configured yet. Set MESH_API_URL to your Mesh instance " +
 	"(for example https://mesh.example.com) and MESH_AGENT_KEY to an agent key (agk_...) " +
-	"created in that workspace under Settings → Agents, then restart the MCP server."
+	"created in that workspace under Settings → Agents, or MESH_CHAT_TOKEN_FILE to a file " +
+	"holding a chat-session token (cst_...), then restart the MCP server."
 
 func main() {
 	// All logging goes to stderr so that stdout is reserved for MCP JSON-RPC.
@@ -143,8 +144,12 @@ func main() {
 	//    its tools, and every tool call returns setup instructions. That is
 	//    what MCP clients and catalogs need to inspect the server before the
 	//    user has entered credentials.
+	//    MESH_CHAT_TOKEN_FILE replaces the agent key for a chat host: the bearer
+	//    is the chat-session token in that file, and MESH_AGENT_KEY, if also
+	//    set, is ignored.
 	//    For SSE mode, agent keys are provided per-connection via HTTP headers/query params.
 	agentKey := os.Getenv("MESH_AGENT_KEY")
+	chatTokenFile := strings.TrimSpace(os.Getenv(mcpserver.ChatTokenFileEnv))
 
 	// Tool profile for stdio mode (SSE serves both profiles on separate paths).
 	profile := strings.ToLower(strings.TrimSpace(os.Getenv("MESH_MCP_PROFILE")))
@@ -158,8 +163,8 @@ func main() {
 	// 4. Start transport.
 	switch transport {
 	case "stdio":
-		if agentKey == "" {
-			log.Println("MESH_AGENT_KEY is not set — starting unconfigured: tools are listed, calls return setup instructions")
+		if agentKey == "" && chatTokenFile == "" {
+			log.Println("Neither MESH_AGENT_KEY nor MESH_CHAT_TOKEN_FILE is set — starting unconfigured: tools are listed, calls return setup instructions")
 			srv := mcpserver.NewServer(mcpserver.ServerConfig{
 				Profile:   profile,
 				SetupHint: unconfiguredHint,
@@ -169,7 +174,10 @@ func main() {
 			}
 			return
 		}
-		restClient := mcpserver.NewRESTClient(apiURL, agentKey)
+		restClient := mcpserver.NewRESTClientFromEnv(apiURL)
+		if restClient.UsesChatToken() {
+			log.Printf("Authenticating with the chat token from %s", mcpserver.ChatTokenFileEnv)
+		}
 
 		// Verify connectivity and get agent info.
 		log.Printf("Connecting to Mesh API at %s...", apiURL)

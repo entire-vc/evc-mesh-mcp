@@ -9,6 +9,8 @@ server up on the user's machine.
   (no `/api` suffix).
 - `MESH_AGENT_KEY` — the agent's API key from that instance (starts with `agk_`).
 
+For a chat session, set `MESH_CHAT_TOKEN_FILE` to the file holding the chat token (`cst_...`) instead of `MESH_AGENT_KEY`.
+
 If the user has no key yet, install anyway: the server starts without one,
 lists its tools, and every tool call explains how to configure it.
 
@@ -26,7 +28,7 @@ Pick one:
 ## 3. Add it to the MCP settings
 
 Use the absolute path to the binary. The tool profile is set with
-`MESH_MCP_PROFILE` (`core` = 26 everyday tools, `full` = 69 tools; default `full`
+`MESH_MCP_PROFILE` (`core` = 26 everyday tools, `full` = 76 tools; default `full`
 for the binary, `core` for the Docker image).
 
 ```json

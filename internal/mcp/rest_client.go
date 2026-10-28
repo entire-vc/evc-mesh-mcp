@@ -29,6 +29,7 @@ const defaultHTTPTimeout = 30 * time.Second
 type RESTClient struct {
 	baseURL        string
 	agentKey       string
+	chatTokenFile  string
 	httpClient     *http.Client
 	forwardedHost  string
 	forwardedProto string
@@ -57,6 +58,30 @@ func NewRESTClient(baseURL, agentKey string) *RESTClient {
 			Timeout: httpTimeoutFromEnv(),
 		},
 	}
+}
+
+// ChatTokenFileEnv names the file holding a chat-session token (cst_...).
+const ChatTokenFileEnv = "MESH_CHAT_TOKEN_FILE"
+
+// NewChatTokenRESTClient creates a RESTClient that authenticates with the
+// chat-session token stored in tokenFile. The file is read on every request,
+// so a token the chat host rotates in place is picked up without a restart.
+// The client never sends an agent key: a rejected chat token is a 401, not a
+// silent switch to a broader credential.
+func NewChatTokenRESTClient(baseURL, tokenFile string) *RESTClient {
+	c := NewRESTClient(baseURL, "")
+	c.chatTokenFile = tokenFile
+	return c
+}
+
+// NewRESTClientFromEnv picks the credential from the environment: the chat
+// token from MESH_CHAT_TOKEN_FILE when that is set, MESH_AGENT_KEY otherwise.
+// With both set the agent key is ignored.
+func NewRESTClientFromEnv(baseURL string) *RESTClient {
+	if path := strings.TrimSpace(os.Getenv(ChatTokenFileEnv)); path != "" {
+		return NewChatTokenRESTClient(baseURL, path)
+	}
+	return NewRESTClient(baseURL, os.Getenv("MESH_AGENT_KEY"))
 }
 
 // SetForwardedOrigin configures the client to send X-Forwarded-Host and
@@ -150,7 +175,9 @@ func (c *RESTClient) do(ctx context.Context, method, path string, body any) (*ht
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	c.setAuth(req)
+	if err := c.setAuth(req); err != nil {
+		return nil, err
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -317,7 +344,9 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	c.setAuth(req)
+	if err := c.setAuth(req); err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	c.applyForwardedHeaders(req)
 
@@ -363,12 +392,41 @@ const OAuthAccessTokenPrefix = "mot_"
 // reads an OAuth access token only from "Authorization: Bearer" and an agent
 // key only from X-Agent-Key, so the header depends on which credential the
 // client holds. One place, so the three request builders cannot disagree.
-func (c *RESTClient) setAuth(req *http.Request) {
+// A chat-session token goes in "Authorization: Bearer" as well; an unreadable
+// or empty token file fails the request before anything is sent.
+func (c *RESTClient) setAuth(req *http.Request) error {
+	if c.chatTokenFile != "" {
+		token, err := c.readChatToken()
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		return nil
+	}
 	if strings.HasPrefix(c.agentKey, OAuthAccessTokenPrefix) {
 		req.Header.Set("Authorization", "Bearer "+c.agentKey)
-		return
+		return nil
 	}
 	req.Header.Set("X-Agent-Key", c.agentKey)
+	return nil
+}
+
+func (c *RESTClient) readChatToken() (string, error) {
+	data, err := os.ReadFile(c.chatTokenFile)
+	if err != nil {
+		return "", fmt.Errorf("%s: cannot read chat token: %w", ChatTokenFileEnv, err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("%s: chat token file %s is empty", ChatTokenFileEnv, c.chatTokenFile)
+	}
+	return token, nil
+}
+
+// UsesChatToken reports whether the client authenticates with a chat-session
+// token file rather than an agent key.
+func (c *RESTClient) UsesChatToken() bool {
+	return c.chatTokenFile != ""
 }
 
 // GetAgentMe returns the current agent's profile.
@@ -930,7 +988,9 @@ func (c *RESTClient) doRaw(ctx context.Context, method, path, contentType string
 		return nil, 0, fmt.Errorf("create request: %w", err)
 	}
 
-	c.setAuth(req)
+	if err := c.setAuth(req); err != nil {
+		return nil, 0, err
+	}
 	if rawBody != nil {
 		req.Header.Set("Content-Type", contentType)
 	}
