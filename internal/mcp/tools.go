@@ -1364,6 +1364,10 @@ func vcsDeliveryPatch(request mcpsdk.CallToolRequest) (map[string]any, string) {
 		}
 		patch["acceptance"] = acc
 	}
+	// The server accepts only "review" and stamps who set it.
+	if role := strings.TrimSpace(mcpsdk.ParseString(request, "role", "")); role != "" {
+		patch["role"] = role
+	}
 	return patch, ""
 }
 
@@ -3572,6 +3576,14 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 	// into a conditional write that always conflicts.
 	expectedVersion := int(mcpsdk.ParseFloat64(request, "expected_version", 0))
 
+	// A chat token writes only its chat's project memory: the API refuses any
+	// other scope or project (chat_scope_denied) and fills in the chat's project
+	// itself. Pin the request here so the model's guess of a scope or project id
+	// cannot turn "remember this" into a refused write.
+	if s.getRESTClient(ctx).UsesChatToken() {
+		scope, projectID = "project", ""
+	}
+
 	// Auto-populate project_id from the most recently checked-out task when the
 	// agent omits it. This fixes the Memory Eval E·P2 issue where 99% of episodic
 	// entries had project_id=NULL because agents didn't pass it explicitly.
@@ -3584,7 +3596,7 @@ func (s *Server) handleRemember(ctx context.Context, request mcpsdk.CallToolRequ
 	// never asked for, which is exactly the drift a one-off collapse had to
 	// clean up once (582 rows) and started regressing again within 2h of that
 	// cleanup (2 rows) because only the server side had been fixed.
-	if projectID == "" && scope == "project" {
+	if projectID == "" && scope == "project" && !s.getRESTClient(ctx).UsesChatToken() {
 		if stored, ok := s.activeProjects.Load(session.AgentID); ok {
 			if pid, ok2 := stored.(string); ok2 {
 				projectID = pid
