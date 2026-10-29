@@ -8,7 +8,7 @@
 
 EVC Mesh is an open-source task manager built for teams where people and AI agents work side by side. This [Model Context Protocol](https://modelcontextprotocol.io/) server connects your agent to a [Mesh](https://github.com/entire-vc/evc-mesh) workspace: it can pick up assigned tasks, check out work, comment, move tasks through your workflow, hand off to teammates, and keep decisions in shared project memory.
 
-Two tool profiles: `core` (26 tools, for everyday task work) and `full` (76 tools, including recurring tasks, docs and workspace admin). Every tool is marked read-only or write, so clients can ask before changing anything.
+Two tool profiles: `core` (34 tools, for everyday task work) and `full` (84 tools, including recurring tasks, docs and workspace admin). Every tool is marked read-only or write, so clients can ask before changing anything.
 
 You need a Mesh workspace and an agent key from it. Mesh is self-hosted (Apache-2.0, `docker compose` setup in the [evc-mesh](https://github.com/entire-vc/evc-mesh) repository). Set `MESH_API_URL` to your instance and `MESH_AGENT_KEY` to the agent's key. Workspaces on the hosted instance are by invitation.
 
@@ -58,8 +58,8 @@ The MCP server supports two profiles to optimize context window usage:
 
 | Profile | Tools | Context overhead | Best for |
 |---------|-------|-----------------|----------|
-| **core** | 26 | ~8K tokens (4% of 200K) | Claude Code, Cursor, small-context models |
-| **full** | 69 | ~18K tokens (9% of 200K) | Power users, automation agents, admin ops |
+| **core** | 34 | ~8K tokens (4% of 200K) | Claude Code, Cursor, small-context models |
+| **full** | 84 | ~18K tokens (9% of 200K) | Power users, automation agents, admin ops |
 
 Set via `MESH_MCP_PROFILE` environment variable. Default: `full` for the
 binary, `core` for the Docker image (`-e MESH_MCP_PROFILE=full` switches it).
@@ -157,8 +157,8 @@ SSE mode serves **two profiles simultaneously** on different paths:
 
 | Path | Profile | Description |
 |------|---------|-------------|
-| `/sse` + `/message` | full | All 76 tools (backward compatible) |
-| `/core/sse` + `/core/message` | core | 26 essential tools |
+| `/sse` + `/message` | full | All 84 tools (backward compatible) |
+| `/core/sse` + `/core/message` | core | 34 essential tools |
 
 The same process also serves the **Streamable HTTP** transport (stateless, one
 agent key per request, sent in the `Authorization: Bearer` or `X-Agent-Key`
@@ -251,7 +251,7 @@ publish_event(type="summary", memory={persist: true})  → broadcast + persist
 session_report(model, tokens_in, tokens_out)           → report metrics
 ```
 
-## MCP Tools — Core Profile (26)
+## MCP Tools — Core Profile (34)
 
 ### ACP & Identity
 
@@ -270,8 +270,9 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 | `list_projects` | List workspace projects |
 | `list_tasks` | List tasks with filters (status, priority, assignee, search) |
 | `get_task` | Get task details with optional comments/artifacts/deps |
-| `create_task` | Create a new task |
-| `update_task` | Update task fields |
+| `create_task` | Create a new task. An agent's `start_after` names the external event it waits for: `start_after_evidence` {`event_ref`, `source`, `why`} |
+| `update_task` | Update task fields. `start_after` takes the same evidence; an empty `start_after` is refused — clear with `clear_start_after` |
+| `clear_start_after` | Clear `start_after` only if it is still the schedule you read (`expected_start_after`, `expected_version`, `expected_origin`, `schedule_receipt_id` from `get_task`); a changed card is refused with `409 cas_conflict` and its current values |
 | `move_task` | Change task status using slugs |
 | `assign_task` | Assign/unassign a task |
 | `get_task_context` | Get everything about a task in one call |
@@ -283,6 +284,22 @@ session_report(model, tokens_in, tokens_out)           → report metrics
 |------|-------------|
 | `add_comment` | Add comment to a task (markdown). Response includes a `delivery` array per `@`-mention reporting whether it actually reached the recipient (task queue/notification) or was skipped/failed and why |
 | `publish_event` | Publish event + optional memory hint for persistence |
+
+### Ending a turn
+
+Each command validates its target on the server and writes the state, a generated comment and (where noted) the checkout release in one step. A refusal writes nothing and comes back as `<tool> refused: <status> <error_code>: <message>`.
+
+| Tool | Description |
+|------|-------------|
+| `wait_for` | Wait on a card, merge request, pipeline or moment (`on` = `card` / `mr` / `pipeline` / `time`; a time wait names the external event: `until_at` with `Z` or an offset, `event_ref`, `source`, `why`); replaces your previous wait on the card and releases the checkout |
+| `continue_next` | Record a finished piece of work and keep going: the card stays with you and the checkout is extended |
+| `ask_agent` | Ask another agent a question (`to`, `question`); waits on the answer and releases the checkout. An identical open question is reused |
+| `answer_decision` | Answer a decision request addressed to you (`request_id`, `answer`); wakes the asker |
+| `finish_task` | Close the card to `done` or `review` with `result_kind` (`change` / `defect` / `research` / `content` / `ops`) and `evidence`, both required |
+| `hand_off` | Assign the card to another agent, move it to `todo` and release the checkout in one step (`to`, `why`) |
+| `add_note` | Write a note that wakes nobody: no delivery, no outcome, checkout untouched |
+
+A question to a person goes through `set_human_gate` (full profile).
 
 ### Memory
 
@@ -337,14 +354,14 @@ did not supply; an explicit `limit` always wins.
 | `report_error` | Report an error on a task |
 | `session_report` | Report session metrics (model, tokens, cost) |
 
-## MCP Tools — Full Profile (adds 50 more, 76 total)
+## MCP Tools — Full Profile (adds 50 more, 84 total)
 
 ### Additional Task Tools
 
 | Tool | Description |
 |------|-------------|
 | `get_project` | Get project details with statuses and custom fields |
-| `create_subtask` | Create subtask under a parent (`status_slug` optional; defaults to the project's default status, not the parent's) |
+| `create_subtask` | Create subtask under a parent (`status_slug` optional; defaults to the project's default status, not the parent's; `start_after` with evidence as in `create_task`) |
 | `add_dependency` | Add dependency between tasks; optional `condition` (`task_done`, `access_ready`, `contract_ready`, `artifact_published`, `shipped`, `deployed`, `accepted`) says what a `blocks` edge waits for |
 | `update_dependency` | Set `condition` / `evidence_url` on an existing dependency edge; evidence on a non-`task_done` edge releases the dependent without the blocker being done |
 | `mark_vcs_deployed` | Record a deploy (`sha`, `env`) on a PR link: sets `deployed_sha` / `deployed_env` / `deployed_at` and releases dependents waiting on a `deployed` edge |

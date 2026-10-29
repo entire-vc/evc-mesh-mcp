@@ -461,8 +461,13 @@ const defaultTaskCommentsLimit = 5
 // leanGetTaskView removes envelope fields, preserving all decision text.
 func leanGetTaskView(task map[string]any) {
 	keep := map[string]bool{}
-	for _, k := range []string{"id", "title", "status", "status_id", "status_lookup_error", "priority", "assignee_name", "labels", "parent_task_id", "start_after", "updated_at", "description", "human_gate", "custom_fields", "dod_checks", "runtime_state"} {
+	for _, k := range []string{"id", "title", "status", "status_id", "status_lookup_error", "priority", "assignee_name", "labels", "parent_task_id", "start_after", "start_after_origin", "start_after_receipt_id", "version", "updated_at", "description", "human_gate", "custom_fields", "dod_checks", "runtime_state"} {
 		keep[k] = true
+	}
+	// version is what clear_start_after compares against; without a date it
+	// is noise.
+	if isEmptyJSONValue(task["start_after"]) {
+		keep["version"] = false
 	}
 	for k := range task {
 		if !keep[k] || (isEmptyJSONValue(task[k]) && k != "description" && k != "id" && k != "title") {
@@ -604,6 +609,12 @@ func (s *Server) handleCreateTask(ctx context.Context, request mcpsdk.CallToolRe
 		return errResult(`unknown parameter "status": use status_slug`)
 	}
 
+	// Checked before the status lookup below: a malformed start_after must
+	// cost no request at all.
+	if refusal := applyStartAfter(request, body, false); refusal != "" {
+		return errResult("%s", refusal)
+	}
+
 	// Resolve status slug to status_id, and guard against creating in review status.
 	if slug := mcpsdk.ParseString(request, "status_slug", ""); slug != "" {
 		stID, _, stCat, err := s.resolveStatusSlug(ctx, projectID, slug)
@@ -632,12 +643,6 @@ func (s *Server) handleCreateTask(ctx context.Context, request mcpsdk.CallToolRe
 		}
 		body["due_date"] = dueDateStr
 	}
-	if startAfterStr := mcpsdk.ParseString(request, "start_after", ""); startAfterStr != "" {
-		if _, err := time.Parse(time.RFC3339, startAfterStr); err != nil {
-			return errResult("invalid start_after format: %v", err)
-		}
-		body["start_after"] = startAfterStr
-	}
 	if eh := mcpsdk.ParseFloat64(request, "estimated_hours", 0); eh > 0 {
 		body["estimated_hours"] = eh
 	}
@@ -653,7 +658,7 @@ func (s *Server) handleCreateTask(ctx context.Context, request mcpsdk.CallToolRe
 
 	result, err := s.getRESTClient(ctx).CreateTask(ctx, projectID, body)
 	if err != nil {
-		return errResult("failed to create task: %v", err)
+		return taskWriteError("create_task", "failed to create task", err)
 	}
 
 	if warn := s.contextWarning(); warn != "" {
@@ -705,17 +710,13 @@ func (s *Server) handleUpdateTask(ctx context.Context, request mcpsdk.CallToolRe
 			body["custom_fields"] = cfMap
 		}
 	}
-	// due_date/start_after use the presence-check (`args[...]; ok`), not the
-	// `!= ""` pattern the other date-ish fields below still use: an update
-	// that clears a date is a real, agent-reachable action (the whole reason
-	// start_after exists), and `!= ""` cannot represent "caller
-	// sent an explicit empty value to clear it", only "field omitted". Both
-	// share that requirement, so both share the fix — leaving due_date on the
-	// old pattern right next to a just-fixed start_after would leave the
-	// identical bug sitting in the same function. An empty string reaches the
-	// API as `"due_date":""`/`"start_after":""`, which flexTime.UnmarshalJSON
-	// treats the same as JSON null: wasSet=true, Time=nil — an explicit clear,
-	// not a silent no-op.
+	// due_date uses the presence-check (`args[...]; ok`), not the `!= ""`
+	// pattern the other date-ish fields below still use: an update that clears
+	// a date is a real, agent-reachable action, and `!= ""` cannot represent
+	// "caller sent an explicit empty value to clear it", only "field omitted".
+	// An empty string reaches the API as `"due_date":""`, which
+	// flexTime.UnmarshalJSON treats the same as JSON null: wasSet=true,
+	// Time=nil — an explicit clear, not a silent no-op.
 	if _, ok := args["due_date"]; ok {
 		dueDateStr := mcpsdk.ParseString(request, "due_date", "")
 		if dueDateStr != "" {
@@ -725,14 +726,10 @@ func (s *Server) handleUpdateTask(ctx context.Context, request mcpsdk.CallToolRe
 		}
 		body["due_date"] = dueDateStr
 	}
-	if _, ok := args["start_after"]; ok {
-		startAfterStr := mcpsdk.ParseString(request, "start_after", "")
-		if startAfterStr != "" {
-			if _, err := time.Parse(time.RFC3339, startAfterStr); err != nil {
-				return errResult("invalid start_after format: %v", err)
-			}
-		}
-		body["start_after"] = startAfterStr
+	// start_after is the exception: an empty value is refused, not sent as a
+	// clear — an agent clears it with clear_start_after (compare-and-clear).
+	if refusal := applyStartAfter(request, body, true); refusal != "" {
+		return errResult("%s", refusal)
 	}
 	if _, ok := args["estimated_hours"]; ok {
 		eh := mcpsdk.ParseFloat64(request, "estimated_hours", 0)
@@ -755,7 +752,7 @@ func (s *Server) handleUpdateTask(ctx context.Context, request mcpsdk.CallToolRe
 
 	result, err := s.getRESTClient(ctx).UpdateTask(ctx, taskID, body)
 	if err != nil {
-		return errResult("failed to update task: %v", err)
+		return taskWriteError("update_task", "failed to update task", err)
 	}
 
 	if !mcpsdk.ParseBoolean(request, "full", false) {
@@ -884,11 +881,8 @@ func (s *Server) handleCreateSubtask(ctx context.Context, request mcpsdk.CallToo
 		}
 		body["due_date"] = dueDateStr
 	}
-	if startAfterStr := mcpsdk.ParseString(request, "start_after", ""); startAfterStr != "" {
-		if _, err := time.Parse(time.RFC3339, startAfterStr); err != nil {
-			return errResult("invalid start_after format: %v", err)
-		}
-		body["start_after"] = startAfterStr
+	if refusal := applyStartAfter(request, body, false); refusal != "" {
+		return errResult("%s", refusal)
 	}
 	if eh := mcpsdk.ParseFloat64(request, "estimated_hours", 0); eh > 0 {
 		body["estimated_hours"] = eh
@@ -914,7 +908,7 @@ func (s *Server) handleCreateSubtask(ctx context.Context, request mcpsdk.CallToo
 
 	result, err := s.getRESTClient(ctx).CreateSubtask(ctx, parentTaskID, body)
 	if err != nil {
-		return errResult("failed to create subtask: %v", err)
+		return taskWriteError("create_subtask", "failed to create subtask", err)
 	}
 
 	return jsonResult(result)
