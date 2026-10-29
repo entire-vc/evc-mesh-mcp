@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -147,30 +148,25 @@ func TestUpdateTask_OmittedStartAfterIsNotSent(t *testing.T) {
 	}
 }
 
-// TestUpdateTask_ClearsStartAfterWithEmptyString pins the actual bug behind
-// Before this fix, `!= ""` made an explicit empty string
-// indistinguishable from "omitted", so a caller trying to lift a start_after
-// delay got a 200 (or, alone in the body, "no fields to update") with the
-// date left in place — a false success on the one field agents most need to
-// self-clear (no gate, no status change guards it). Forwarding "" lets
-// flexTime on the API side clear it for real.
-func TestUpdateTask_ClearsStartAfterWithEmptyString(t *testing.T) {
-	body := captureUpdateBody(t, map[string]any{
-		"task_id": uuid.New().String(), "start_after": "",
-	})
-	got, present := body["start_after"]
-	if !present {
-		t.Fatal("explicit empty start_after must still be forwarded, not dropped like an omitted field")
-	}
-	if got != "" {
-		t.Errorf("start_after clear must forward an empty string, got %v", got)
+// TestUpdateTask_RefusesUnconditionalStartAfterClear: an empty start_after
+// used to be forwarded as an unconditional clear. The date now carries its
+// provenance, and an agent clears it only by comparing it with the schedule it
+// read (clear_start_after), so the empty value is refused before any request.
+func TestUpdateTask_RefusesUnconditionalStartAfterClear(t *testing.T) {
+	for _, v := range []any{"", nil} {
+		server, calls := turnOutcomeServer(t, http.StatusOK, map[string]any{})
+		res := callOutcome(server.handleUpdateTask, map[string]any{"task_id": uuid.New().String(), "start_after": v})
+		if text := resultText(t, res); !res.IsError || !strings.Contains(text, "clear_requires_compare") || !strings.Contains(text, "clear_start_after") {
+			t.Errorf("start_after=%v: want a local clear_requires_compare refusal naming clear_start_after, got %q", v, text)
+		}
+		if len(*calls) != 0 {
+			t.Errorf("start_after=%v: the clear must not reach the API: %v", v, *calls)
+		}
 	}
 }
 
-// TestUpdateTask_ClearsDueDateWithEmptyString: due_date shared the exact same
-// `!= ""` bug as start_after (start_after was built to mirror it field-for-
-// field) — fixed alongside it rather than leaving an identical defect in the
-// same function right next to the just-fixed twin.
+// TestUpdateTask_ClearsDueDateWithEmptyString: an explicit empty due_date is
+// forwarded as a clear, not dropped like an omitted field.
 func TestUpdateTask_ClearsDueDateWithEmptyString(t *testing.T) {
 	body := captureUpdateBody(t, map[string]any{
 		"task_id": uuid.New().String(), "due_date": "",

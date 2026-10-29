@@ -55,7 +55,7 @@ LABEL org.opencontainers.image.title="evc-mesh-mcp" \
 # anyway.
 COPY --from=builder /out/evc-mesh-mcp /usr/local/bin/evc-mesh-mcp
 
-# The image defaults to the core profile (26 everyday tools): it is what MCP
+# The image defaults to the core profile (34 everyday tools): it is what MCP
 # clients and catalogs run with no extra configuration, and a smaller tool list
 # keeps the client's context lean. `-e MESH_MCP_PROFILE=full` restores every
 # tool. SSE mode ignores this variable — it serves both profiles on separate

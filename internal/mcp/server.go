@@ -25,7 +25,7 @@ import (
 
 // Profile constants for MCP server tool sets.
 const (
-	// ProfileCore registers only the 26 essential tools for lightweight agents.
+	// ProfileCore registers only the 34 essential tools for lightweight agents.
 	ProfileCore = "core"
 	// ProfileFull registers all tools (core + advanced). This is the default.
 	ProfileFull = "full"
@@ -147,7 +147,7 @@ type ServerConfig struct {
 	Session *AgentSession
 	// RESTClient is the HTTP client used to call the Mesh REST API.
 	RESTClient *RESTClient
-	// Profile controls which tools are registered: "core" (26 essential tools)
+	// Profile controls which tools are registered: "core" (34 essential tools)
 	// or "full" (all tools, default).
 	Profile string
 	// SetupHint, when non-empty, puts the server in unconfigured mode: it
@@ -250,7 +250,7 @@ func (s *Server) MCPServer() *mcpserver.MCPServer {
 	return s.mcpServer
 }
 
-// registerCoreTools registers the 26 essential tools with optimized, directive descriptions.
+// registerCoreTools registers the 34 essential tools with optimized, directive descriptions.
 func (s *Server) registerCoreTools() {
 	// --- ACP / Session tools ---
 	s.addTool(mcpsdk.NewTool("heartbeat",
@@ -331,7 +331,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithBoolean("include_auto", mcpsdk.Description("Return complete automation bodies in compact mode (ordinary comments are always complete).")),
 	), s.tracked("get_task", s.handleGetTask))
 
-	s.addTool(mcpsdk.NewTool("create_task",
+	s.addTool(mcpsdk.NewTool("create_task", append([]mcpsdk.ToolOption{
 		mcpsdk.WithDescription("Create a new task in a project and return it with its id. status_slug sets the initial status (defaults to the project's first status); assignee_id with assignee_type routes it to someone; parent_task_id makes it a subtask. Search list_tasks first so you do not file a duplicate."),
 		mcpsdk.WithString("project_id", mcpsdk.Required(), mcpsdk.Description("UUID of the project to create the task in (list_projects returns ids).")),
 		mcpsdk.WithString("title", mcpsdk.Required(), mcpsdk.Description("Task title.")),
@@ -344,12 +344,11 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithObject("custom_fields", mcpsdk.Description("Custom field values as key-value pairs.")),
 		mcpsdk.WithString("parent_task_id", mcpsdk.Description("Parent task ID for subtask.")),
 		mcpsdk.WithString("due_date", mcpsdk.Description("Due date in RFC3339 format.")),
-		mcpsdk.WithString("start_after", mcpsdk.Description("Don't surface/feed this task before this RFC3339 timestamp (e.g. a scheduled retry). Independent of due_date.")),
 		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours for the task.")),
 		mcpsdk.WithString("delegation_level", mcpsdk.Description("Delegation level: auto, review, supervised.")),
-	), s.tracked("create_task", s.handleCreateTask))
+	}, startAfterParams("task", false)...)...), s.tracked("create_task", s.handleCreateTask))
 
-	s.addTool(mcpsdk.NewTool("update_task",
+	s.addTool(mcpsdk.NewTool("update_task", append([]mcpsdk.ToolOption{
 		mcpsdk.WithDescription("Update task fields. Returns a lean confirmation by default (id, status_id, assignee, updated_at) — the card's static fields are not echoed back; full=true or get_task returns them."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("title", mcpsdk.Description("New title.")),
@@ -358,12 +357,12 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithArray("labels", mcpsdk.Description("New labels."), mcpsdk.WithStringItems()),
 		mcpsdk.WithObject("custom_fields", mcpsdk.Description("Custom field values to update.")),
 		mcpsdk.WithString("due_date", mcpsdk.Description("Due date in RFC3339 format. Pass an empty string to clear it.")),
-		mcpsdk.WithString("start_after", mcpsdk.Description("Don't surface/feed this task before this RFC3339 timestamp. Independent of due_date. Pass an empty string to clear it.")),
 		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours.")),
 		mcpsdk.WithString("delegation_level", mcpsdk.Description("Routing after work: auto, review, or supervised.")),
 		mcpsdk.WithBoolean("completion_signal", mcpsdk.Description("Mark agent-side work as finished.")),
 		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the complete updated task (all fields, verbatim) instead of the lean confirmation (id, status_id, assignee, updated_at)."), mcpsdk.DefaultBool(false)),
-	), s.tracked("update_task", s.handleUpdateTask))
+	}, startAfterParams("task", true)...)...), s.tracked("update_task", s.handleUpdateTask))
+	s.registerClearStartAfter()
 
 	s.addTool(mcpsdk.NewTool("move_task",
 		mcpsdk.WithDescription("Change task status (e.g. todo → in_progress → done). Status is given as a slug (not a UUID). On move to 'review', task auto-reassigns to creator unless assignee_id is provided. Returns {task, new_status} with a lean task by default (id, status_id, assignee, updated_at — the post-move assignee is always included so an auto-reassign is visible); full=true returns the whole reloaded task."),
@@ -574,6 +573,10 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithNumber("tokens_out", mcpsdk.Description("Total output tokens this session.")),
 		mcpsdk.WithNumber("estimated_cost", mcpsdk.Description("Estimated cost in USD.")),
 	), s.tracked("session_report", s.handleSessionReport))
+
+	// --- Turn outcomes ---
+	// Core, not advanced: every agent's turn ends with one of these.
+	s.registerTurnOutcomeTools()
 }
 
 // registerAdvancedTools registers tools beyond the core set.
@@ -691,7 +694,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("get_project", s.handleGetProject))
 
 	// --- Task operations ---
-	s.addTool(mcpsdk.NewTool("create_subtask",
+	s.addTool(mcpsdk.NewTool("create_subtask", append([]mcpsdk.ToolOption{
 		mcpsdk.WithDescription("Create a subtask under a parent task. Set status_slug for initial status (defaults to the project's default status, NOT the parent's status)."),
 		mcpsdk.WithString("parent_task_id", mcpsdk.Required(), mcpsdk.Description("Parent task ID.")),
 		mcpsdk.WithString("title", mcpsdk.Required(), mcpsdk.Description("Subtask title.")),
@@ -707,9 +710,8 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithArray("labels", mcpsdk.Description("Labels for the subtask.")),
 		mcpsdk.WithObject("custom_fields", mcpsdk.Description("Custom field values, keyed by field slug.")),
 		mcpsdk.WithString("due_date", mcpsdk.Description("Due date, RFC3339 (e.g. 2026-08-10T12:00:00Z).")),
-		mcpsdk.WithString("start_after", mcpsdk.Description("Don't surface/feed this subtask before this RFC3339 timestamp. Independent of due_date.")),
 		mcpsdk.WithNumber("estimated_hours", mcpsdk.Description("Estimated hours.")),
-	), s.tracked("create_subtask", s.handleCreateSubtask))
+	}, startAfterParams("subtask", false)...)...), s.tracked("create_subtask", s.handleCreateSubtask))
 
 	s.addTool(mcpsdk.NewTool("add_dependency",
 		mcpsdk.WithDescription("Add a dependency edge: task_id depends on depends_on_task_id. With the default type blocks, task_id is held back from its assignee until the blocker meets condition (default: the blocker is done). relates_to and is_child_of only record a link and hold nothing. Change the condition with update_dependency; delete the edge with remove_dependency."),
@@ -767,7 +769,7 @@ func (s *Server) registerAdvancedTools() {
 	// with its own marker dictionary — which is how a driver came to read its own
 	// instructional boilerplate back as a raised blocker.
 	s.addTool(mcpsdk.NewTool("set_human_gate",
-		mcpsdk.WithDescription("Arm the human gate on a task: freeze it and record WHO is waiting, WHAT was asked, and WHAT you will do if nobody answers. Records the whole ask on the task (who is waiting, what was asked, the default), so nothing has to re-read the thread; the '❓ Blocking @<person>' comment marker is still recognised. recommended_default is REQUIRED: a gate with no stated default can only ever be resolved by finding a human. The call takes four answers (credential_exists / reversible / blocked_by_other_task / customer_visible_now), each with one line of justification. The server refuses the arm when the answers show nobody needs to be asked: the credential is held, the action is reversible, and nothing a customer sees or pays changes right now."),
+		mcpsdk.WithDescription("Arm the human gate on a task: freeze it and record WHO is waiting, WHAT was asked, and WHAT you will do if nobody answers. A question to a person is asked only this way: there is no separate ask_human, and a wait on an agent is ask_agent. Records the whole ask on the task (who is waiting, what was asked, the default), so nothing has to re-read the thread; the '❓ Blocking @<person>' comment marker is still recognised. recommended_default is REQUIRED: a gate with no stated default can only ever be resolved by finding a human. The call takes four answers (credential_exists / reversible / blocked_by_other_task / customer_visible_now), each with one line of justification. The server refuses the arm when the answers show nobody needs to be asked: the credential is held, the action is reversible, and nothing a customer sees or pays changes right now."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to gate.")),
 		mcpsdk.WithString("reason", mcpsdk.Required(), mcpsdk.Description("The question itself, in your own words.")),
 		mcpsdk.WithString("recommended_default", mcpsdk.Required(), mcpsdk.Description("What you will do if nobody answers. Required — an ask with no default cannot time out.")),
