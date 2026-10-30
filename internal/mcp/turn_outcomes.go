@@ -123,6 +123,9 @@ func turnOutcomeError(tool string, err error) (*mcpsdk.CallToolResult, error) {
 	if details, ok := apiErr.Body["details"].(string); ok && details != "" && details != apiErr.Message {
 		msg += " (" + details + ")"
 	}
+	if refusal := gateRefusalText(err); refusal != "" {
+		msg += " [" + refusal + "]"
+	}
 	return errResult("%s", msg)
 }
 
