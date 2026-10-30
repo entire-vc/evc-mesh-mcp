@@ -813,6 +813,9 @@ func (s *Server) handleMoveTask(ctx context.Context, request mcpsdk.CallToolRequ
 	}
 
 	if err = s.getRESTClient(ctx).MoveTask(ctx, taskID, moveBody); err != nil {
+		if refusal := gateRefusalText(err); refusal != "" {
+			return errResult("failed to move task: %v (%s)", err, refusal)
+		}
 		return errResult("failed to move task: %v", err)
 	}
 
