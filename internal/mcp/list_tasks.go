@@ -13,7 +13,7 @@ import (
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
 
-const listTasksCategories = "backlog, todo, in_progress, review, done, cancelled"
+const listTasksCategories = "backlog, todo, triage, in_progress, review, done, cancelled"
 
 const listTasksRuntimeKinds = "working, waiting, queued, stopped"
 
@@ -60,7 +60,7 @@ func validateListTasksArguments(request mcpsdk.CallToolRequest) error {
 }
 func validListTasksCategory(cat string) bool {
 	switch cat {
-	case "backlog", "todo", "in_progress", "review", "done", "cancelled":
+	case "backlog", "todo", "triage", "in_progress", "review", "done", "cancelled":
 		return true
 	}
 	return false

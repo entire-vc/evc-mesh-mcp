@@ -22,7 +22,7 @@ func listTasksEnvelopeFixture() map[string]any {
 		"priority": "medium", "labels": []any{"mcp"}, "assignee_name": "Alice",
 		"due_date": nil, "updated_at": "2026-10-03T11:18:59Z", "project_id": "p-1",
 		"description": longTaskDescription, "has_description": true, "human_gate": false,
-		"url": "https://mesh.entire.host/t/x", "parent_task_id": nil,
+		"url": "https://mesh.example.com/t/x", "parent_task_id": nil,
 		"assignee_id": "a-1", "assignee_type": "agent", "assigned_by": "",
 		"created_by": "a-2", "created_by_name": "Bob", "created_by_type": "agent",
 		"created_at": "2026-10-03T11:18:59Z", "completed_at": nil,

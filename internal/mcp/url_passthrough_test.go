@@ -24,7 +24,7 @@ func TestGetProjectTool_PassesProjectURLThrough(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":   "proj-1",
 				"slug": "demo",
-				"url":  "https://mesh.entire.host/p/proj-1",
+				"url":  "https://mesh.example.com/p/proj-1",
 			})
 		}
 	}))
@@ -51,7 +51,7 @@ func TestGetProjectTool_PassesProjectURLThrough(t *testing.T) {
 	if err := json.Unmarshal([]byte(resultText(t, result)), &payload); err != nil {
 		t.Fatalf("could not decode response JSON: %v", err)
 	}
-	if payload.Project.URL != "https://mesh.entire.host/p/proj-1" {
+	if payload.Project.URL != "https://mesh.example.com/p/proj-1" {
 		t.Fatalf("project.url = %q, want the REST deep-link passed through verbatim", payload.Project.URL)
 	}
 }
@@ -61,7 +61,7 @@ func TestListCommentsTool_FullPassesCommentURLThrough(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"items": []map[string]any{
-				{"id": "c-1", "url": "https://mesh.entire.host/t/task-1?comment=c-1"},
+				{"id": "c-1", "url": "https://mesh.example.com/t/task-1?comment=c-1"},
 			},
 			"total_count": 1,
 			"page":        1,
@@ -92,7 +92,7 @@ func TestListCommentsTool_FullPassesCommentURLThrough(t *testing.T) {
 	if err := json.Unmarshal([]byte(resultText(t, result)), &payload); err != nil {
 		t.Fatalf("could not decode response JSON: %v", err)
 	}
-	if len(payload.Items) != 1 || payload.Items[0].URL != "https://mesh.entire.host/t/task-1?comment=c-1" {
+	if len(payload.Items) != 1 || payload.Items[0].URL != "https://mesh.example.com/t/task-1?comment=c-1" {
 		t.Fatalf("items = %+v, want the REST comment deep-link passed through verbatim", payload.Items)
 	}
 }

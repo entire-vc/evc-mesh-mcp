@@ -111,7 +111,7 @@ func wave2Comment(id string, body string, internal bool) map[string]any {
 		"updated_at":  "2026-10-05T10:00:00Z",
 		"is_internal": internal,
 		"metadata":    map[string]any{"x": 1},
-		"url":         "https://mesh.entire.host/c/" + id,
+		"url":         "https://mesh.example.com/c/" + id,
 	}
 }
 
@@ -286,7 +286,7 @@ func TestGetTaskWave2_EmptyServiceFieldsDropped(t *testing.T) {
 			"custom_fields": map[string]any{}, "dod_checks": map[string]any{},
 			"estimated_hours": nil, "start_after": nil, "due_date": nil,
 			"completed_at": nil, "completion_signal": false, "is_shipped": false,
-			"position": 0, "assigned_by": "", "url": "https://mesh.entire.host/t/" + id,
+			"position": 0, "assigned_by": "", "url": "https://mesh.example.com/t/" + id,
 			// real values: must survive
 			"labels": []any{"mesh"}, "human_gate": false,
 			"parent_task_id": "p-1", "priority": "urgent",

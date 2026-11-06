@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,6 +35,11 @@ type RESTClient struct {
 	httpClient     *http.Client
 	forwardedHost  string
 	forwardedProto string
+
+	// 429 retry state (see retry429.go); zero value is usable.
+	retryOnce  sync.Once
+	retry      retry429Policy
+	retrySlots chan struct{}
 }
 
 // NewRESTClient creates a new RESTClient for the given API base URL and agent key.
@@ -55,9 +62,62 @@ func NewRESTClient(baseURL, agentKey string) *RESTClient {
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		agentKey: agentKey,
 		httpClient: &http.Client{
-			Timeout: httpTimeoutFromEnv(),
+			Timeout:   httpTimeoutFromEnv(),
+			Transport: newScopedTransport(os.Getenv(http1HostsEnv)),
 		},
 	}
+}
+
+// http1HostsEnv lists hostnames (comma-separated, no port, case-insensitive)
+// whose requests from this process must use HTTP/1.1 instead of negotiating h2.
+// Unset or empty keeps the stock transport for every host. It exists as a
+// reversible canary for POST bodies lost on the h2 path to the API host
+// (a request's headers arrive, the body never does); it is not a general knob.
+const http1HostsEnv = "MESH_MCP_HTTP1_HOSTS"
+
+// scopedTransport sends requests for the listed hosts through an HTTP/1.1-only
+// transport and everything else through next.
+type scopedTransport struct {
+	hosts map[string]struct{}
+	h1    http.RoundTripper
+	next  http.RoundTripper
+}
+
+// newScopedTransport returns nil (the client then uses http.DefaultTransport,
+// exactly as before) when no host is listed.
+func newScopedTransport(hostsCSV string) http.RoundTripper {
+	hosts := map[string]struct{}{}
+	for _, h := range strings.Split(hostsCSV, ",") {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			hosts[h] = struct{}{}
+		}
+	}
+	if len(hosts) == 0 {
+		return nil
+	}
+	return &scopedTransport{hosts: hosts, h1: newHTTP1Transport(), next: http.DefaultTransport}
+}
+
+// newHTTP1Transport clones the default transport (proxy from environment,
+// TLS verification, keepalive, dial and handshake timeouts all preserved) and
+// disables h2: a non-nil empty TLSNextProto map plus ForceAttemptHTTP2=false
+// stops the std library registering h2, and ALPN offers only http/1.1.
+func newHTTP1Transport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ForceAttemptHTTP2 = false
+	t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	if t.TLSClientConfig == nil {
+		t.TLSClientConfig = &tls.Config{}
+	}
+	t.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	return t
+}
+
+func (s *scopedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if _, ok := s.hosts[strings.ToLower(req.URL.Hostname())]; ok {
+		return s.h1.RoundTrip(req)
+	}
+	return s.next.RoundTrip(req)
 }
 
 // ChatTokenFileEnv names the file holding a chat-session token (cst_...).
@@ -158,32 +218,35 @@ func httpTimeoutFromEnv() time.Duration {
 	return time.Duration(secs) * time.Second
 }
 
-// do executes an HTTP request with the agent key auth header.
+// do executes an HTTP request with the agent key auth header. GET/HEAD calls
+// answered with 429 are retried within a bounded budget (retry429.go).
 func (c *RESTClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
-	var bodyReader io.Reader
+	var payload []byte
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("marshal body: %w", err)
 		}
-		bodyReader = bytes.NewReader(data)
+		payload = data
 	}
-
-	reqURL := c.baseURL + path
-	req, err := http.NewRequestWithContext(ctx, method, reqURL, bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	if err := c.setAuth(req); err != nil {
-		return nil, err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	c.applyForwardedHeaders(req)
-
-	return c.httpClient.Do(req)
+	return c.do429(ctx, method, func() (*http.Response, error) {
+		var bodyReader io.Reader
+		if payload != nil {
+			bodyReader = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		if err := c.setAuth(req); err != nil {
+			return nil, err
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		c.applyForwardedHeaders(req)
+		return c.httpClient.Do(req)
+	})
 }
 
 // doJSON executes an HTTP request and decodes the JSON response into result.
@@ -198,11 +261,15 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return &APIError{
+		apiErr := &APIError{
 			StatusCode: resp.StatusCode,
 			Message:    apiErrorMessage(errBody, resp.StatusCode),
 			Body:       errBody,
 		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			apiErr.Retry = rateLimitInfo(resp.Header, time.Now())
+		}
+		return apiErr
 	}
 
 	if result != nil {
@@ -244,9 +311,15 @@ type APIError struct {
 	// nil when the response body was not JSON. Error() is unchanged, so existing
 	// callers and their error strings are unaffected.
 	Body map[string]any
+
+	// Retry is set for a 429: whether and when the call may be repeated.
+	Retry *RetryInfo
 }
 
 func (e *APIError) Error() string {
+	if e.Retry != nil {
+		return fmt.Sprintf("%s: %s [%s]", http.StatusText(e.StatusCode), e.Message, e.Retry)
+	}
 	return fmt.Sprintf("%s: %s", http.StatusText(e.StatusCode), e.Message)
 }
 
