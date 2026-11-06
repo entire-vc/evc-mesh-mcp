@@ -524,6 +524,9 @@ var leanCommentFields = []string{
 	"id", "task_id", "parent_comment_id",
 	"author_id", "author_name", "author_type",
 	"is_internal", "created_at", "delivery", "hint",
+	// gate_receipt: what the server did with a withdrawal-shaped comment on a gated
+	// task (cleared / no_op / not_owner / stale + next_action). Un-derivable, small.
+	"gate_receipt",
 }
 
 // leanCommentResult projects a created comment onto the fields above.
