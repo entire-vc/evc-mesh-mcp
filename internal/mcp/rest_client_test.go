@@ -353,13 +353,13 @@ func TestSetForwardedOrigin_AddsHeaders(t *testing.T) {
 	defer srv.Close()
 
 	c := NewRESTClient(srv.URL, "test-key")
-	c.SetForwardedOrigin("https://mesh.entire.host/mcp")
+	c.SetForwardedOrigin("https://mesh.example.com/mcp")
 
 	if err := c.doJSON(context.Background(), http.MethodGet, "/health", nil, nil); err != nil {
 		t.Fatalf("doJSON: %v", err)
 	}
-	if gotHost != "mesh.entire.host" {
-		t.Errorf("X-Forwarded-Host = %q, want %q", gotHost, "mesh.entire.host")
+	if gotHost != "mesh.example.com" {
+		t.Errorf("X-Forwarded-Host = %q, want %q", gotHost, "mesh.example.com")
 	}
 	if gotProto != "https" {
 		t.Errorf("X-Forwarded-Proto = %q, want %q", gotProto, "https")
@@ -392,7 +392,7 @@ func TestSetForwardedOrigin_Unset(t *testing.T) {
 // publicURL values — both must leave forwarding off rather than panic or
 // send a garbage header.
 func TestSetForwardedOrigin_MalformedIsNoOp(t *testing.T) {
-	for _, in := range []string{"", "   ", "not a url", "/just/a/path", "mesh.entire.host"} {
+	for _, in := range []string{"", "   ", "not a url", "/just/a/path", "mesh.example.com"} {
 		c := NewRESTClient("http://example.invalid", "key")
 		c.SetForwardedOrigin(in)
 		if c.forwardedHost != "" {

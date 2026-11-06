@@ -193,11 +193,11 @@ func TestAgentSessionCache_ForwardsPublicOrigin(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cache := &agentSessionCache{apiURL: srv.URL, publicURL: "https://mesh.entire.host"}
+	cache := &agentSessionCache{apiURL: srv.URL, publicURL: "https://mesh.example.com"}
 	if _, err := cache.GetOrAuthenticate(context.Background(), "agk_test"); err != nil {
 		t.Fatalf("GetOrAuthenticate: %v", err)
 	}
-	if gotHost != "mesh.entire.host" || gotProto != "https" {
+	if gotHost != "mesh.example.com" || gotProto != "https" {
 		t.Errorf("GetOrAuthenticate did not forward publicURL: X-Forwarded-Host=%q X-Forwarded-Proto=%q", gotHost, gotProto)
 	}
 }
@@ -212,12 +212,12 @@ func TestServerRegistry_ForwardsPublicOrigin(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	reg := &serverRegistry{apiURL: srv.URL, publicURL: "https://mesh.entire.host"}
+	reg := &serverRegistry{apiURL: srv.URL, publicURL: "https://mesh.example.com"}
 	client := reg.GetClient("agk_test")
 	if _, err := client.GetTask(context.Background(), "task-1"); err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if gotHost != "mesh.entire.host" || gotProto != "https" {
+	if gotHost != "mesh.example.com" || gotProto != "https" {
 		t.Errorf("serverRegistry.GetClient did not forward publicURL: X-Forwarded-Host=%q X-Forwarded-Proto=%q", gotHost, gotProto)
 	}
 

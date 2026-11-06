@@ -302,7 +302,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithDescription("List tasks with strict filters. Provide project_id for a project listing or workspace_id plus search for cross-project search. Unknown parameters and invalid categories are errors. Compact items contain id, title, status slug, priority, assignee_name, labels, updated_at, runtime_state (working/waiting/queued/stopped with since/lane/ref/stale, when known) and routing parent_task_id/start_after when set; workspace results also contain project_id. full=true returns complete REST items; listing descriptions are subject to the API page budget, while get_task returns full details. For your own queue use get_my_tasks."),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project ID (required unless workspace_id is provided).")),
 		mcpsdk.WithString("workspace_id", mcpsdk.Description("Workspace ID for global cross-project search (requires search parameter).")),
-		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: backlog, todo, in_progress, review, done, cancelled.")),
+		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: "+listTasksCategories+".")),
 		mcpsdk.WithString("assignee", mcpsdk.Description("Filter by exact case-insensitive assignee name, UUID, or me. Unknown or ambiguous names are errors.")),
 		mcpsdk.WithString("assignee_id", mcpsdk.Description("UUID-only compatibility alias for assignee. Use assignee for names or me.")),
 		mcpsdk.WithString("assignee_type", mcpsdk.Description("Filter by assignee type: user, agent, unassigned.")),

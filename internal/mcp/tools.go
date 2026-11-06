@@ -320,99 +320,111 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		}
 		page, err := s.getRESTClient(ctx).GetTaskComments(ctx, resolvedID, commentsLimit)
 		if err != nil {
-			return errResult("failed to list comments: %v", err)
-		}
-		var itemCount int
-		if items, ok := page["items"]; ok {
-			arr, _ := items.([]any)
-			if sinceSet {
-				arr = commentsSince(arr, since)
+			if !markPartialFailure(resp, "comments", err) {
+				return errResult("failed to list comments: %v", err)
 			}
-			// Inline comments share the list_comments compact shape in the
-			// compact default view: id/author_name/created_at/
-			// complete body. full=true returns complete REST objects.
-			if !full {
-				arr = compactCommentItems(arr, mcpsdk.ParseBoolean(request, "include_auto", false))
-			}
-			resp["comments"] = arr
-			itemCount = len(arr)
 		} else {
-			resp["comments"] = []any{}
-		}
-		// Propagate the truncation envelope REST already returns (total_count,
-		// has_more) — the old code discarded both, which is exactly what made
-		// a truncated response indistinguishable from a complete one. Ported
-		// from entire-vc/evc-mesh (task 4222c17d / D2) — see GetTaskComments
-		// above for why this repo needs its own copy of the fix.
-		totalCount, _ := page["total_count"].(float64)
-		hasMore, _ := page["has_more"].(bool)
-		resp["comments_total_count"] = int(totalCount)
-		resp["comments_has_more"] = hasMore
-		if hasMore {
-			resp["comments_truncated"] = true
-			resp["comments_note"] = fmt.Sprintf(
-				"showing the last %d of %d comments; raise comments_limit (max %d) for more of the tail, or read the rest by paging list_comments(task_id, order=desc, page=N) — a thread longer than %d cannot be fetched in one call",
-				itemCount, int(totalCount), maxTaskCommentsLimit, maxTaskCommentsLimit)
+			var itemCount int
+			if items, ok := page["items"]; ok {
+				arr, _ := items.([]any)
+				if sinceSet {
+					arr = commentsSince(arr, since)
+				}
+				// Inline comments share the list_comments compact shape in the
+				// compact default view: id/author_name/created_at/
+				// complete body. full=true returns complete REST objects.
+				if !full {
+					arr = compactCommentItems(arr, mcpsdk.ParseBoolean(request, "include_auto", false))
+				}
+				resp["comments"] = arr
+				itemCount = len(arr)
+			} else {
+				resp["comments"] = []any{}
+			}
+			// Propagate the truncation envelope REST already returns (total_count,
+			// has_more) — the old code discarded both, which is exactly what made
+			// a truncated response indistinguishable from a complete one. Ported
+			// from entire-vc/evc-mesh (task 4222c17d / D2) — see GetTaskComments
+			// above for why this repo needs its own copy of the fix.
+			totalCount, _ := page["total_count"].(float64)
+			hasMore, _ := page["has_more"].(bool)
+			resp["comments_total_count"] = int(totalCount)
+			resp["comments_has_more"] = hasMore
+			if hasMore {
+				resp["comments_truncated"] = true
+				resp["comments_note"] = fmt.Sprintf(
+					"showing the last %d of %d comments; raise comments_limit (max %d) for more of the tail, or read the rest by paging list_comments(task_id, order=desc, page=N) — a thread longer than %d cannot be fetched in one call",
+					itemCount, int(totalCount), maxTaskCommentsLimit, maxTaskCommentsLimit)
+			}
 		}
 	}
 
 	if mcpsdk.ParseBoolean(request, "include_artifacts", false) {
 		page, err := s.getRESTClient(ctx).GetTaskArtifacts(ctx, resolvedID)
 		if err != nil {
-			return errResult("failed to list artifacts: %v", err)
-		}
-		var itemCount int
-		if items, ok := page["items"]; ok {
-			resp["artifacts"] = shapeArtifactList(items)
-			if arr, ok := items.([]any); ok {
-				itemCount = len(arr)
+			if !markPartialFailure(resp, "artifacts", err) {
+				return errResult("failed to list artifacts: %v", err)
 			}
 		} else {
-			resp["artifacts"] = []any{}
-		}
-		// Same envelope-stripping pattern as comments: artifacts already list
-		// newest-first by default, so the ordering half of the comments bug
-		// doesn't apply here, but a task with more artifacts than
-		// DefaultPageSize still silently lost the rest without this.
-		totalCount, _ := page["total_count"].(float64)
-		hasMore, _ := page["has_more"].(bool)
-		resp["artifacts_total_count"] = int(totalCount)
-		resp["artifacts_has_more"] = hasMore
-		if hasMore {
-			resp["artifacts_truncated"] = true
-			resp["artifacts_note"] = fmt.Sprintf(
-				"showing %d of %d artifacts; call list_artifacts(task_id, page_size=200) or page through /artifacts for the rest",
-				itemCount, int(totalCount))
+			var itemCount int
+			if items, ok := page["items"]; ok {
+				resp["artifacts"] = shapeArtifactList(items)
+				if arr, ok := items.([]any); ok {
+					itemCount = len(arr)
+				}
+			} else {
+				resp["artifacts"] = []any{}
+			}
+			// Same envelope-stripping pattern as comments: artifacts already list
+			// newest-first by default, so the ordering half of the comments bug
+			// doesn't apply here, but a task with more artifacts than
+			// DefaultPageSize still silently lost the rest without this.
+			totalCount, _ := page["total_count"].(float64)
+			hasMore, _ := page["has_more"].(bool)
+			resp["artifacts_total_count"] = int(totalCount)
+			resp["artifacts_has_more"] = hasMore
+			if hasMore {
+				resp["artifacts_truncated"] = true
+				resp["artifacts_note"] = fmt.Sprintf(
+					"showing %d of %d artifacts; call list_artifacts(task_id, page_size=200) or page through /artifacts for the rest",
+					itemCount, int(totalCount))
+			}
 		}
 	}
 
 	if mcpsdk.ParseBoolean(request, "include_dependencies", false) {
 		deps, err := s.getRESTClient(ctx).GetTaskDependencies(ctx, resolvedID)
 		if err != nil {
-			return errResult("failed to list dependencies: %v", err)
-		}
-		// dependencies = this task's own blockers (outgoing), matching the
-		// semantics callers historically got from the bare-array response.
-		resp["dependencies"] = deps.Outgoing
-		resp["dependencies_incoming"] = deps.Incoming
-		if !full {
-			resp["dependencies"] = compactDependencies(deps.Outgoing, false)
-			resp["dependencies_incoming"] = compactDependencies(deps.Incoming, true)
+			if !markPartialFailure(resp, "dependencies", err) {
+				return errResult("failed to list dependencies: %v", err)
+			}
+		} else {
+			// dependencies = this task's own blockers (outgoing), matching the
+			// semantics callers historically got from the bare-array response.
+			resp["dependencies"] = deps.Outgoing
+			resp["dependencies_incoming"] = deps.Incoming
+			if !full {
+				resp["dependencies"] = compactDependencies(deps.Outgoing, false)
+				resp["dependencies_incoming"] = compactDependencies(deps.Incoming, true)
+			}
 		}
 	}
 
 	if mcpsdk.ParseBoolean(request, "include_vcs_links", false) {
 		page, err := s.getRESTClient(ctx).GetTaskVCSLinks(ctx, resolvedID)
 		if err != nil {
-			return errResult("failed to list vcs links: %v", err)
-		}
-		// REST returns {"vcs_links": [...], "count": N} — no pagination
-		// envelope to strip (unlike comments/artifacts), the endpoint
-		// always returns the full set.
-		if links, ok := page["vcs_links"]; ok {
-			resp["vcs_links"] = links
+			if !markPartialFailure(resp, "vcs_links", err) {
+				return errResult("failed to list vcs links: %v", err)
+			}
 		} else {
-			resp["vcs_links"] = []any{}
+			// REST returns {"vcs_links": [...], "count": N} — no pagination
+			// envelope to strip (unlike comments/artifacts), the endpoint
+			// always returns the full set.
+			if links, ok := page["vcs_links"]; ok {
+				resp["vcs_links"] = links
+			} else {
+				resp["vcs_links"] = []any{}
+			}
 		}
 	}
 
@@ -4511,4 +4523,37 @@ func buildCanonicalMarkdown(entries []canonicalEntry, topic string) string {
 		sb.WriteString("\n\n---\n\n")
 	}
 	return sb.String()
+}
+
+// markPartialFailure records a failed optional part of a composite read instead
+// of discarding the parts that did succeed. Only a throttled (429) part is
+// treated this way: it is transient and retriable, and the caller can re-read
+// just that part. Any other failure keeps the old behaviour (the call errors).
+// The response is flagged incomplete so a missing part is never mistaken for an
+// empty one.
+func markPartialFailure(resp map[string]any, part string, err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Retry == nil {
+		return false
+	}
+	failed, _ := resp["incomplete_parts"].([]string)
+	resp["incomplete_parts"] = append(failed, part)
+	resp["incomplete"] = true
+	info := map[string]any{
+		"error":     "rate_limited",
+		"retriable": true,
+		"message":   apiErr.Error(),
+	}
+	if apiErr.Retry.RetryAfterValid {
+		info["retry_after_seconds"] = int(apiErr.Retry.RetryAfter.Round(time.Second).Seconds())
+		info["retry_at"] = apiErr.Retry.RetryAt.Format(time.RFC3339)
+	}
+	errs, _ := resp["part_errors"].(map[string]any)
+	if errs == nil {
+		errs = map[string]any{}
+		resp["part_errors"] = errs
+	}
+	errs[part] = info
+	resp["incomplete_note"] = "some requested parts were rate-limited and are missing from this response (see part_errors); re-request get_task for them — the parts present are complete"
+	return true
 }
