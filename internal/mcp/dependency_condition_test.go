@@ -93,6 +93,52 @@ func TestUpdateDependency_PatchesTheDirectionalEdge(t *testing.T) {
 		t.Errorf("an omitted condition must stay omitted: %v", bodies["patch"])
 	}
 
+	// Verified-evidence fields and the caller's own generation are forwarded as given.
+	req.Params.Arguments = map[string]any{
+		"task_id": blocked, "depends_on_task_id": blocker, "condition": "deployed", "criterion": "deployed to prod",
+		"evidence_url": "https://mesh.example/e", "evidence_criterion": "deployed to prod",
+		"head_sha": "0123456789abcdef0123456789abcdef01234567", "environment": "prod", "attest": false,
+		"expected_generation": float64(3),
+	}
+	res, err = server.handleUpdateDependency(context.Background(), req)
+	if err != nil || res.IsError {
+		t.Fatalf("update_dependency with evidence fields failed: %v %+v", err, res)
+	}
+	p := bodies["patch"]
+	if p["criterion"] != "deployed to prod" || p["evidence_criterion"] != "deployed to prod" || p["environment"] != "prod" ||
+		p["head_sha"] != "0123456789abcdef0123456789abcdef01234567" || p["expected_generation"] != float64(3) {
+		t.Errorf("evidence fields not forwarded: %v", p)
+	}
+	if v, ok := p["attest"]; !ok || v != false {
+		t.Errorf("an explicit attest=false must be forwarded as given: %v", p)
+	}
+	// An attestation and a criterion-only change are forwarded too.
+	req.Params.Arguments = map[string]any{
+		"task_id": blocked, "depends_on_task_id": blocker, "condition": "access_ready", "attest": true,
+		"evidence_url": "https://mesh.example/e", "evidence_criterion": "access_ready",
+	}
+	if res, _ = server.handleUpdateDependency(context.Background(), req); res.IsError {
+		t.Fatalf("attestation failed: %+v", res)
+	}
+	if bodies["patch"]["attest"] != true {
+		t.Errorf("attest=true not forwarded: %v", bodies["patch"])
+	}
+	req.Params.Arguments = map[string]any{"task_id": blocked, "depends_on_task_id": blocker, "criterion": "new words", "expected_generation": float64(4)}
+	if res, _ = server.handleUpdateDependency(context.Background(), req); res.IsError {
+		t.Fatalf("criterion-only update must be accepted: %+v", res)
+	}
+	if bodies["patch"]["criterion"] != "new words" || bodies["patch"]["expected_generation"] != float64(4) {
+		t.Errorf("criterion-only body wrong: %v", bodies["patch"])
+	}
+	// No generation is invented when the caller sent none.
+	req.Params.Arguments = map[string]any{"task_id": blocked, "depends_on_task_id": blocker, "condition": "deployed"}
+	if res, _ = server.handleUpdateDependency(context.Background(), req); res.IsError {
+		t.Fatalf("unexpected error: %+v", res)
+	}
+	if _, ok := bodies["patch"]["expected_generation"]; ok {
+		t.Errorf("expected_generation must not be filled in by the client: %v", bodies["patch"])
+	}
+
 	// Wrong direction: the blocker has no outgoing edge to the blocked card.
 	req.Params.Arguments = map[string]any{"task_id": blocked, "depends_on_task_id": uuid.NewString(), "condition": "deployed"}
 	res, _ = server.handleUpdateDependency(context.Background(), req)

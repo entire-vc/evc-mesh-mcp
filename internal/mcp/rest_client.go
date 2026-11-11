@@ -80,8 +80,23 @@ const http1HostsEnv = "MESH_MCP_HTTP1_HOSTS"
 type scopedTransport struct {
 	hosts map[string]struct{}
 	h1    http.RoundTripper
+	// h1Buf is the same HTTP/1.1 transport with a larger write buffer. It carries
+	// only bounded JSON bodies (see useCoalescedWrite) so request line, headers
+	// and body leave the process as one plaintext Write instead of 4096B + rest.
+	h1Buf http.RoundTripper
 	next  http.RoundTripper
 }
+
+const (
+	// h1WriteBufferSize replaces net/http's 4KB default on the coalescing transport.
+	h1WriteBufferSize = 64 << 10
+	// coalesceMaxBody bounds the body size routed through it; the remainder of
+	// the buffer is headroom for the request line and headers.
+	coalesceMaxBody = 32 << 10
+	// coalesceHeaderOverhead is a conservative allowance for headers net/http
+	// adds on its own (Host, User-Agent, Content-Length, Accept-Encoding, ...).
+	coalesceHeaderOverhead = 1 << 10
+)
 
 // newScopedTransport returns nil (the client then uses http.DefaultTransport,
 // exactly as before) when no host is listed.
@@ -95,7 +110,7 @@ func newScopedTransport(hostsCSV string) http.RoundTripper {
 	if len(hosts) == 0 {
 		return nil
 	}
-	return &scopedTransport{hosts: hosts, h1: newHTTP1Transport(), next: http.DefaultTransport}
+	return &scopedTransport{hosts: hosts, h1: newHTTP1Transport(), h1Buf: newHTTP1BufferedTransport(), next: http.DefaultTransport}
 }
 
 // newHTTP1Transport clones the default transport (proxy from environment,
@@ -113,8 +128,51 @@ func newHTTP1Transport() *http.Transport {
 	return t
 }
 
+// newHTTP1BufferedTransport is newHTTP1Transport with a 64KB write buffer.
+func newHTTP1BufferedTransport() *http.Transport {
+	t := newHTTP1Transport()
+	t.WriteBufferSize = h1WriteBufferSize
+	return t
+}
+
+// useCoalescedWrite reports whether req is a bounded JSON body with a known
+// length: POST/PUT/PATCH, application/json, 0 < ContentLength <= coalesceMaxBody.
+// Unknown length (-1), larger bodies, multipart uploads and other content types
+// keep the stock buffer, as does any request whose estimated serialized size
+// (body + request line + headers) would not fit the buffer, so stream and upload semantics are unchanged.
+func useCoalescedWrite(req *http.Request) bool {
+	switch req.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+	default:
+		return false
+	}
+	if req.ContentLength <= 0 || req.ContentLength > coalesceMaxBody {
+		return false
+	}
+	// The buffer also holds the request line and headers: bound the whole
+	// serialized request, not just the body. Overhead covers Host, User-Agent,
+	// Content-Length, Accept-Encoding and the CRLFs net/http adds itself.
+	if req.URL == nil {
+		return false
+	}
+	size := req.ContentLength + int64(len(req.Method)+len(req.URL.RequestURI())+len(req.Host)) + coalesceHeaderOverhead
+	for k, vs := range req.Header {
+		for _, v := range vs {
+			size += int64(len(k) + len(v) + 4)
+		}
+	}
+	if size > h1WriteBufferSize {
+		return false
+	}
+	ct := strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Type")))
+	return ct == "application/json" || strings.HasPrefix(ct, "application/json;")
+}
+
 func (s *scopedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if _, ok := s.hosts[strings.ToLower(req.URL.Hostname())]; ok {
+		if s.h1Buf != nil && useCoalescedWrite(req) {
+			return s.h1Buf.RoundTrip(req)
+		}
 		return s.h1.RoundTrip(req)
 	}
 	return s.next.RoundTrip(req)

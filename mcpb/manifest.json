@@ -66,7 +66,7 @@
     "profile": {
       "type": "string",
       "title": "Tool Profile",
-      "description": "core (34 tools, lower context overhead) or full (84 tools)",
+      "description": "core (35 tools, lower context overhead) or full (85 tools)",
       "required": false,
       "default": "core"
     }

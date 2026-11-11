@@ -25,7 +25,7 @@ import (
 
 // Profile constants for MCP server tool sets.
 const (
-	// ProfileCore registers only the 34 essential tools for lightweight agents.
+	// ProfileCore registers only the 35 essential tools for lightweight agents.
 	ProfileCore = "core"
 	// ProfileFull registers all tools (core + advanced). This is the default.
 	ProfileFull = "full"
@@ -147,7 +147,7 @@ type ServerConfig struct {
 	Session *AgentSession
 	// RESTClient is the HTTP client used to call the Mesh REST API.
 	RESTClient *RESTClient
-	// Profile controls which tools are registered: "core" (34 essential tools)
+	// Profile controls which tools are registered: "core" (35 essential tools)
 	// or "full" (all tools, default).
 	Profile string
 	// SetupHint, when non-empty, puts the server in unconfigured mode: it
@@ -250,7 +250,7 @@ func (s *Server) MCPServer() *mcpserver.MCPServer {
 	return s.mcpServer
 }
 
-// registerCoreTools registers the 34 essential tools with optimized, directive descriptions.
+// registerCoreTools registers the 35 essential tools with optimized, directive descriptions.
 func (s *Server) registerCoreTools() {
 	// --- ACP / Session tools ---
 	s.addTool(mcpsdk.NewTool("heartbeat",
@@ -723,11 +723,17 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("add_dependency", s.handleAddDependency))
 
 	s.addTool(mcpsdk.NewTool("update_dependency",
-		mcpsdk.WithDescription("Set the condition and/or evidence_url of an existing dependency edge (task_id depends on depends_on_task_id). Evidence on a non-task_done edge marks the condition met now and releases the dependent even though the blocker is not done; an empty evidence_url re-arms the edge."),
+		mcpsdk.WithDescription("Set the condition, criterion and/or evidence of an existing dependency edge (task_id depends on depends_on_task_id). Evidence releases the dependent only when Mesh can verify it: send evidence_criterion equal to the edge criterion (default: the condition name). shipped/deployed/accepted are checked against the blocker's own pr link: head_sha must be the link's current HEAD (and environment, e.g. prod, for deployed); evidence_url is only stored, never fetched. access_ready/contract_ready/artifact_published need attest=true from someone with access to the blocker. A bare evidence_url is kept as an unverified link and releases nothing. Changing condition or criterion needs expected_generation: the generation you read from the edge (get_task dependencies) — missing is refused, stale is a 409. An empty evidence_url re-arms the edge."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("The blocked task (the one that has the dependency).")),
 		mcpsdk.WithString("depends_on_task_id", mcpsdk.Required(), mcpsdk.Description("The blocker the edge points at.")),
 		mcpsdk.WithString("condition", mcpsdk.Enum(dependencyConditions...), mcpsdk.Description(dependencyConditionHelp)),
-		mcpsdk.WithString("evidence_url", mcpsdk.Description("Proof the condition holds; empty string clears it.")),
+		mcpsdk.WithString("criterion", mcpsdk.Description("What this edge waits for, in words (default: the condition name). Evidence must name it. Changing it needs expected_generation.")),
+		mcpsdk.WithString("evidence_url", mcpsdk.Description("Reference to the proof; stored, never fetched. Empty string clears the evidence.")),
+		mcpsdk.WithString("evidence_criterion", mcpsdk.Description("The criterion the evidence is for; must equal the edge criterion or the evidence stays unverified/invalid.")),
+		mcpsdk.WithString("head_sha", mcpsdk.Description("shipped/deployed/accepted: the blocker pr link's current HEAD the receipt covers.")),
+		mcpsdk.WithString("environment", mcpsdk.Description("deployed: the environment of the deploy receipt, e.g. prod.")),
+		mcpsdk.WithBoolean("attest", mcpsdk.Description("access_ready/contract_ready/artifact_published: explicit attestation by you that the criterion holds.")),
+		mcpsdk.WithNumber("expected_generation", mcpsdk.Description("The edge generation you saw. Required to change condition or criterion; if sent with evidence a stale value is rejected (409).")),
 	), s.tracked("update_dependency", s.handleUpdateDependency))
 
 	s.addTool(mcpsdk.NewTool("remove_dependency",
@@ -742,7 +748,7 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("link_id", mcpsdk.Required(), mcpsdk.Description("VCS link ID.")),
 		mcpsdk.WithString("sha", mcpsdk.Required(), mcpsdk.Description("The deployed commit, 40 lowercase hex.")),
-		mcpsdk.WithString("env", mcpsdk.Required(), mcpsdk.Description("Environment, 1-32 chars of a-z, 0-9, _ or -, e.g. production.")),
+		mcpsdk.WithString("env", mcpsdk.Required(), mcpsdk.Description("Environment, 1-32 chars of a-z, 0-9, _ or -, e.g. prod. Only prod releases a `deployed` edge by itself; other environments need verified evidence.")),
 	), s.tracked("mark_vcs_deployed", s.handleMarkVCSDeployed))
 
 	// --- Atomic Task Checkout ---
@@ -769,7 +775,7 @@ func (s *Server) registerAdvancedTools() {
 	// with its own marker dictionary — which is how a driver came to read its own
 	// instructional boilerplate back as a raised blocker.
 	s.addTool(mcpsdk.NewTool("set_human_gate",
-		mcpsdk.WithDescription("Arm the human gate on a task: freeze it and record WHO is waiting, WHAT was asked, and WHAT you will do if nobody answers. A question to a person is asked only this way: there is no separate ask_human, and a wait on an agent is ask_agent. Records the whole ask on the task (who is waiting, what was asked, the default), so nothing has to re-read the thread; the '❓ Blocking @<person>' comment marker is still recognised. recommended_default is REQUIRED: a gate with no stated default can only ever be resolved by finding a human. The call takes four answers (credential_exists / reversible / blocked_by_other_task / customer_visible_now), each with one line of justification. The server refuses the arm when the answers show nobody needs to be asked: the credential is held, the action is reversible, and nothing a customer sees or pays changes right now."),
+		mcpsdk.WithDescription("Arm the human gate on a task: freeze it and record WHO is waiting, WHAT was asked, and WHAT you will do if nobody answers. To end your turn on a question to a person, use ask_human: it posts the question, arms this gate and records your wait in one step; this tool arms a gate without ending your turn. A wait on an agent is ask_agent. Records the whole ask on the task (who is waiting, what was asked, the default), so nothing has to re-read the thread; the '❓ Blocking @<person>' comment marker is still recognised. recommended_default is REQUIRED: a gate with no stated default can only ever be resolved by finding a human. The call takes four answers (credential_exists / reversible / blocked_by_other_task / customer_visible_now), each with one line of justification. The server refuses the arm when the answers show nobody needs to be asked: the credential is held, the action is reversible, and nothing a customer sees or pays changes right now."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID to gate.")),
 		mcpsdk.WithString("reason", mcpsdk.Required(), mcpsdk.Description("The question itself, in your own words.")),
 		mcpsdk.WithString("recommended_default", mcpsdk.Required(), mcpsdk.Description("What you will do if nobody answers. Required — an ask with no default cannot time out.")),

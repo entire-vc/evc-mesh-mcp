@@ -81,6 +81,17 @@ func turnCommandCases() []turnCommandCase {
 			refusal: "not_an_agent",
 		},
 		{
+			tool: "ask_human", handler: func(s *Server) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+				return s.handleAskHuman
+			},
+			args: map[string]any{"task_id": task, "to": "@alex", "question": "Ship today?", "recommended_default": "ship Monday",
+				"deadline": "2026-11-12T09:00:00+03:00", "soft": true, "supersedes": "the date", "turn_id": "t-4"},
+			route: "POST /api/v1/tasks/" + task + "/ask-human",
+			body: map[string]any{"to": "alex", "question": "Ship today?", "recommended_default": "ship Monday",
+				"supersedes": "the date", "deadline": "2026-11-12T09:00:00+03:00", "soft": true, "turn_id": "t-4"},
+			refusal: "gate_addressee_not_human",
+		},
+		{
 			tool: "answer_decision", handler: func(s *Server) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 				return s.handleAnswerDecision
 			},
@@ -353,7 +364,7 @@ func TestTurnOutcomeCommands_ReleasedDropsCachedCheckout(t *testing.T) {
 
 func TestTurnOutcomeTools_RegisteredInCoreProfile(t *testing.T) {
 	tools := NewServer(ServerConfig{Profile: ProfileCore}).MCPServer().ListTools()
-	for _, name := range []string{"wait_for", "continue_next", "ask_agent", "answer_decision", "finish_task", "hand_off", "add_note"} {
+	for _, name := range []string{"wait_for", "continue_next", "ask_agent", "ask_human", "answer_decision", "finish_task", "hand_off", "add_note"} {
 		st, ok := tools[name]
 		if !ok {
 			t.Errorf("%s is not registered in the core profile", name)
@@ -364,8 +375,13 @@ func TestTurnOutcomeTools_RegisteredInCoreProfile(t *testing.T) {
 		}
 	}
 	full := NewServer(ServerConfig{Profile: ProfileFull}).MCPServer().ListTools()
-	if !strings.Contains(full["set_human_gate"].Tool.Description, "only this way") {
-		t.Error("set_human_gate must say it is the only way to ask a person")
+	if !strings.Contains(full["set_human_gate"].Tool.Description, "use ask_human") {
+		t.Error("set_human_gate must point a turn-ending question to a person at ask_human")
+	}
+	for _, name := range []string{"wait_for", "ask_agent"} {
+		if desc := tools[name].Tool.Description; strings.Contains(desc, "set_human_gate") || !strings.Contains(desc, "ask_human") {
+			t.Errorf("%s must point a person's question at ask_human: %s", name, desc)
+		}
 	}
 }
 
@@ -387,4 +403,83 @@ func isRequired(tool mcpsdk.Tool, key string) bool {
 		}
 	}
 	return false
+}
+
+// The marker grammar's merge, registered and baseline forms reach the server
+// as typed fields, numbers as numbers; the server validates them.
+func TestWaitFor_TypedKindsSendTheirFields(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	cases := map[string]struct {
+		args map[string]any
+		body map[string]any
+	}{
+		"merge": {
+			map[string]any{"on": "merge", "project_path": "g/p", "mr_iid": float64(12), "after_sha": sha},
+			map[string]any{"on": "merge", "project_path": "g/p", "mr_iid": float64(12), "after_sha": sha},
+		},
+		"registered": {
+			map[string]any{"on": "registered", "registration": "gmail", "registration_ref": "gmr_0123456789ab", "note": "reply"},
+			map[string]any{"on": "registered", "registration": "gmail", "registration_ref": "gmr_0123456789ab", "note": "reply"},
+		},
+		"mr with a CI baseline": {
+			map[string]any{"on": "mr", "provider": "gitlab", "project_path": "g/p", "mr_iid": float64(12), "until": "changed",
+				"after_sha": sha, "after_pipeline_id": float64(7001), "after_status": "failed", "required_jobs": []any{"test"}},
+			map[string]any{"on": "mr", "provider": "gitlab", "project_path": "g/p", "mr_iid": float64(12), "until": "changed",
+				"after_sha": sha, "after_pipeline_id": float64(7001), "after_status": "failed", "required_jobs": []any{"test"}},
+		},
+		"GitHub Actions run": {
+			map[string]any{"on": "pipeline", "provider": "github", "project_path": "org/repo", "pipeline_id": float64(42), "until": "green"},
+			map[string]any{"on": "pipeline", "provider": "github", "project_path": "org/repo", "pipeline_id": float64(42), "until": "green"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			server, calls := turnOutcomeServer(t, http.StatusCreated, map[string]any{"released": true})
+			task := uuid.NewString()
+			tc.args["task_id"] = task
+			res := callOutcome(server.handleWaitFor, tc.args)
+			if res.IsError || len(*calls) != 1 {
+				t.Fatalf("%s: %s, %d requests", name, resultText(t, res), len(*calls))
+			}
+			got, _ := json.Marshal((*calls)[0].body)
+			want, _ := json.Marshal(tc.body)
+			if string(got) != string(want) {
+				t.Errorf("body = %s, want %s", got, want)
+			}
+			if (*calls)[0].route != "POST /api/v1/tasks/"+task+"/wait" {
+				t.Errorf("route = %s", (*calls)[0].route)
+			}
+		})
+	}
+	server, calls := turnOutcomeServer(t, http.StatusOK, map[string]any{})
+	res := callOutcome(server.handleWaitFor, map[string]any{"task_id": uuid.NewString(), "on": "human"})
+	if !res.IsError || !strings.Contains(resultText(t, res), "ask_human") {
+		t.Errorf("wait_for on a person must point to ask_human: %s", resultText(t, res))
+	}
+	if len(*calls) != 0 {
+		t.Errorf("a locally refused kind must not reach the API: %v", *calls)
+	}
+}
+
+func TestAskHuman_RefusesBadDeadlineBeforeAnyRequest(t *testing.T) {
+	server, calls := turnOutcomeServer(t, http.StatusOK, map[string]any{})
+	for _, d := range []string{"tomorrow", "2026-11-12T09:00:00", "6h"} {
+		res := callOutcome(server.handleAskHuman, map[string]any{"task_id": uuid.NewString(), "to": "alex", "question": "q?", "deadline": d})
+		if !res.IsError || !strings.Contains(resultText(t, res), "RFC3339") {
+			t.Errorf("deadline %q: %s", d, resultText(t, res))
+		}
+	}
+	if len(*calls) != 0 {
+		t.Errorf("a bad deadline must not reach the API: %v", *calls)
+	}
+	// soft=false and blank optional fields are not sent.
+	server, calls = turnOutcomeServer(t, http.StatusCreated, map[string]any{"released": true})
+	callOutcome(server.handleAskHuman, map[string]any{"task_id": uuid.NewString(), "to": "alex", "question": "q?", "soft": false, "supersedes": "  "})
+	if len(*calls) != 1 {
+		t.Fatalf("want one request, got %d", len(*calls))
+	}
+	got, _ := json.Marshal((*calls)[0].body)
+	if string(got) != `{"question":"q?","to":"alex"}` {
+		t.Errorf("body = %s", got)
+	}
 }
