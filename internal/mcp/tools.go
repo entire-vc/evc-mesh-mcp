@@ -468,6 +468,9 @@ func taskDeltaStub(task map[string]any) map[string]any {
 // the previous default (the server's 50, whole) put ~100KB into a lane's
 // context on the worst cards. The tail is where an acting agent looks first;
 // comments_total_count/comments_has_more keep the hidden rest visible.
+// moveSourceMCP is the producer this server declares on POST /tasks/:id/move.
+const moveSourceMCP = "mcp"
+
 const defaultTaskCommentsLimit = 5
 
 // leanGetTaskView removes envelope fields, preserving all decision text.
@@ -818,8 +821,12 @@ func (s *Server) handleMoveTask(ctx context.Context, request mcpsdk.CallToolRequ
 		return errResult("invalid task_id: %v", err)
 	}
 
+	// source names the producer in the server's activity_log; without it every
+	// MCP move is recorded as a plain "api" call, indistinguishable from the
+	// Runner or a script under the same agent key.
 	moveBody := map[string]any{
 		"status_id": stID,
+		"source":    moveSourceMCP,
 	}
 	// Optional explicit assignee — overrides auto-reassign on review.
 	if assigneeID := mcpsdk.ParseString(request, "assignee_id", ""); assigneeID != "" {
@@ -1006,8 +1013,25 @@ func (s *Server) handleUpdateDependency(ctx context.Context, request mcpsdk.Call
 	if _, ok := request.GetArguments()["evidence_url"]; ok {
 		body["evidence_url"] = mcpsdk.ParseString(request, "evidence_url", "")
 	}
-	if len(body) == 0 {
-		return errResult("condition or evidence_url is required")
+	for _, k := range []string{"criterion", "evidence_criterion", "head_sha", "environment"} {
+		if _, ok := request.GetArguments()[k]; ok {
+			body[k] = mcpsdk.ParseString(request, k, "")
+		}
+	}
+	if _, ok := request.GetArguments()["attest"]; ok {
+		body["attest"] = mcpsdk.ParseBoolean(request, "attest", false)
+	}
+	// The generation is the caller's own observation: it is forwarded as given and
+	// never filled in here, so the server can tell a stale writer from a current one.
+	if _, ok := request.GetArguments()["expected_generation"]; ok {
+		body["expected_generation"] = int64(mcpsdk.ParseFloat64(request, "expected_generation", 0))
+	}
+	if _, hasCond := body["condition"]; !hasCond {
+		if _, hasURL := body["evidence_url"]; !hasURL {
+			if _, hasCrit := body["criterion"]; !hasCrit {
+				return errResult("condition, criterion or evidence_url is required")
+			}
+		}
 	}
 
 	client := s.getRESTClient(ctx)

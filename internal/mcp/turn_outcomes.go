@@ -13,7 +13,7 @@ import (
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
 
-// Typed turn outcomes: the seven commands an agent ends its turn with, instead
+// Typed turn outcomes: the commands an agent ends its turn with, instead
 // of a marker line in a comment. Contract: docs/api/typed-outcomes.md in
 // evc-mesh. The server validates the target, writes the state, the comment and
 // the release in one transaction, so these tools stay thin: they shape the
@@ -23,8 +23,8 @@ import (
 // refusal and a retry of a success is a second outcome.
 
 // waitKinds are the values of wait_for.on. A wait on a person is
-// set_human_gate, a wait on another agent is ask_agent.
-var waitKinds = map[string]bool{"card": true, "mr": true, "pipeline": true, "time": true}
+// ask_human, a wait on another agent is ask_agent.
+var waitKinds = map[string]bool{"card": true, "mr": true, "pipeline": true, "time": true, "merge": true, "registered": true}
 
 // resultKinds are the values of finish_task.result_kind (tasks.result_kind).
 var resultKinds = []string{"change", "defect", "research", "content", "ops"}
@@ -37,18 +37,23 @@ func (s *Server) registerTurnOutcomeTools() {
 	with := func(opts ...mcpsdk.ToolOption) []mcpsdk.ToolOption { return append(opts, sessionParams...) }
 
 	s.addTool(mcpsdk.NewTool("wait_for", with(
-		mcpsdk.WithDescription("End your turn waiting on an event: another card (on=card), a merge request (on=mr), a CI pipeline (on=pipeline) or the published moment of an external event (on=time, with event_ref, source and why). The server checks the target exists and is not already in the awaited state, records the wait (replacing your previous one on this card), writes the comment and releases your checkout; you are woken when the event happens. A refusal writes nothing. Waiting on another agent's answer is ask_agent; waiting on a person is set_human_gate."),
+		mcpsdk.WithDescription("End your turn waiting on an event: another card (on=card), a merge request (on=mr), a CI pipeline or GitHub Actions run (on=pipeline), the runner's merge gate on a reviewed head (on=merge), a runner registration (on=registered) or the published moment of an external event (on=time, with event_ref, source and why). The server checks the target, records the wait (replacing your previous one on this card), writes the comment and releases your checkout; you are woken when the event happens. A refusal writes nothing. Waiting on another agent's answer is ask_agent; on a person, ask_human."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("The card you are working on (UUID or 6-12 hex short id).")),
-		mcpsdk.WithString("on", mcpsdk.Required(), mcpsdk.Description("What you wait on: card, mr, pipeline or time. Only the fields of that kind are read.")),
+		mcpsdk.WithString("on", mcpsdk.Required(), mcpsdk.Description("What you wait on: card, mr, pipeline, time, merge or registered. Only the fields of that kind are read; after_* and registration* on a kind that does not take them are refused.")),
 		mcpsdk.WithString("target_task_id", mcpsdk.Description("on=card: the card you wait on. Creates or reuses a blocks dependency on it.")),
 		mcpsdk.WithString("target_condition", mcpsdk.Description("on=card: what the card must reach: task_done (default), shipped, deployed or accepted.")),
 		mcpsdk.WithString("vcs_link_id", mcpsdk.Description("on=mr: id of a VCS link of this card. Alternative to provider + project_path + mr_iid.")),
-		mcpsdk.WithString("provider", mcpsdk.Description("on=mr: VCS provider of the merge request, e.g. gitlab.")),
-		mcpsdk.WithString("project_path", mcpsdk.Description("on=mr or on=pipeline: project path, e.g. entire-vc/evc-mesh.")),
-		mcpsdk.WithNumber("mr_iid", mcpsdk.Description("on=mr: merge request iid within project_path (not the global id).")),
+		mcpsdk.WithString("provider", mcpsdk.Description("on=mr: gitlab or github. on=pipeline: gitlab (default) or github for an Actions run (project_path owner/repo, pipeline_id the run id). on=merge: gitlab only.")),
+		mcpsdk.WithString("project_path", mcpsdk.Description("on=mr, pipeline or merge: project path, e.g. entire-vc/evc-mesh.")),
+		mcpsdk.WithNumber("mr_iid", mcpsdk.Description("on=mr or merge: merge request iid within project_path (not the global id).")),
 		mcpsdk.WithNumber("pipeline_id", mcpsdk.Description("on=pipeline: the pipeline id to wait on.")),
-		mcpsdk.WithArray("required_jobs", mcpsdk.Description("on=pipeline: job names that must pass; omit for the whole pipeline."), mcpsdk.WithStringItems()),
-		mcpsdk.WithString("until", mcpsdk.Description("on=mr: merged, green or changed. on=pipeline: finished or green.")),
+		mcpsdk.WithArray("required_jobs", mcpsdk.Description("on=pipeline, or on=mr with until green or changed: job names to read the wait from; omit for the whole pipeline."), mcpsdk.WithStringItems()),
+		mcpsdk.WithString("until", mcpsdk.Description("on=mr: merged, green or changed. on=pipeline: finished, green or changed.")),
+		mcpsdk.WithString("after_sha", mcpsdk.Description("on=merge, required: full 40 or 64 hex SHA of the reviewed head. on=mr or pipeline, optional baseline: the head SHA you observed.")),
+		mcpsdk.WithNumber("after_pipeline_id", mcpsdk.Description("Baseline of until=green or changed: the pipeline id you observed (on=pipeline: equal to pipeline_id). Send with after_sha and after_status.")),
+		mcpsdk.WithString("after_status", mcpsdk.Description("Baseline status: opened for until=merged; for until=green or changed the pipeline status you observed (running, failed, success, manual, ...).")),
+		mcpsdk.WithString("registration", mcpsdk.Description("on=registered: ops-review, gmail, receipt, lifecycle, stall, recovery, queue or native.")),
+		mcpsdk.WithString("registration_ref", mcpsdk.Description("on=registered: ops-review or native: the 64-hex id; gmail: gmr_<12 hex>; receipt, lifecycle, stall, recovery, queue: this card's 8-hex id (may be omitted).")),
 		mcpsdk.WithString("until_at", mcpsdk.Description("on=time: when the external event happens, RFC3339 with Z or an offset (2026-10-29T06:00:00Z, 2026-10-29T09:00:00+03:00), 5 minutes to 30 days from now. Not a retry or poll interval: a wait on a card, MR or pipeline waits on that event.")),
 		mcpsdk.WithString("event_ref", mcpsdk.Description("on=time, required: the external event the moment belongs to, e.g. nightly-export (max 500 chars).")),
 		mcpsdk.WithString("source", mcpsdk.Description("on=time, required: where the event's time is published: an https:// URL, comment:<uuid> or artifact:<uuid> written by someone else. A card is not a source.")),
@@ -63,11 +68,23 @@ func (s *Server) registerTurnOutcomeTools() {
 	)...), s.tracked("continue_next", s.handleContinueNext))
 
 	s.addTool(mcpsdk.NewTool("ask_agent", with(
-		mcpsdk.WithDescription("End your turn with a question only another agent can answer: opens a decision request to that agent (or returns your identical open one), records a wait on it, writes the comment and releases your checkout; you are woken when they answer. The addressee must be an agent of the team directory, not a person (set_human_gate) and not yourself. Work another agent must do is hand_off, not a question."),
+		mcpsdk.WithDescription("End your turn with a question only another agent can answer: opens a decision request to that agent (or returns your identical open one), records a wait on it, writes the comment and releases your checkout; you are woken when they answer. The addressee must be an agent of the team directory, not a person (ask_human) and not yourself. Work another agent must do is hand_off, not a question."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("The card the question is about (UUID or 6-12 hex short id).")),
 		mcpsdk.WithString("to", mcpsdk.Required(), mcpsdk.Description("Agent name or UUID from get_team_directory; an @-handle prefix is not needed.")),
 		mcpsdk.WithString("question", mcpsdk.Required(), mcpsdk.Description("The question with the options you see, max 4000 chars.")),
 	)...), s.tracked("ask_agent", s.handleAskAgent))
+
+	s.addTool(mcpsdk.NewTool("ask_human", with(
+		mcpsdk.WithDescription("End your turn with a question only a person can answer: posts it as a Blocking question to that person, which arms the card's human gate and notifies them, records your wait on the answer and releases your checkout; you are woken when the gate is lifted. Refused, with nothing posted, when to is not a person of the workspace or the previous question already has an answer (name what is new in supersedes). A question to an agent is ask_agent."),
+		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("The card the question is about (UUID or 6-12 hex short id).")),
+		mcpsdk.WithString("to", mcpsdk.Required(), mcpsdk.Description("The person's username, e.g. alex; an @ prefix is not needed.")),
+		mcpsdk.WithString("question", mcpsdk.Required(), mcpsdk.Description("The question with the options you see, max 2000 chars.")),
+		mcpsdk.WithString("recommended_default", mcpsdk.Description("What you will do if nobody answers by the deadline; one line, max 500 chars.")),
+		mcpsdk.WithString("deadline", mcpsdk.Description("When the default applies: RFC3339 with Z or an offset, in the future.")),
+		mcpsdk.WithBoolean("soft", mcpsdk.Description("true: the gate may be released by the default-on-timeout sweep. Default false (hard).")),
+		mcpsdk.WithString("canonical_key", mcpsdk.Description("Names the question; an existing recorded decision under the same key refuses the ask.")),
+		mcpsdk.WithString("supersedes", mcpsdk.Description("What the previous, already answered, question did not cover; one line.")),
+	)...), s.tracked("ask_human", s.handleAskHuman))
 
 	s.addTool(mcpsdk.NewTool("answer_decision",
 		mcpsdk.WithDescription("Answer a decision request another agent addressed to you: writes the answer as a comment on the asking card, marks the request answered and wakes the asker. Only the addressee or a person may answer; an answered or withdrawn request is refused with 409. Does not touch your own card or checkout."),
@@ -92,7 +109,7 @@ func (s *Server) registerTurnOutcomeTools() {
 	)...), s.tracked("hand_off", s.handleHandOff))
 
 	s.addTool(mcpsdk.NewTool("add_note", with(
-		mcpsdk.WithDescription("Write a note on a card that wakes nobody: no mention or handoff delivery, no outcome, the checkout untouched. For progress logs and findings that need no action; a note does not end your turn — finish it with wait_for, continue_next, ask_agent, finish_task or hand_off."),
+		mcpsdk.WithDescription("Write a note on a card that wakes nobody: no mention or handoff delivery, no outcome, the checkout untouched. For progress logs and findings that need no action; a note does not end your turn — finish it with wait_for, continue_next, ask_agent, ask_human, finish_task or hand_off."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("The card to write the note on (UUID or 6-12 hex short id).")),
 		mcpsdk.WithString("text", mcpsdk.Required(), mcpsdk.Description("Note body in markdown.")),
 	)...), s.tracked("add_note", s.handleAddNote))
@@ -172,15 +189,16 @@ func (s *Server) handleWaitFor(ctx context.Context, request mcpsdk.CallToolReque
 	}
 	taskID, on := req[0], req[1]
 	if !waitKinds[on] {
-		return errResult("on must be card, mr, pipeline or time (got %q); a question to an agent is ask_agent, to a person set_human_gate", on)
+		return errResult("on must be card, mr, pipeline, time, merge or registered (got %q); a question to an agent is ask_agent, to a person ask_human", on)
 	}
 	body := map[string]any{"on": on}
-	for _, k := range []string{"target_task_id", "target_condition", "vcs_link_id", "provider", "project_path", "until", "note", "event_ref", "source", "why"} {
+	for _, k := range []string{"target_task_id", "target_condition", "vcs_link_id", "provider", "project_path", "until", "note", "event_ref", "source", "why",
+		"after_sha", "after_status", "registration", "registration_ref"} {
 		if v := strings.TrimSpace(mcpsdk.ParseString(request, k, "")); v != "" {
 			body[k] = v
 		}
 	}
-	for _, k := range []string{"mr_iid", "pipeline_id"} {
+	for _, k := range []string{"mr_iid", "pipeline_id", "after_pipeline_id"} {
 		if hasArgument(request, k) {
 			body[k] = mcpsdk.ParseInt64(request, k, 0)
 		}
@@ -263,6 +281,29 @@ func (s *Server) handleAskAgent(ctx context.Context, request mcpsdk.CallToolRequ
 	}
 	body := map[string]any{"to": strings.TrimPrefix(req[1], "@"), "question": req[2]}
 	return s.runTaskCommand(ctx, "ask_agent", req[0], "/decision-requests", sessionFields(request, body))
+}
+
+func (s *Server) handleAskHuman(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	req, refusal := requiredStrings(request, "task_id", "to", "question")
+	if refusal != "" {
+		return errResult("%s", refusal)
+	}
+	body := map[string]any{"to": strings.TrimPrefix(req[1], "@"), "question": req[2]}
+	for _, k := range []string{"recommended_default", "canonical_key", "supersedes"} {
+		if v := strings.TrimSpace(mcpsdk.ParseString(request, k, "")); v != "" {
+			body[k] = v
+		}
+	}
+	if raw := strings.TrimSpace(mcpsdk.ParseString(request, "deadline", "")); raw != "" {
+		if _, err := time.Parse(time.RFC3339, raw); err != nil {
+			return errResult("deadline %q is not RFC3339 with Z or an offset (e.g. 2026-11-12T09:00:00Z): %v", raw, err)
+		}
+		body["deadline"] = raw
+	}
+	if mcpsdk.ParseBoolean(request, "soft", false) {
+		body["soft"] = true
+	}
+	return s.runTaskCommand(ctx, "ask_human", req[0], "/ask-human", sessionFields(request, body))
 }
 
 func (s *Server) handleAnswerDecision(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {

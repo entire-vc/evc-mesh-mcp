@@ -37,6 +37,7 @@ func trustTestCert(t *testing.T, rt http.RoundTripper) {
 	}
 	h1 := st.h1.(*http.Transport)
 	h1.TLSClientConfig.InsecureSkipVerify = true
+	st.h1Buf.(*http.Transport).TLSClientConfig.InsecureSkipVerify = true
 	next := http.DefaultTransport.(*http.Transport).Clone()
 	next.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	st.next = next

@@ -88,6 +88,7 @@ var toolKinds = map[string]toolKind{
 	"answer_decision":       kindAdditive,
 	"add_note":              kindAdditive,
 	"ask_agent":             kindAdditive,
+	"ask_human":             kindAdditive,
 	"heartbeat":             kindAdditiveIdempotent,
 	"extend_checkout":       kindAdditiveIdempotent,
 	"checkout_task":         kindAdditiveIdempotent,
