@@ -158,8 +158,8 @@ func getTaskShortIDHarness(t *testing.T, fx shortIDFixture, resolve func(short s
 			_ = json.NewEncoder(w).Encode(contextPayload)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/tasks/"+fx.shortID+"/context":
 			// Faithful to the live backend: the context route parses the path
-			// id as a strict UUID too (live red 02.10 on #e143d391:
-			// get_task_context('06d0c6d8') → "Bad Request: invalid task_id").
+			// id as a strict UUID too (live red 02.10:
+			// get_task_context('<short id>') → "Bad Request: invalid task_id").
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 400, "message": "invalid task_id"})
 		case fx.scheduleID != "" && r.Method == http.MethodGet && r.URL.Path == "/api/v1/recurring/"+fx.scheduleID+"/history":

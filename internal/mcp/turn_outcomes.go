@@ -24,7 +24,7 @@ import (
 
 // waitKinds are the values of wait_for.on. A wait on a person is
 // ask_human, a wait on another agent is ask_agent.
-var waitKinds = map[string]bool{"card": true, "mr": true, "pipeline": true, "time": true, "merge": true, "registered": true}
+var waitKinds = map[string]bool{"card": true, "mr": true, "pipeline": true, "time": true, "merge": true, "registered": true, "manual": true}
 
 // resultKinds are the values of finish_task.result_kind (tasks.result_kind).
 var resultKinds = []string{"change", "defect", "research", "content", "ops"}
@@ -37,13 +37,13 @@ func (s *Server) registerTurnOutcomeTools() {
 	with := func(opts ...mcpsdk.ToolOption) []mcpsdk.ToolOption { return append(opts, sessionParams...) }
 
 	s.addTool(mcpsdk.NewTool("wait_for", with(
-		mcpsdk.WithDescription("End your turn waiting on an event: another card (on=card), a merge request (on=mr), a CI pipeline or GitHub Actions run (on=pipeline), the runner's merge gate on a reviewed head (on=merge), a runner registration (on=registered) or the published moment of an external event (on=time, with event_ref, source and why). The server checks the target, records the wait (replacing your previous one on this card), writes the comment and releases your checkout; you are woken when the event happens. A refusal writes nothing. Waiting on another agent's answer is ask_agent; on a person, ask_human."),
+		mcpsdk.WithDescription("End your turn waiting on an event: another card (on=card), a merge request (on=mr), a CI pipeline or GitHub Actions run (on=pipeline), the runner's merge gate on a reviewed head (on=merge), a runner registration (on=registered), the published moment of an external event (on=time, with event_ref, source and why) or, only on a card a lead labelled wake:manual, a passive wait with no observer and no timer that a new comment or the lead's action ends (on=manual, with note saying why). A GitHub PR merge is on=mr provider=github until=merged (project_path owner/repo, mr_iid the PR number, after_sha the head, after_status opened); on=merge is GitLab only. The server checks the target, records the wait (replacing your previous one on this card), writes the comment and releases your checkout; you are woken when the event happens. A refusal writes nothing. Waiting on another agent's answer is ask_agent; on a person, ask_human."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("The card you are working on (UUID or 6-12 hex short id).")),
-		mcpsdk.WithString("on", mcpsdk.Required(), mcpsdk.Description("What you wait on: card, mr, pipeline, time, merge or registered. Only the fields of that kind are read; after_* and registration* on a kind that does not take them are refused.")),
-		mcpsdk.WithString("target_task_id", mcpsdk.Description("on=card: the card you wait on. Creates or reuses a blocks dependency on it.")),
+		mcpsdk.WithString("on", mcpsdk.Required(), mcpsdk.Description("What you wait on: card, mr, pipeline, time, merge, registered or manual. Only the fields of that kind are read; after_* and registration* on a kind that does not take them are refused.")),
+		mcpsdk.WithString("target_task_id", mcpsdk.Description("on=card: the card you wait on. Creates or reuses a blocks dependency on it. on=manual: optional, must be this card itself.")),
 		mcpsdk.WithString("target_condition", mcpsdk.Description("on=card: what the card must reach: task_done (default), shipped, deployed or accepted.")),
 		mcpsdk.WithString("vcs_link_id", mcpsdk.Description("on=mr: id of a VCS link of this card. Alternative to provider + project_path + mr_iid.")),
-		mcpsdk.WithString("provider", mcpsdk.Description("on=mr: gitlab or github. on=pipeline: gitlab (default) or github for an Actions run (project_path owner/repo, pipeline_id the run id). on=merge: gitlab only.")),
+		mcpsdk.WithString("provider", mcpsdk.Description("on=mr: gitlab or github. on=pipeline: gitlab (default) or github for an Actions run (project_path owner/repo, pipeline_id the run id). on=merge: gitlab only; a GitHub PR merge is on=mr provider=github until=merged.")),
 		mcpsdk.WithString("project_path", mcpsdk.Description("on=mr, pipeline or merge: project path, e.g. entire-vc/evc-mesh.")),
 		mcpsdk.WithNumber("mr_iid", mcpsdk.Description("on=mr or merge: merge request iid within project_path (not the global id).")),
 		mcpsdk.WithNumber("pipeline_id", mcpsdk.Description("on=pipeline: the pipeline id to wait on.")),
@@ -58,7 +58,7 @@ func (s *Server) registerTurnOutcomeTools() {
 		mcpsdk.WithString("event_ref", mcpsdk.Description("on=time, required: the external event the moment belongs to, e.g. nightly-export (max 500 chars).")),
 		mcpsdk.WithString("source", mcpsdk.Description("on=time, required: where the event's time is published: an https:// URL, comment:<uuid> or artifact:<uuid> written by someone else. A card is not a source.")),
 		mcpsdk.WithString("why", mcpsdk.Description("on=time, required: what happens at until_at and why not earlier, 10 to 500 chars.")),
-		mcpsdk.WithString("note", mcpsdk.Description("Why you wait and what ends the wait, max 500 chars; shown in the generated comment.")),
+		mcpsdk.WithString("note", mcpsdk.Description("Why you wait and what ends the wait; the generated comment shows it whole, the wait itself keeps its first 500 characters. Required for on=manual.")),
 	)...), s.tracked("wait_for", s.handleWaitFor))
 
 	s.addTool(mcpsdk.NewTool("continue_next", with(
@@ -118,11 +118,19 @@ func (s *Server) registerTurnOutcomeTools() {
 // turnCommand posts one typed-outcome command and returns the server's
 // envelope. Exactly one request: no retry on any status.
 func (c *RESTClient) turnCommand(ctx context.Context, path string, body map[string]any) (map[string]any, error) {
+	return c.turnCommandKeyed(ctx, path, body, "")
+}
+
+// turnCommandKeyed is turnCommand with an Idempotency-Key: one request unless
+// the key makes a repeat safe (idempotency.go). Only finish_task sends one;
+// the server accepts the header on /finish only.
+func (c *RESTClient) turnCommandKeyed(ctx context.Context, path string, body map[string]any, key string) (map[string]any, error) {
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodPost, path, body, &result); err != nil {
+	replayed, err := c.doJSONKeyed(ctx, http.MethodPost, path, body, &result, key)
+	if err != nil {
 		return nil, err
 	}
-	return result, nil
+	return markReplayed(result, replayed), nil
 }
 
 // turnOutcomeError renders a refusal with the HTTP status and the contract's
@@ -172,8 +180,19 @@ func requiredStrings(request mcpsdk.CallToolRequest, keys ...string) ([]string, 
 // runTaskCommand posts a task-scoped command and forgets the cached checkout
 // token when the server reports it released the card.
 func (s *Server) runTaskCommand(ctx context.Context, tool, taskID, suffix string, body map[string]any) (*mcpsdk.CallToolResult, error) {
-	result, err := s.getRESTClient(ctx).turnCommand(ctx, "/api/v1/tasks/"+url.PathEscape(taskID)+suffix, body)
+	client := s.getRESTClient(ctx)
+	key := ""
+	if tool == "finish_task" {
+		key = client.writeKey(tool, taskID, body)
+	}
+	result, err := client.turnCommandKeyed(ctx, "/api/v1/tasks/"+url.PathEscape(taskID)+suffix, body, key)
 	if err != nil {
+		if key != "" && isKeyReused(err) {
+			// The close already went through under this key; its answer was
+			// lost. The server released the card then, so forget the token too.
+			s.checkouts.Delete(taskID)
+			return jsonResult(keyReusedResult(taskID))
+		}
 		return turnOutcomeError(tool, err)
 	}
 	if released, _ := result["released"].(bool); released {
@@ -189,7 +208,7 @@ func (s *Server) handleWaitFor(ctx context.Context, request mcpsdk.CallToolReque
 	}
 	taskID, on := req[0], req[1]
 	if !waitKinds[on] {
-		return errResult("on must be card, mr, pipeline, time, merge or registered (got %q); a question to an agent is ask_agent, to a person ask_human", on)
+		return errResult("on must be card, mr, pipeline, time, merge, registered or manual (got %q); a question to an agent is ask_agent, to a person ask_human", on)
 	}
 	body := map[string]any{"on": on}
 	for _, k := range []string{"target_task_id", "target_condition", "vcs_link_id", "provider", "project_path", "until", "note", "event_ref", "source", "why",

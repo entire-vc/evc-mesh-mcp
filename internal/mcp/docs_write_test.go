@@ -409,8 +409,7 @@ func TestUpdateDoc_AppendWithStaleVersionConflictsInsteadOfRetrying(t *testing.T
 
 // The bug this task exists to fix: a copy of a Team Relay document whose
 // original changed underneath it gets a 409 with code=external_source_conflict
-// (task ae41281b, found live via a verifier hitting exactly this on the R8
-// prod acceptance run). The old conflictResult treated every 409 as a plain
+// (found live by an acceptance run that hit exactly this case). The old conflictResult treated every 409 as a plain
 // version race and told the caller to retry with append — the very call that
 // had just conflicted, closing it into a loop. This asserts on the text the
 // caller actually sees: it must name the source that changed and must not

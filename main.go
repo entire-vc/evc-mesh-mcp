@@ -191,6 +191,9 @@ func main() {
 			srv := mcpserver.NewServer(mcpserver.ServerConfig{
 				RESTClient: restClient,
 				Profile:    profile,
+				LocalFiles: true,
+				// One stdio process serves one client session.
+				SessionReadCache: true,
 				Authenticate: func(ctx context.Context) (*mcpserver.AgentSession, error) {
 					info, err := restClient.GetAgentMe(ctx)
 					if err != nil {
@@ -226,6 +229,9 @@ func main() {
 			Session:    session,
 			RESTClient: restClient,
 			Profile:    profile,
+			LocalFiles: true,
+			// One stdio process serves one client session.
+			SessionReadCache: true,
 		}
 
 		srv := mcpserver.NewServer(cfg)
