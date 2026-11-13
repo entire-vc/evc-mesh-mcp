@@ -4,9 +4,18 @@
 #
 # Two stages: a golang:alpine builder that produces a static binary, and a
 # distroless static runtime with no shell, no package manager, and a non-root
-# user. stdio is the default transport (MESH_MCP_TRANSPORT unset) because
-# that is how MCP clients (Claude Desktop config, `docker run -i --rm ...`,
-# the registry's own package runner) invoke it; SSE mode is opt-in via
+# user. The builder always runs on the build host's own platform and
+# cross-compiles for the target (GOOS/GOARCH from TARGETOS/TARGETARCH): a
+# multi-platform build never runs the Go toolchain under QEMU emulation, where
+# `go build` for arm64 is several times slower and intermittently hangs.
+# The binary is identical to a native build (pure Go, CGO_ENABLED=0).
+# Requires BuildKit (`docker build` since Docker 23, buildx, buildctl), which
+# sets BUILDPLATFORM/TARGETOS/TARGETARCH; the legacy builder cannot parse the
+# builder's FROM line.
+#
+# stdio is the default transport (MESH_MCP_TRANSPORT unset) because that is
+# how MCP clients (Claude Desktop config, `docker run -i --rm ...`, the
+# registry's own package runner) invoke it; SSE mode is opt-in via
 # MESH_MCP_TRANSPORT=sse for the shared-server deployment described in
 # README.md.
 #
@@ -18,9 +27,11 @@ ARG GO_VERSION=1.25
 ARG BUILD_SHA=dev
 ARG VERSION=dev
 
-FROM golang:${GO_VERSION}-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 ARG BUILD_SHA
 ARG VERSION
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /src
 
@@ -32,7 +43,7 @@ COPY . .
 
 # CGO_ENABLED=0 + static ldflags -> a binary with zero dynamic dependencies,
 # required for the distroless "static" runtime base below (no libc at all).
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -trimpath \
     -ldflags "-s -w -X github.com/entire-vc/evc-mesh-mcp/internal/mcp.BuildSHA=${BUILD_SHA} -X github.com/entire-vc/evc-mesh-mcp/internal/mcp.Version=${VERSION}" \
     -o /out/evc-mesh-mcp .

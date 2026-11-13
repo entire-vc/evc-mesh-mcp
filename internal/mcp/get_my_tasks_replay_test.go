@@ -16,8 +16,7 @@ import (
 )
 
 // Reconstructed replay (NOT a per-call archive replay) of the 2026-10-05T16:05:43Z..2026-10-06T16:05:43Z get_my_tasks window
-// (Mesh Doc 007d82fd, section "Воспроизведение и покрытие") through the code in
-// this tree.
+// through the code in this tree.
 //
 // The raw transcripts of that window are no longer on disk (retention): a
 // rerun of toolbloat.py over it finds no get_my_tasks call. What survives is the

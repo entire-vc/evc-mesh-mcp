@@ -15,7 +15,7 @@ import (
 
 // longTaskDescription is >200 chars with a short first line, the shape that
 // made a 50-task get_my_tasks page measure ~162k chars live (2026-10-03,
-// task a183d6f5): every item carried its full multi-paragraph description.
+// one measurement): every item carried its full multi-paragraph description.
 const longTaskDescription = "Fix the retry backoff in the SSE reconnect path.\n" +
 	"Body: the reconnect loop resets the backoff on every streamed keepalive, so a flapping " +
 	"endpoint hammers the server. Repro: kill the NATS connection mid-stream, watch the " +
@@ -330,7 +330,7 @@ func TestHandleGetMyTasks_FullTrue_KeepsEnvelope(t *testing.T) {
 
 // liveShapedColdPage is 50 cards as the live REST page returns them after the
 // lean pass: UUID id/project/status, url == prefix+id, default checkout_generation
-// and null vcs_pipeline_status (measured 2026-10-20, task 6371c9e4: 28.4k chars).
+// and null vcs_pipeline_status (measured 2026-10-20: 28.4k chars).
 func liveShapedColdPage(n int) map[string]any {
 	tasks := make([]any, 0, n)
 	for i := 0; i < n; i++ {

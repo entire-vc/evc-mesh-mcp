@@ -97,6 +97,7 @@ var toolKinds = map[string]toolKind{
 
 	// overwrites or removes existing state
 	"forget":                    kindOverwrite,
+	"archive_memory":            kindOverwriteIdempotent,
 	"delete_recurring_schedule": kindOverwrite,
 	"remove_dependency":         kindOverwrite,
 	"update_dependency":         kindOverwrite,

@@ -405,7 +405,7 @@ func isRequired(tool mcpsdk.Tool, key string) bool {
 	return false
 }
 
-// The marker grammar's merge, registered and baseline forms reach the server
+// The marker grammar's merge, registered, manual and baseline forms reach the server
 // as typed fields, numbers as numbers; the server validates them.
 func TestWaitFor_TypedKindsSendTheirFields(t *testing.T) {
 	sha := "0123456789abcdef0123456789abcdef01234567"
@@ -430,6 +430,16 @@ func TestWaitFor_TypedKindsSendTheirFields(t *testing.T) {
 		"GitHub Actions run": {
 			map[string]any{"on": "pipeline", "provider": "github", "project_path": "org/repo", "pipeline_id": float64(42), "until": "green"},
 			map[string]any{"on": "pipeline", "provider": "github", "project_path": "org/repo", "pipeline_id": float64(42), "until": "green"},
+		},
+		"GitHub PR until merged": {
+			map[string]any{"on": "mr", "provider": "github", "project_path": "org/repo", "mr_iid": float64(7), "until": "merged",
+				"after_sha": sha, "after_status": "opened"},
+			map[string]any{"on": "mr", "provider": "github", "project_path": "org/repo", "mr_iid": float64(7), "until": "merged",
+				"after_sha": sha, "after_status": "opened"},
+		},
+		"manual": {
+			map[string]any{"on": "manual", "note": "vendor answers by mail"},
+			map[string]any{"on": "manual", "note": "vendor answers by mail"},
 		},
 	}
 	for name, tc := range cases {

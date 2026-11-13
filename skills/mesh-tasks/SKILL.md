@@ -30,7 +30,7 @@ A task already `in_progress` from a previous session is resumed first; otherwise
 
 - `add_comment` with progress and decisions; every status change carries a comment with the reason.
 - Tools below marked (full) need `MESH_MCP_PROFILE=full` (the default; the plugin `mcp.json` sets it).
-- `upload_artifact` (full) for logs, files and patches.
+- `upload_artifact` (full) for logs, files and patches. Binaries and screenshots: `file_path=<absolute path>`, never inline base64.
 - `create_subtask` (full) to split work, `add_dependency` (full) for ordering between tasks.
 - Before `create_task`, `list_tasks` with `search` to avoid duplicates. Set assignee, priority and verifiable acceptance criteria.
 - `report_error` when something fails on the task.

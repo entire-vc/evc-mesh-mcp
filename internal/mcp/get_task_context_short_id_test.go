@@ -40,7 +40,7 @@ func callGetTaskContext(t *testing.T, server *Server, args map[string]any) (*mcp
 // TestHandleGetTaskContext_ShortIDMatchesUUID is the core acceptance: a
 // short-ID get_task_context and a full-UUID get_task_context must return
 // identical data, recurring-history enrichment included. Red on the old code:
-// the short-ID call dies with the live error from #e143d391 ("failed to get
+// the short-ID call dies with the live error ("failed to get
 // task context: Bad Request: invalid task_id") because the /tasks/:id/context
 // route parses the path id as a strict UUID, while the UUID call succeeds.
 func TestHandleGetTaskContext_ShortIDMatchesUUID(t *testing.T) {

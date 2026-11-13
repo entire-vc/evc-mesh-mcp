@@ -279,6 +279,14 @@ func httpTimeoutFromEnv() time.Duration {
 // do executes an HTTP request with the agent key auth header. GET/HEAD calls
 // answered with 429 are retried within a bounded budget (retry429.go).
 func (c *RESTClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	return c.doKeyed(ctx, method, path, body, "")
+}
+
+// doKeyed is do with an Idempotency-Key. A non-empty key marks a write that
+// is safe to repeat (idempotency.go): a lost answer is re-sent with the same
+// key and body, and a repeat that finds the first send still running waits
+// its Retry-After. An empty key is exactly do.
+func (c *RESTClient) doKeyed(ctx context.Context, method, path string, body any, key string) (*http.Response, error) {
 	var payload []byte
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -287,34 +295,49 @@ func (c *RESTClient) do(ctx context.Context, method, path string, body any) (*ht
 		}
 		payload = data
 	}
-	return c.do429(ctx, method, func() (*http.Response, error) {
+	send := func() (*http.Response, error) {
 		var bodyReader io.Reader
 		if payload != nil {
 			bodyReader = bytes.NewReader(payload)
 		}
 		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
 		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
+			return nil, fmt.Errorf("create request: %w (%w)", err, errRequestNotSent)
 		}
 		if err := c.setAuth(req); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w (%w)", err, errRequestNotSent)
 		}
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
+		if key != "" {
+			req.Header.Set(idempotencyKeyHeader, key)
+		}
 		c.applyForwardedHeaders(req)
 		return c.httpClient.Do(req)
-	})
+	}
+	if key != "" {
+		return c.sendKeyed(ctx, send)
+	}
+	return c.do429(ctx, method, send)
 }
 
 // doJSON executes an HTTP request and decodes the JSON response into result.
 // Returns an error for HTTP 4xx/5xx responses using the API's error message.
 func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, result any) error {
-	resp, err := c.do(ctx, method, path, body)
+	_, err := c.doJSONKeyed(ctx, method, path, body, result, "")
+	return err
+}
+
+// doJSONKeyed is doJSON with an Idempotency-Key (doKeyed); replayed reports
+// that the server answered from the stored first answer of this key.
+func (c *RESTClient) doJSONKeyed(ctx context.Context, method, path string, body, result any, key string) (replayed bool, err error) {
+	resp, err := c.doKeyed(ctx, method, path, body, key)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	replayed = key != "" && strings.EqualFold(resp.Header.Get(idempotentReplayedHeader), "true")
 
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
@@ -327,7 +350,7 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 		if resp.StatusCode == http.StatusTooManyRequests {
 			apiErr.Retry = rateLimitInfo(resp.Header, time.Now())
 		}
-		return apiErr
+		return false, apiErr
 	}
 
 	if result != nil {
@@ -338,15 +361,15 @@ func (c *RESTClient) doJSON(ctx context.Context, method, path string, body, resu
 		// hit in practice by UpdateAgentProfile, whose handler returns 204.
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return fmt.Errorf("read response: %w", err)
+			return false, fmt.Errorf("read response: %w", err)
 		}
 		if len(respBody) > 0 {
 			if err := json.Unmarshal(respBody, result); err != nil {
-				return fmt.Errorf("decode response: %w", err)
+				return false, fmt.Errorf("decode response: %w", err)
 			}
 		}
 	}
-	return nil
+	return replayed, nil
 }
 
 // APIError is a failed API response. It carries the HTTP status alongside the
@@ -411,13 +434,27 @@ func apiErrorMessage(errBody map[string]any, statusCode int) string {
 
 // doMultipart executes a multipart/form-data POST and decodes the JSON response into result.
 func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[string]string, fileField, fileName, fileMime string, fileContent []byte, result any) error {
+	_, err := c.doMultipartKeyed(ctx, path, fields, fileField, fileName, fileMime, fileContent, result, "")
+	return err
+}
+
+// doMultipartKeyed is doMultipart with an Idempotency-Key (idempotency.go).
+// The body is encoded once and the same bytes are re-sent on a retry. The
+// server fingerprints the parsed parts in order, so the fields go out in
+// sorted order: an agent repeating the call rebuilds the very same parts.
+func (c *RESTClient) doMultipartKeyed(ctx context.Context, path string, fields map[string]string, fileField, fileName, fileMime string, fileContent []byte, result any, key string) (replayed bool, err error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
-	// Write non-file fields.
-	for k, v := range fields {
-		if err := mw.WriteField(k, v); err != nil {
-			return fmt.Errorf("write field %s: %w", k, err)
+	// Write non-file fields, in a stable order.
+	names := make([]string, 0, len(fields))
+	for k := range fields {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, k := range names {
+		if err := mw.WriteField(k, fields[k]); err != nil {
+			return false, fmt.Errorf("write field %s: %w", k, err)
 		}
 	}
 
@@ -426,10 +463,7 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 	// application/octet-stream: the API derives the stored MimeType from this header
 	// (inferMimeType(part Content-Type, filename)), so it is the only channel an
 	// explicit mime_type can travel through.
-	var (
-		fw  io.Writer
-		err error
-	)
+	var fw io.Writer
 	if fileMime != "" {
 		// Build the Content-Disposition with mime.FormatMediaType rather than by hand.
 		// An earlier version formatted it with Sprintf and a locally-written quote
@@ -449,7 +483,7 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 			// ("form-data", "name", "filename") are literals here — no filename value,
 			// including invalid UTF-8, produces it. Kept because it fails safe rather
 			// than shipping a malformed part, but noted so nobody assumes it is tested.
-			return fmt.Errorf("cannot encode Content-Disposition for file name %q", fileName)
+			return false, fmt.Errorf("cannot encode Content-Disposition for file name %q", fileName)
 		}
 		h := make(textproto.MIMEHeader)
 		h.Set("Content-Disposition", disposition)
@@ -459,38 +493,49 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 		fw, err = mw.CreateFormFile(fileField, fileName)
 	}
 	if err != nil {
-		return fmt.Errorf("create form file: %w", err)
+		return false, fmt.Errorf("create form file: %w", err)
 	}
 	if _, err = fw.Write(fileContent); err != nil {
-		return fmt.Errorf("write file content: %w", err)
+		return false, fmt.Errorf("write file content: %w", err)
 	}
 
 	if err = mw.Close(); err != nil {
-		return fmt.Errorf("close multipart writer: %w", err)
+		return false, fmt.Errorf("close multipart writer: %w", err)
 	}
 
-	reqURL := c.baseURL + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, &buf)
+	payload := buf.Bytes()
+	contentType := mw.FormDataContentType()
+	send := func() (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w (%w)", err, errRequestNotSent)
+		}
+		if err := c.setAuth(req); err != nil {
+			return nil, fmt.Errorf("%w (%w)", err, errRequestNotSent)
+		}
+		req.Header.Set("Content-Type", contentType)
+		if key != "" {
+			req.Header.Set(idempotencyKeyHeader, key)
+		}
+		c.applyForwardedHeaders(req)
+		return c.httpClient.Do(req)
+	}
+	var resp *http.Response
+	if key != "" {
+		resp, err = c.sendKeyed(ctx, send)
+	} else {
+		resp, err = send()
+	}
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-
-	if err := c.setAuth(req); err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	c.applyForwardedHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	replayed = key != "" && strings.EqualFold(resp.Header.Get(idempotentReplayedHeader), "true")
 	if resp.StatusCode >= 400 {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return &APIError{
+		return false, &APIError{
 			StatusCode: resp.StatusCode,
 			Message:    apiErrorMessage(errBody, resp.StatusCode),
 			Body:       errBody,
@@ -499,10 +544,10 @@ func (c *RESTClient) doMultipart(ctx context.Context, path string, fields map[st
 
 	if result != nil {
 		if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
-			return fmt.Errorf("decode response: %w", err)
+			return false, fmt.Errorf("decode response: %w", err)
 		}
 	}
-	return nil
+	return replayed, nil
 }
 
 // BaseURL returns the base URL used by this client.
@@ -747,11 +792,22 @@ func (c *RESTClient) CreateHumanGateDecision(ctx context.Context, taskID string,
 
 // AddComment adds a comment to a task.
 func (c *RESTClient) AddComment(ctx context.Context, taskID string, body map[string]any) (map[string]any, error) {
+	return c.AddCommentKeyed(ctx, taskID, body, "")
+}
+
+// AddCommentKeyed is AddComment with an Idempotency-Key (idempotency.go). A
+// replayed answer carries idempotent_replayed=true; a key the server already
+// holds under another body answers keyReusedResult instead of an error.
+func (c *RESTClient) AddCommentKeyed(ctx context.Context, taskID string, body map[string]any, key string) (map[string]any, error) {
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/comments", body, &result); err != nil {
+	replayed, err := c.doJSONKeyed(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/comments", body, &result, key)
+	if err != nil {
+		if key != "" && isKeyReused(err) {
+			return keyReusedResult(taskID), nil
+		}
 		return nil, err
 	}
-	return result, nil
+	return markReplayed(result, replayed), nil
 }
 
 // AddVCSLink links a task to a pull request, commit, or branch.
@@ -829,6 +885,12 @@ func (c *RESTClient) ListComments(ctx context.Context, taskID string, params map
 // type regardless. It now travels on the file part's Content-Type header, which is
 // where the API looks for it.
 func (c *RESTClient) UploadArtifact(ctx context.Context, taskID, name, artifactType, mimeType, metadata string, content []byte) (map[string]any, error) {
+	return c.UploadArtifactKeyed(ctx, taskID, name, artifactType, mimeType, metadata, content, "")
+}
+
+// UploadArtifactKeyed is UploadArtifact with an Idempotency-Key, with the
+// same result flags as AddCommentKeyed.
+func (c *RESTClient) UploadArtifactKeyed(ctx context.Context, taskID, name, artifactType, mimeType, metadata string, content []byte, key string) (map[string]any, error) {
 	fields := map[string]string{
 		"name":          name,
 		"artifact_type": artifactType,
@@ -837,10 +899,14 @@ func (c *RESTClient) UploadArtifact(ctx context.Context, taskID, name, artifactT
 		fields["metadata"] = metadata
 	}
 	var result map[string]any
-	if err := c.doMultipart(ctx, "/api/v1/tasks/"+taskID+"/artifacts", fields, "file", name, mimeType, content, &result); err != nil {
+	replayed, err := c.doMultipartKeyed(ctx, "/api/v1/tasks/"+taskID+"/artifacts", fields, "file", name, mimeType, content, &result, key)
+	if err != nil {
+		if key != "" && isKeyReused(err) {
+			return keyReusedResult(taskID), nil
+		}
 		return nil, err
 	}
-	return result, nil
+	return markReplayed(result, replayed), nil
 }
 
 // ListArtifacts lists artifacts for a task.
@@ -954,7 +1020,7 @@ func (c *RESTClient) GetTaskContext(ctx context.Context, taskID string) (map[str
 // sort_dir=desc gets the newest page instead, then reversing it back to
 // chronological order preserves the reading experience while fixing which N
 // comments are shown. Ported from the same fix in entire-vc/evc-mesh
-// (internal/mcp/rest_client.go, task 4222c17d / D1) — this repo's
+// (internal/mcp/rest_client.go) — this repo's
 // RESTClient hits the same evc-mesh REST API but is a separately maintained
 // copy, so the fix does not propagate on its own.
 //
@@ -1463,6 +1529,63 @@ func (c *RESTClient) GetProjectKnowledge(ctx context.Context, projectID string, 
 	}
 	var result map[string]any
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// MemoryByKeyParams addresses memories by exact key (GET /api/v1/memories/by-key).
+type MemoryByKeyParams struct {
+	WorkspaceID     string
+	Key             string
+	Scope           string
+	ProjectID       string
+	IncludeArchived bool
+	IncludeExpired  bool
+	Limit           int
+}
+
+// GetMemoriesByKey lists the memories stored under one exact key, live ones
+// first. Archived and expired rows come back only when asked for. An API that
+// predates the route answers 404/405; callers fall back to the search.
+func (c *RESTClient) GetMemoriesByKey(ctx context.Context, p MemoryByKeyParams) ([]any, error) {
+	params := url.Values{"key": {p.Key}}
+	if p.WorkspaceID != "" {
+		params.Set("workspace_id", p.WorkspaceID)
+	}
+	if p.Scope != "" {
+		params.Set("scope", p.Scope)
+	}
+	if p.ProjectID != "" {
+		params.Set("project_id", p.ProjectID)
+	}
+	if p.IncludeArchived {
+		params.Set("include_archived", "true")
+	}
+	if p.IncludeExpired {
+		params.Set("include_expired", "true")
+	}
+	if p.Limit > 0 {
+		params.Set("limit", strconv.Itoa(p.Limit))
+	}
+	var result struct {
+		Items []any `json:"items"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/memories/by-key?"+params.Encode(), nil, &result); err != nil {
+		return nil, err
+	}
+	return result.Items, nil
+}
+
+// SetMemoryArchived archives (archived=true) or restores a memory; the reason
+// is stored on the revision the server writes.
+func (c *RESTClient) SetMemoryArchived(ctx context.Context, memoryID string, archived bool, reason string) (map[string]any, error) {
+	verb := "archive"
+	if !archived {
+		verb = "unarchive"
+	}
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/memories/"+url.PathEscape(memoryID)+"/"+verb, map[string]string{"reason": reason}, &result); err != nil {
 		return nil, err
 	}
 	return result, nil

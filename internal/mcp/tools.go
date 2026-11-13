@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -265,7 +267,7 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 	// short-ID prefix onto the task via /tasks/by-short-id/:prefix, but the
 	// sub-resource routes are not uniform in what they accept: /dependencies
 	// parses the path id as a strict UUID and answers 400 "invalid task_id"
-	// for the short form (live red 02.10: get_task('06d0c6d8',
+	// for the short form (live red 02.10: get_task('<short id>',
 	// include_dependencies=true) on a task whose UUID form works). Using the
 	// resolved id everywhere makes every include_* uniform no matter what
 	// each backend route tolerates on its own.
@@ -296,7 +298,16 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 	// instead of the full object. 1004 of 4940 get_task calls 23-26.09 were
 	// a repeat of the same task in the same session, paying full price for
 	// zero new information.
-	if !sinceSet {
+	// Without either, a stdio session's repeat read of the same card returns
+	// only what changed since this session last read it (taskReadCache);
+	// full=true always returns everything.
+	var readCache *taskReadPlan
+	if s.readCache != nil && !full && !sinceSet {
+		readCache = s.readCache.plan(resolvedID)
+	}
+	if readCache != nil {
+		readCache.applyTask(task, resp)
+	} else if !sinceSet {
 		resp["task"] = task
 	} else if taskChangedSince(task, since) {
 		resp["task"] = task
@@ -330,6 +341,13 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 				if sinceSet {
 					arr = commentsSince(arr, since)
 				}
+				if readCache != nil {
+					var dropped int
+					arr, dropped = readCache.filterComments(arr, mcpsdk.ParseBoolean(request, "include_auto", false))
+					if dropped > 0 {
+						resp["comments_already_shown"] = dropped
+					}
+				}
 				// Inline comments share the list_comments compact shape in the
 				// compact default view: id/author_name/created_at/
 				// complete body. full=true returns complete REST objects.
@@ -344,7 +362,7 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 			// Propagate the truncation envelope REST already returns (total_count,
 			// has_more) — the old code discarded both, which is exactly what made
 			// a truncated response indistinguishable from a complete one. Ported
-			// from entire-vc/evc-mesh (task 4222c17d / D2) — see GetTaskComments
+			// from entire-vc/evc-mesh — see GetTaskComments
 			// above for why this repo needs its own copy of the fix.
 			totalCount, _ := page["total_count"].(float64)
 			hasMore, _ := page["has_more"].(bool)
@@ -428,6 +446,9 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		}
 	}
 
+	if readCache != nil {
+		readCache.commit()
+	}
 	return jsonResult(resp)
 }
 
@@ -464,7 +485,7 @@ func taskDeltaStub(task map[string]any) map[string]any {
 
 // defaultTaskCommentsLimit is how many of the newest comments
 // get_task(include_comments=true) inlines by default. Self-reports of 20 lanes
-// (03.10, #4094eeb1) named re-reading whole threads as the top context cost:
+// (03.10) named re-reading whole threads as the top context cost:
 // the previous default (the server's 50, whole) put ~100KB into a lane's
 // context on the worst cards. The tail is where an acting agent looks first;
 // comments_total_count/comments_has_more keep the hidden rest visible.
@@ -1222,13 +1243,18 @@ func (s *Server) handleAddComment(ctx context.Context, request mcpsdk.CallToolRe
 		}
 	}
 
-	result, err := s.getRESTClient(ctx).AddComment(ctx, taskID, reqBody)
+	client := s.getRESTClient(ctx)
+	result, err := client.AddCommentKeyed(ctx, taskID, reqBody, client.writeKey("add_comment", taskID, reqBody))
 	if err != nil {
 		return errResult("failed to create comment: %v", err)
 	}
+	if reused, _ := result["idempotent_reused"].(bool); reused {
+		return jsonResult(result)
+	}
 
 	if !mcpsdk.ParseBoolean(request, "full", false) {
-		return jsonResult(leanCommentResult(result))
+		replayed, _ := result["idempotent_replayed"].(bool)
+		return jsonResult(markReplayed(leanCommentResult(result), replayed))
 	}
 	return jsonResult(result)
 }
@@ -1582,14 +1608,34 @@ func (s *Server) handleUploadArtifact(ctx context.Context, request mcpsdk.CallTo
 		return errResult("task_id is required")
 	}
 
+	// Two sources for the bytes: inline content (crosses the model's context, so
+	// binaries over a few KB get corrupted) or file_path (read by this process,
+	// stdio only). Exactly one.
 	name := mcpsdk.ParseString(request, "name", "")
-	if name == "" {
-		return errResult("name is required")
+	content := mcpsdk.ParseString(request, "content", "")
+	filePath := mcpsdk.ParseString(request, "file_path", "")
+
+	var data []byte
+	switch {
+	case filePath != "" && content != "":
+		return errResult("file_path and content are mutually exclusive: pass one of them")
+	case filePath != "":
+		if !s.localFiles {
+			return errResult("%v", errFilePathNotLocal)
+		}
+		var err error
+		if data, err = readArtifactFile(filePath); err != nil {
+			return errResult("%v", err)
+		}
+		if name == "" {
+			name = filepath.Base(filePath)
+		}
+	case content == "":
+		return errResult("content or file_path is required")
 	}
 
-	content := mcpsdk.ParseString(request, "content", "")
-	if content == "" {
-		return errResult("content is required")
+	if name == "" {
+		return errResult("name is required")
 	}
 
 	mimeType := mcpsdk.ParseString(request, "mime_type", "")
@@ -1612,9 +1658,12 @@ func (s *Server) handleUploadArtifact(ctx context.Context, request mcpsdk.CallTo
 
 	// Decode before anything else looks at the bytes: everything below reasons
 	// about file content, not about the wire encoding it arrived in.
-	data, err := decodeArtifactContent(content, mcpsdk.ParseString(request, "encoding", encodingText))
-	if err != nil {
-		return errResult("%v", err)
+	var err error
+	if filePath == "" {
+		data, err = decodeArtifactContent(content, mcpsdk.ParseString(request, "encoding", encodingText))
+		if err != nil {
+			return errResult("%v", err)
+		}
 	}
 
 	if err = verifyArtifactChecksum(mcpsdk.ParseString(request, "sha256", ""), data); err != nil {
@@ -1627,12 +1676,21 @@ func (s *Server) handleUploadArtifact(ctx context.Context, request mcpsdk.CallTo
 		return errResult("%v", err)
 	}
 
-	result, err := s.getRESTClient(ctx).UploadArtifact(ctx, taskID, name, artifactType, mimeType, metadataJSON, data)
+	client := s.getRESTClient(ctx)
+	key := client.writeKey("upload_artifact", taskID, map[string]any{
+		"name": name, "artifact_type": artifactType, "mime_type": mimeType,
+		"metadata": metadataJSON, "content_sha256": sha256Hex(data),
+	})
+	result, err := client.UploadArtifactKeyed(ctx, taskID, name, artifactType, mimeType, metadataJSON, data, key)
 	if err != nil {
 		return errResult("failed to upload artifact: %v", err)
 	}
+	if reused, _ := result["idempotent_reused"].(bool); reused {
+		return jsonResult(result)
+	}
 
-	return jsonResult(shapeArtifact(result))
+	replayed, _ := result["idempotent_replayed"].(bool)
+	return jsonResult(markReplayed(withUploadedChecksum(shapeArtifact(result), data), replayed))
 }
 
 // ============================================================================
@@ -1895,7 +1953,7 @@ func (s *Server) handleGetTaskContext(ctx context.Context, request mcpsdk.CallTo
 	// Resolve a 6–12 hex short-ID prefix onto the task first, exactly like
 	// get_task: the /tasks/:id/context route parses the path id as a strict
 	// UUID and answers 400 "invalid task_id" for the short form (live red
-	// 02.10, #e143d391: get_task_context('06d0c6d8')). Full UUIDs skip the
+	// 02.10: get_task_context('<short id>')). Full UUIDs skip the
 	// extra hop; unknown and ambiguous prefixes surface the resolver's own
 	// verdict as a normal tool error without any context read.
 	resolvedID := taskID
@@ -2168,7 +2226,7 @@ func trimTaskSummaries(tasks []any) []any {
 
 // myTasksLeanDropKeys are per-item fields the default get_my_tasks view omits.
 // After the description trim (!136) a 50-task page still measured ~60k chars
-// live (2026-10-03, task 82b388a0): ~1.1k chars of envelope per card, mostly
+// live (2026-10-03): ~1.1k chars of envelope per card, mostly
 // UUID cross-references, timestamps and a url derivable from id. None of them
 // is needed to pick the next card; get_task(id) or full=true returns them.
 var myTasksLeanDropKeys = []string{
@@ -3090,10 +3148,11 @@ const (
 	getMemoryPages    = 4
 )
 
-// handleGetMemory returns the full text of ONE memory by exact key. The backend
-// has no get-by-key endpoint, so this recalls on the key and picks the entry whose
-// key matches exactly; the relevance gate of handleRecall is deliberately not
-// applied (a known key is not a search), nor is the importance floor.
+// handleGetMemory returns the full text of ONE memory by exact key. It reads
+// GET /memories/by-key, which honours include_archived and include_expired; an
+// API without that route gets the older search-and-match lookup. The relevance
+// gate of handleRecall is deliberately not applied (a known key is not a
+// search), nor is the importance floor.
 func (s *Server) handleGetMemory(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	session := s.getSession(ctx)
 	if session == nil {
@@ -3105,11 +3164,64 @@ func (s *Server) handleGetMemory(ctx context.Context, request mcpsdk.CallToolReq
 	}
 	projectID := mcpsdk.ParseString(request, "project_id", "")
 	scope := mcpsdk.ParseString(request, "scope", "")
-
-	// Page through the search until the exact key shows up: the key is a query
-	// like any other, so its entry is not guaranteed to sit in the first page.
-	// Bounded (getMemoryPages x getMemoryPageSize) so a typo cannot scan forever.
 	includeArchived := mcpsdk.ParseBoolean(request, "include_archived", false)
+	includeExpired := mcpsdk.ParseBoolean(request, "include_expired", false)
+
+	items, err := s.getRESTClient(ctx).GetMemoriesByKey(ctx, MemoryByKeyParams{
+		WorkspaceID:     session.WorkspaceID.String(),
+		Key:             key,
+		Scope:           scope,
+		ProjectID:       projectID,
+		IncludeArchived: includeArchived,
+		IncludeExpired:  includeExpired,
+		Limit:           20,
+	})
+	switch {
+	case err == nil:
+		// Live rows come first, so the first exact match is the entry at the key.
+		for _, it := range items {
+			if m, ok := it.(map[string]any); ok && m["key"] == key {
+				s.recordMemoryRead(ctx, "get_memory")
+				return jsonResult(m)
+			}
+		}
+		return errResult("%s", getMemoryNotFound(key, includeArchived, includeExpired))
+	case isRouteMissing(err):
+		return s.getMemoryBySearch(ctx, session, key, projectID, scope, includeArchived, includeExpired)
+	default:
+		return errResult("get_memory failed: %v", err)
+	}
+}
+
+func getMemoryNotFound(key string, includeArchived, includeExpired bool) string {
+	msg := fmt.Sprintf("no memory with key %q found", key)
+	var hidden []string
+	if !includeArchived {
+		hidden = append(hidden, "include_archived=true")
+	}
+	if !includeExpired {
+		hidden = append(hidden, "include_expired=true")
+	}
+	if len(hidden) > 0 {
+		msg += " (archived and expired entries are hidden: retry with " + strings.Join(hidden, " / ") + "; or recall to search by words)"
+	} else {
+		msg += " (try recall to search by words)"
+	}
+	return msg
+}
+
+// isRouteMissing reports an API that predates a route: 404 or 405 from echo's
+// router, as opposed to an error the route itself returned.
+func isRouteMissing(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusMethodNotAllowed)
+}
+
+// getMemoryBySearch is the lookup for an API without /memories/by-key: recall
+// on the key and pick the entry whose key matches exactly, paging because the
+// key is a query like any other. Bounded (getMemoryPages x getMemoryPageSize)
+// so a typo cannot scan forever.
+func (s *Server) getMemoryBySearch(ctx context.Context, session *AgentSession, key, projectID, scope string, includeArchived, includeExpired bool) (*mcpsdk.CallToolResult, error) {
 	// A key is an address, not a search: a superseded entry is still the entry at
 	// that key, so the server default (exclude superseded) must not hide it.
 	includeSuperseded := false
@@ -3121,6 +3233,7 @@ func (s *Server) handleGetMemory(ctx context.Context, request mcpsdk.CallToolReq
 			Scope:             scope,
 			ImportanceMin:     0,
 			IncludeArchived:   includeArchived,
+			IncludeExpired:    includeExpired,
 			ExcludeSuperseded: &includeSuperseded,
 			Limit:             getMemoryPageSize,
 			Offset:            page * getMemoryPageSize,
@@ -3139,7 +3252,7 @@ func (s *Server) handleGetMemory(ctx context.Context, request mcpsdk.CallToolReq
 			break // last page
 		}
 	}
-	return errResult("no memory with key %q found (try recall to search by words)", key)
+	return errResult("%s", getMemoryNotFound(key, includeArchived, includeExpired))
 }
 
 // recallTopScore returns the highest "score" field among items, and whether any
@@ -3801,6 +3914,92 @@ func (s *Server) handleForget(ctx context.Context, request mcpsdk.CallToolReques
 	}
 
 	return jsonResult(map[string]any{"deleted": true})
+}
+
+// handleArchiveMemory takes a memory out of default recall and get_memory
+// without deleting it, or brings it back. Addressed by memory_id, or by key
+// (narrowed by scope/project_id) when the key names exactly one entry.
+func (s *Server) handleArchiveMemory(ctx context.Context, request mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	session := s.getSession(ctx)
+	if session == nil {
+		return errResult("not authenticated: no agent session")
+	}
+	reason := strings.TrimSpace(mcpsdk.ParseString(request, "reason", ""))
+	if reason == "" {
+		return errResult("reason is required: say why this memory leaves (or returns to) recall")
+	}
+	archived := mcpsdk.ParseBoolean(request, "archived", true)
+	memoryID := strings.TrimSpace(mcpsdk.ParseString(request, "memory_id", ""))
+	key := strings.TrimSpace(mcpsdk.ParseString(request, "key", ""))
+	client := s.getRESTClient(ctx)
+
+	if memoryID == "" {
+		if key == "" {
+			return errResult("memory_id or key is required")
+		}
+		items, err := client.GetMemoriesByKey(ctx, MemoryByKeyParams{
+			WorkspaceID: session.WorkspaceID.String(),
+			Key:         key,
+			Scope:       mcpsdk.ParseString(request, "scope", ""),
+			ProjectID:   mcpsdk.ParseString(request, "project_id", ""),
+			// Restoring needs the archived row; an expired one may be archived too.
+			IncludeArchived: true,
+			IncludeExpired:  true,
+			Limit:           20,
+		})
+		if err != nil {
+			if isRouteMissing(err) {
+				return errResult("archive_memory by key needs a newer API; pass memory_id (the id field of recall full=true)")
+			}
+			return errResult("archive_memory: key lookup failed: %v", err)
+		}
+		var matches []map[string]any
+		for _, it := range items {
+			if m, ok := it.(map[string]any); ok && m["key"] == key {
+				matches = append(matches, m)
+			}
+		}
+		switch len(matches) {
+		case 0:
+			return errResult("no memory with key %q found", key)
+		case 1:
+			memoryID, _ = matches[0]["id"].(string)
+		default:
+			lines := make([]string, 0, len(matches))
+			for _, m := range matches {
+				lines = append(lines, fmt.Sprintf("memory_id=%v scope=%v project_id=%v archived=%v", m["id"], m["scope"], m["project_id"], m["archived"]))
+			}
+			return errResult("key %q names %d memories; pass memory_id, or narrow with scope/project_id:\n%s", key, len(matches), strings.Join(lines, "\n"))
+		}
+		if memoryID == "" {
+			return errResult("archive_memory: the key lookup returned no id")
+		}
+	}
+
+	result, err := client.SetMemoryArchived(ctx, memoryID, archived, reason)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusMethodNotAllowed {
+			return errResult("archive_memory needs a newer API: %v", err)
+		}
+		return errResult("archive_memory failed: %v", err)
+	}
+	if m, ok := result["memory"].(map[string]any); ok {
+		result["memory"] = compactArchivedMemory(m)
+	}
+	return jsonResult(result)
+}
+
+// compactArchivedMemory keeps the fields a caller needs to confirm which entry
+// changed; the full text is one get_memory away.
+func compactArchivedMemory(m map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, f := range []string{"id", "key", "scope", "project_id", "agent_id", "archived", "version", "expires_at", "updated_at"} {
+		if v, ok := m[f]; ok && v != nil {
+			out[f] = v
+		}
+	}
+	return out
 }
 
 // ============================================================================

@@ -9,7 +9,7 @@ import (
 )
 
 // TestRESTClient_GetTaskComments_RequestsNewestPageAndRestoresChronologicalOrder
-// pins D1 (ported from entire-vc/evc-mesh task 4222c17d): get_task
+// pins the fix ported from entire-vc/evc-mesh: get_task
 // (include_comments=true) used to request the server's untouched default
 // (oldest DefaultPageSize, ASC) with no way to reach the tail of a long
 // thread. The fix requests sort_dir=desc (the newest page) and reverses it

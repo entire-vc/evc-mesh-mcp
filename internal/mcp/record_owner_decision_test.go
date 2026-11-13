@@ -639,7 +639,7 @@ func TestPublishedToolNames_LegacyDecisionAliasIsOptIn(t *testing.T) {
 	}
 }
 
-// #cb3f5274: an explicit question_ref reaches the human-gate-decisions body;
+// An explicit question_ref reaches the human-gate-decisions body;
 // without it the field is absent (the server binds the single live marker),
 // and a server-side rejection (several live markers) is surfaced, not hidden.
 func TestHandleRecordOwnerDecision_QuestionRef(t *testing.T) {

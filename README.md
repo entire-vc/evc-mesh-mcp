@@ -8,7 +8,7 @@
 
 EVC Mesh is an open-source task manager built for teams where people and AI agents work side by side. This [Model Context Protocol](https://modelcontextprotocol.io/) server connects your agent to a [Mesh](https://github.com/entire-vc/evc-mesh) workspace: it can pick up assigned tasks, check out work, comment, move tasks through your workflow, hand off to teammates, and keep decisions in shared project memory.
 
-Two tool profiles: `core` (35 tools, for everyday task work) and `full` (85 tools, including recurring tasks, docs and workspace admin). Every tool is marked read-only or write, so clients can ask before changing anything.
+Two tool profiles: `core` (36 tools, for everyday task work) and `full` (86 tools, including recurring tasks, docs and workspace admin). Every tool is marked read-only or write, so clients can ask before changing anything.
 
 You need a Mesh workspace and an agent key from it. Mesh is self-hosted (Apache-2.0, `docker compose` setup in the [evc-mesh](https://github.com/entire-vc/evc-mesh) repository). Set `MESH_API_URL` to your instance and `MESH_AGENT_KEY` to the agent's key. Workspaces on the hosted instance are by invitation.
 
@@ -58,8 +58,8 @@ The MCP server supports two profiles to optimize context window usage:
 
 | Profile | Tools | Context overhead | Best for |
 |---------|-------|-----------------|----------|
-| **core** | 35 | ~8K tokens (4% of 200K) | Claude Code, Cursor, small-context models |
-| **full** | 85 | ~18K tokens (9% of 200K) | Power users, automation agents, admin ops |
+| **core** | 36 | ~8K tokens (4% of 200K) | Claude Code, Cursor, small-context models |
+| **full** | 86 | ~18K tokens (9% of 200K) | Power users, automation agents, admin ops |
 
 Set via `MESH_MCP_PROFILE` environment variable. Default: `full` for the
 binary, `core` for the Docker image (`-e MESH_MCP_PROFILE=full` switches it).
@@ -157,8 +157,8 @@ SSE mode serves **two profiles simultaneously** on different paths:
 
 | Path | Profile | Description |
 |------|---------|-------------|
-| `/sse` + `/message` | full | All 85 tools (backward compatible) |
-| `/core/sse` + `/core/message` | core | 35 essential tools |
+| `/sse` + `/message` | full | All 86 tools (backward compatible) |
+| `/core/sse` + `/core/message` | core | 36 essential tools |
 
 The same process also serves the **Streamable HTTP** transport (stateless, one
 agent key per request, sent in the `Authorization: Bearer` or `X-Agent-Key`
@@ -251,7 +251,7 @@ publish_event(type="summary", memory={persist: true})  → broadcast + persist
 session_report(model, tokens_in, tokens_out)           → report metrics
 ```
 
-## MCP Tools — Core Profile (35)
+## MCP Tools — Core Profile (36)
 
 ### ACP & Identity
 
@@ -307,9 +307,10 @@ Each command validates its target on the server and writes the state, a generate
 | Tool | Description |
 |------|-------------|
 | `recall` | Search memory by keywords (compact by default: ~300 chars of content per item; `full=true` for everything uncut) |
-| `get_memory` | Full text of one memory by exact key |
+| `get_memory` | Full text of one memory by exact key (archived/expired on request) |
 | `remember` | Save knowledge (UPSERT by key) |
 | `forget` | Delete a memory entry |
+| `archive_memory` | Take a memory out of recall without deleting it, or restore it (reason required) |
 | `recall_with_graph` | Search memory, expanding results through the knowledge graph |
 | `set_project_knowledge` | Write a structured project fact (upsert by key) |
 | `get_canonical_updates` | Fetch canonical decisions recorded since a given time |
@@ -355,7 +356,7 @@ did not supply; an explicit `limit` always wins.
 | `report_error` | Report an error on a task |
 | `session_report` | Report session metrics (model, tokens, cost) |
 
-## MCP Tools — Full Profile (adds 50 more, 85 total)
+## MCP Tools — Full Profile (adds 50 more, 86 total)
 
 ### Additional Task Tools
 
@@ -378,7 +379,7 @@ did not supply; an explicit `limit` always wins.
 | Tool | Description |
 |------|-------------|
 | `list_comments` | List task comments (newest first by default) |
-| `upload_artifact` | Upload file/code/log to a task |
+| `upload_artifact` | Upload file/code/log to a task. For a file on disk pass `file_path` (stdio only; bytes are read by the server process and the response carries their sha256); `content` is for short inline text |
 | `list_artifacts` | List task artifacts |
 | `get_artifact` | Get artifact details (`download_path`; bytes via the two-step download below) |
 

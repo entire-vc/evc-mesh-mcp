@@ -25,7 +25,7 @@ import (
 
 // Profile constants for MCP server tool sets.
 const (
-	// ProfileCore registers only the 35 essential tools for lightweight agents.
+	// ProfileCore registers only the 36 essential tools for lightweight agents.
 	ProfileCore = "core"
 	// ProfileFull registers all tools (core + advanced). This is the default.
 	ProfileFull = "full"
@@ -116,6 +116,13 @@ type Server struct {
 	deferredSession atomic.Pointer[AgentSession]
 	// authMu serialises deferred authentication attempts.
 	authMu sync.Mutex
+	// localFiles allows upload_artifact file_path: the server reads a file from
+	// its own disk. True only for stdio, where this process runs on the agent's
+	// machine; an SSE/HTTP server would read its own host's files instead.
+	localFiles bool
+	// readCache trims repeat get_task reads in one stdio session; nil (off)
+	// for SSE/HTTP, where one server serves many clients.
+	readCache *taskReadCache
 }
 
 // getSession returns the AgentSession for the current request.
@@ -147,7 +154,7 @@ type ServerConfig struct {
 	Session *AgentSession
 	// RESTClient is the HTTP client used to call the Mesh REST API.
 	RESTClient *RESTClient
-	// Profile controls which tools are registered: "core" (35 essential tools)
+	// Profile controls which tools are registered: "core" (36 essential tools)
 	// or "full" (all tools, default).
 	Profile string
 	// SetupHint, when non-empty, puts the server in unconfigured mode: it
@@ -159,6 +166,13 @@ type ServerConfig struct {
 	// until it succeeds: stdio mode whose startup authentication failed keeps
 	// running, lists its tools, and retries on use instead of exiting.
 	Authenticate func(context.Context) (*AgentSession, error)
+	// LocalFiles enables upload_artifact file_path. Set it only for the stdio
+	// transport; the zero value refuses file_path (fail closed for SSE/HTTP).
+	LocalFiles bool
+	// SessionReadCache makes a repeat get_task of the same card in this
+	// process return only what changed since the previous read. Set it only
+	// for stdio (one process = one client session).
+	SessionReadCache bool
 }
 
 // NewServer creates a new MCP server with tools registered according to the profile.
@@ -179,6 +193,10 @@ func NewServer(cfg ServerConfig) *Server {
 		tracker:     NewSessionTracker(),
 		ReadCounter: NewReadCounter(),
 		profile:     profile,
+		localFiles:  cfg.LocalFiles,
+	}
+	if cfg.SessionReadCache {
+		s.readCache = newTaskReadCache()
 	}
 
 	s.mcpServer = mcpserver.NewMCPServer(serverName, ServerVersion(), s.serverOptions(cfg)...)
@@ -250,7 +268,7 @@ func (s *Server) MCPServer() *mcpserver.MCPServer {
 	return s.mcpServer
 }
 
-// registerCoreTools registers the 35 essential tools with optimized, directive descriptions.
+// registerCoreTools registers the 36 essential tools with optimized, directive descriptions.
 func (s *Server) registerCoreTools() {
 	// --- ACP / Session tools ---
 	s.addTool(mcpsdk.NewTool("heartbeat",
@@ -319,7 +337,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("list_tasks", s.handleListTasks))
 
 	s.addTool(mcpsdk.NewTool("get_task",
-		mcpsdk.WithDescription("Get task details: compact decision fields, active human_gate=true and status slug; descriptions and ordinary comment bodies are always complete. Comment IDs support reply/after; timestamps are UTC to the minute. Known automation comments are one-line summaries (include_auto=true restores their complete bodies). full=true restores non-capability REST fields. If status lookup is unavailable, status_id and an explicit status_lookup_error remain. Comments return the newest comments_limit entries (default 5, max 200) with pagination markers. since=RFC3339 (from task.updated_at) skips an unchanged task and older comments."),
+		mcpsdk.WithDescription("Get task details: compact decision fields, active human_gate=true and status slug; descriptions and ordinary comment bodies are always complete. Comment IDs support reply/after; timestamps are UTC to the minute. Known automation comments are one-line summaries (include_auto=true restores their complete bodies). full=true restores non-capability REST fields. If status lookup is unavailable, status_id and an explicit status_lookup_error remain. Comments return the newest comments_limit entries (default 5, max 200) with pagination markers. since=RFC3339 (from task.updated_at) skips an unchanged task and older comments. In a stdio session a repeat read of the same card returns only what changed since that session last read it (unchanged card: stub with task_changed=false; unchanged description omitted with description_unchanged=true; comments already returned are dropped, counted in comments_already_shown); full=true always returns everything."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID (full UUID or 6–12 char hex short-ID prefix).")),
 		mcpsdk.WithString("since", mcpsdk.Description("RFC3339 timestamp from an earlier call in this session (e.g. that response's task.updated_at, or your own last-call time). With it: include_comments returns only comments created after it, and the full task body (description and the rest) is included only if the task's own updated_at is after it too — the response then carries task_changed=true/false so you always know which you got, and a trimmed stub (id/status/assignee_name/updated_at in compact reads; status_id plus status_lookup_error if lookup fails, or the original status_id and assignee fields with full=true) instead of the full task when nothing changed, to avoid re-paying for the same ~5k tokens on a repeat call. Omit for the unfiltered default: full task body, but the comment tail still obeys comments_limit (default 5, max 200) — a longer thread needs list_comments paging.")),
 		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the task (full description, non-capability fields, whole inline comments) instead of the compact view (default false)."), mcpsdk.DefaultBool(false)),
@@ -450,7 +468,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithNumber("min_importance", mcpsdk.Description("Minimum importance_score threshold (0-1, default 0.3 — matches the lowest score the server assigns, kind:session-checkpoint, so prior-session hand-offs are returned without an override). Raise it to exclude low-value entries; pass 0 to disable filtering entirely.")),
 		mcpsdk.WithBoolean("apply_recency_decay", mcpsdk.Description("Sort by relevance * 0.95^days_since_created."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithString("order_by", mcpsdk.Description("Sort order: created_at:desc (default), created_at:asc, relevance:desc, decayed_relevance:desc.")),
-		mcpsdk.WithBoolean("include_expired", mcpsdk.Description("Include expired memories (default false)."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("include_expired", mcpsdk.Description("Also return memories past their expires_at (default false). An expired entry is hidden from recall and get_memory the moment it expires and stays readable with this flag until the background cleanup (every 6 h) physically deletes it 7 days after expiry. To take an entry out of recall so it can be brought back, use archive_memory instead of a short expires_at."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithBoolean("include_archived", mcpsdk.Description("Also return archived memories (retired by their owner or by review but kept for history). Default false: only live memories."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (1–50). Omitted compact requests use 5; full=true or an explicit profile keeps the previous default 10. Existing profile presets still apply when limit is omitted (multi-session uses 20, including automatic classification). Explicit limit wins. This is a hard bound: the response never contains more than limit items. When knowledge-graph boost is enabled, a share of the page (limit/4, at least 1 when limit>=2) may be filled with graph-expanded neighbours, marked graph_boost=true and provenance=via:graph — they take the tail slots instead of being added on top. Rows that fail scope/tags are dropped, never returned unmarked, whether they arrived by retrieval, by pinning, or by graph expansion.")),
 		mcpsdk.WithString("recall_profile", mcpsdk.Description("Override automatic query classification. Existing preset values are preserved; explicit limit takes precedence."), mcpsdk.Enum("default", "factual", "multi-session")),
@@ -459,11 +477,12 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("recall", s.handleRecall))
 
 	s.addTool(mcpsdk.NewTool("get_memory",
-		mcpsdk.WithDescription("Full text of ONE memory by exact key (the `key` field recall returns). Returns the full content of an entry whose recall result ends with the `…` cut marker. Errors if no entry has exactly that key."),
+		mcpsdk.WithDescription("Full text of ONE memory by exact key (the `key` field recall returns). Returns the full content of an entry whose recall result ends with the `…` cut marker. Errors if no entry has exactly that key. Archived and expired entries are hidden unless include_archived / include_expired is set."),
 		mcpsdk.WithString("key", mcpsdk.Required(), mcpsdk.Description("Exact memory key, as returned by recall.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Project of a project-scoped entry, if the key exists in several.")),
 		mcpsdk.WithString("scope", mcpsdk.Description("Filter by scope: workspace, project, agent, or all (default).")),
 		mcpsdk.WithBoolean("include_archived", mcpsdk.Description("Also look among archived memories (default false)."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithBoolean("include_expired", mcpsdk.Description("Also look among memories past their expires_at (default false). An expired entry is hidden from recall and get_memory the moment it expires and stays readable with this flag until the background cleanup (every 6 h) physically deletes it 7 days after expiry. To take an entry out of recall so it can be brought back, use archive_memory instead of a short expires_at."), mcpsdk.DefaultBool(false)),
 	), s.tracked("get_memory", s.handleGetMemory))
 
 	s.addTool(mcpsdk.NewTool("recall_with_graph",
@@ -494,7 +513,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithNumber("relevance", mcpsdk.Description("Relevance score 0-1 (default 1.0 when omitted). "+
 			"NOT the same field as importance_score: relevance is a caller-set ranking hint, importance_score is computed from tags (see tags) and is the field min_importance filters on. "+
 			"A relevance:<n> TAG with n >= 0.8 does feed importance_score by +0.10; this numeric parameter does not.")),
-		mcpsdk.WithString("expires_at", mcpsdk.Description("RFC3339 timestamp or Go duration (e.g. '72h') when this memory should expire.")),
+		mcpsdk.WithString("expires_at", mcpsdk.Description("RFC3339 timestamp or Go duration (e.g. '72h') when this memory should expire. Hidden from recall and get_memory the moment it expires; physically deleted by the background cleanup (every 6 h) 7 days after expiry. To take an entry out of recall so it can be brought back, use archive_memory instead.")),
 		mcpsdk.WithString("source_url", mcpsdk.Description("Optional URL/path to the source of this knowledge (task ID, PR, file path).")),
 		mcpsdk.WithString("source_task_id", mcpsdk.Description("UUID of the Mesh task that produced this memory. Auto-populated from the runner state file (FIDDLER_STATE_FILE) or the active checkout. Enables Amendment 2/3 KG edge hooks.")),
 		mcpsdk.WithString("thread_id", mcpsdk.Description("Thread identifier for same-session memory grouping. Auto-populated from the runner state file when omitted.")),
@@ -507,6 +526,18 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithDescription("Permanently delete one memory entry by its UUID. Agents can only delete their own agent-scope memories; project and workspace memories are refused. To correct an entry, call remember with the same key instead of deleting it."),
 		mcpsdk.WithString("memory_id", mcpsdk.Required(), mcpsdk.Description("UUID of the memory to delete: the id field of a recall(full=true) result, not its key.")),
 	), s.tracked("forget", s.handleForget))
+
+	s.addTool(mcpsdk.NewTool("archive_memory",
+		mcpsdk.WithDescription("Take a stale memory out of recall and get_memory WITHOUT deleting it (archived=true), or bring it back (archived=false). The reason is required and stored on a revision. "+
+			"Allowed for whoever may write to the memory's scope: any agent with write access to the project for a project entry (not only its author), only the owner for an agent entry, leads for a workspace entry. "+
+			"Archived entries stay readable with include_archived=true. A repeat remember on an archived key updates it but keeps it archived. Prefer this to forget and to a short expires_at for anything that may be needed again."),
+		mcpsdk.WithString("memory_id", mcpsdk.Description("UUID of the memory (the id field of recall full=true). Either memory_id or key is required.")),
+		mcpsdk.WithString("key", mcpsdk.Description("Exact key, used when memory_id is not given. Refused with the candidates listed if it names several entries; narrow with scope/project_id.")),
+		mcpsdk.WithString("scope", mcpsdk.Description("Narrows a key lookup: workspace, project or agent.")),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Narrows a key lookup to one project.")),
+		mcpsdk.WithBoolean("archived", mcpsdk.Description("true archives (default), false restores."), mcpsdk.DefaultBool(true)),
+		mcpsdk.WithString("reason", mcpsdk.Required(), mcpsdk.Description("Why the entry leaves (or returns to) recall, up to 500 characters, e.g. 'MR merged and released; directive no longer applies'.")),
+	), s.tracked("archive_memory", s.handleArchiveMemory))
 
 	s.addTool(mcpsdk.NewTool("set_project_knowledge",
 		mcpsdk.WithDescription("Write a structured fact to project knowledge. UPSERT by key — calling with same key updates the existing entry. Stores deploy URLs, stack conventions, gotchas. These facts are visible via get_project_knowledge."),
@@ -824,10 +855,11 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("list_comments", s.handleListComments))
 
 	s.addTool(mcpsdk.NewTool("upload_artifact",
-		mcpsdk.WithDescription("Upload an artifact (file, code, log, etc.) to a task. "+artifactDownloadHowTo+" Content is sent inline, so a binary larger than a few KB may be truncated in transit."),
+		mcpsdk.WithDescription("Upload an artifact (file, code, log, etc.) to a task. For a file on disk — any binary (screenshot, image, pdf, archive) — pass file_path: this process reads the bytes, they never pass through your context, and the response carries their sha256. Use content only for short text you generated; inline base64 of a binary larger than a few KB gets corrupted in transit. file_path works over stdio only (a remote SSE/HTTP server refuses it). "+artifactDownloadHowTo),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
-		mcpsdk.WithString("name", mcpsdk.Required(), mcpsdk.Description("Artifact filename.")),
-		mcpsdk.WithString("content", mcpsdk.Required(), mcpsdk.Description("Artifact content. Plain text by default; set encoding=\"base64\" to send binary.")),
+		mcpsdk.WithString("name", mcpsdk.Description("Artifact filename. Required with content; defaults to the file's basename with file_path.")),
+		mcpsdk.WithString("file_path", mcpsdk.Description("Absolute path of a regular file to upload (no symlinks or directories, max 25 MB). Preferred for every binary. Mutually exclusive with content; stdio transport only.")),
+		mcpsdk.WithString("content", mcpsdk.Description("Inline artifact content, for short text. Plain text by default; encoding=\"base64\" for binary (prefer file_path). Mutually exclusive with file_path.")),
 		mcpsdk.WithString("encoding", mcpsdk.Description("How to interpret content: \"text\" (stored as-is) or \"base64\" (decoded before storing). Required for binary — without it a base64 string is stored literally as the file body."), mcpsdk.DefaultString("text")),
 		mcpsdk.WithString("sha256", mcpsdk.Description("Optional hex sha256 of the DECODED bytes. Verified before upload; a mismatch fails the call. Recommended for binary, since it is the only check that catches a payload truncated in transit.")),
 		mcpsdk.WithString("artifact_type", mcpsdk.Description("Category used to label and filter the artifact: file (default), code, log, report, link, image or data. It does not affect how content is decoded; encoding and mime_type do."), mcpsdk.DefaultString("file")),
