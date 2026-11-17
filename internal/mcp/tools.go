@@ -655,6 +655,7 @@ func (s *Server) handleCreateTask(ctx context.Context, request mcpsdk.CallToolRe
 	}
 
 	// Resolve status slug to status_id, and guard against creating in review status.
+	statusCategory := ""
 	if slug := mcpsdk.ParseString(request, "status_slug", ""); slug != "" {
 		stID, _, stCat, err := s.resolveStatusSlug(ctx, projectID, slug)
 		if err != nil {
@@ -664,6 +665,7 @@ func (s *Server) handleCreateTask(ctx context.Context, request mcpsdk.CallToolRe
 			return errResult("Cannot create task in review status. Use 'todo' or 'in_progress'. Review is for tasks with completed work awaiting check.")
 		}
 		body["status_id"] = stID
+		statusCategory = stCat
 	}
 	// If no status_slug provided, REST API will use project default.
 
@@ -698,6 +700,9 @@ func (s *Server) handleCreateTask(ctx context.Context, request mcpsdk.CallToolRe
 	result, err := s.getRESTClient(ctx).CreateTask(ctx, projectID, body)
 	if err != nil {
 		return taskWriteError("create_task", "failed to create task", err)
+	}
+	if claim := s.claimOwnCreated(ctx, result, statusCategory); claim != nil {
+		result[claimResultField] = claim
 	}
 
 	if warn := s.contextWarning(); warn != "" {
@@ -855,20 +860,46 @@ func (s *Server) handleMoveTask(ctx context.Context, request mcpsdk.CallToolRequ
 		moveBody["assignee_type"] = mcpsdk.ParseString(request, "assignee_type", "agent")
 	}
 
-	if err = s.getRESTClient(ctx).MoveTask(ctx, taskID, moveBody); err != nil {
-		if refusal := gateRefusalText(err); refusal != "" {
-			return errResult("failed to move task: %v (%s)", err, refusal)
+	// The comment is written BEFORE the move. A move can end this turn's lock
+	// in the same write (a reassignment with MESH_REASSIGN_RELEASES_CHECKOUT,
+	// a status that releases the checkout), and a comment sent after it would
+	// be refused by the fence: a reviewer's verdict returned with
+	// move_task(todo, assignee_id=<author>, comment=<verdict>) was lost that
+	// way. Written first, it lands under the live lock.
+	commentStored := false
+	if commentBody := mcpsdk.ParseString(request, "comment", ""); commentBody != "" {
+		client := s.getRESTClient(ctx)
+		commentReq := map[string]any{"body": commentBody, "is_internal": false}
+		// Keyed: retrying the same move_task after a refused move replays this
+		// comment instead of posting it twice.
+		key := client.writeKey("move_task_comment", taskID, commentReq)
+		cerr := s.fencedWrite(ctx, "move_task", taskID, false, func(ctx context.Context) error {
+			_, err := client.AddCommentKeyed(ctx, taskID, commentReq, key)
+			return err
+		})
+		switch {
+		case isFenceRefusal(cerr):
+			// The lock is already gone (or the task changed): nothing more
+			// is written, the move included.
+			return errResult("task not moved: its comment was refused: %v", cerr)
+		case cerr == nil:
+			commentStored = true
 		}
-		return errResult("failed to move task: %v", err)
+		// Any other comment failure stays best-effort: the move goes on.
 	}
 
-	// Add optional comment.
-	if commentBody := mcpsdk.ParseString(request, "comment", ""); commentBody != "" {
-		// Best-effort: don't fail the move if comment creation fails.
-		_, _ = s.getRESTClient(ctx).AddComment(ctx, taskID, map[string]any{
-			"body":        commentBody,
-			"is_internal": false,
-		})
+	err = s.fencedWrite(ctx, "move_task", taskID, false, func(ctx context.Context) error {
+		return s.getRESTClient(ctx).MoveTask(ctx, taskID, moveBody)
+	})
+	if err != nil {
+		prefix := "failed to move task"
+		if commentStored {
+			prefix = "comment stored, but failed to move task (retry the same call: the comment is not posted twice)"
+		}
+		if refusal := gateRefusalText(err); refusal != "" {
+			return errResult("%s: %v (%s)", prefix, err, refusal)
+		}
+		return errResult("%s: %v", prefix, err)
 	}
 
 	// Return updated task. The reload stays even in the lean view: the move
@@ -944,17 +975,22 @@ func (s *Server) handleCreateSubtask(ctx context.Context, request mcpsdk.CallToo
 	// Same gate reasoning as move_task: POST /tasks/:task_id/subtasks is workspace-gated,
 	// so the slug lookup it depends on is read through the task-scoped route too.
 	// Fixing only move_task would have left this second entry into the same dead end open.
+	statusCategory := ""
 	if slug := mcpsdk.ParseString(request, "status_slug", ""); slug != "" {
-		stID, _, _, err := s.resolveStatusSlugForTask(ctx, parentTaskID, slug)
+		stID, _, stCat, err := s.resolveStatusSlugForTask(ctx, parentTaskID, slug)
 		if err != nil {
 			return errResult("invalid status_slug: %v", err)
 		}
 		body["status_id"] = stID
+		statusCategory = stCat
 	}
 
 	result, err := s.getRESTClient(ctx).CreateSubtask(ctx, parentTaskID, body)
 	if err != nil {
 		return taskWriteError("create_subtask", "failed to create subtask", err)
+	}
+	if claim := s.claimOwnCreated(ctx, result, statusCategory); claim != nil {
+		result[claimResultField] = claim
 	}
 
 	return jsonResult(result)
@@ -1244,7 +1280,12 @@ func (s *Server) handleAddComment(ctx context.Context, request mcpsdk.CallToolRe
 	}
 
 	client := s.getRESTClient(ctx)
-	result, err := client.AddCommentKeyed(ctx, taskID, reqBody, client.writeKey("add_comment", taskID, reqBody))
+	key := client.writeKey("add_comment", taskID, reqBody)
+	var result map[string]any
+	err := s.fencedWrite(ctx, "add_comment", taskID, false, func(ctx context.Context) (err error) {
+		result, err = client.AddCommentKeyed(ctx, taskID, reqBody, key)
+		return err
+	})
 	if err != nil {
 		return errResult("failed to create comment: %v", err)
 	}
@@ -1681,7 +1722,11 @@ func (s *Server) handleUploadArtifact(ctx context.Context, request mcpsdk.CallTo
 		"name": name, "artifact_type": artifactType, "mime_type": mimeType,
 		"metadata": metadataJSON, "content_sha256": sha256Hex(data),
 	})
-	result, err := client.UploadArtifactKeyed(ctx, taskID, name, artifactType, mimeType, metadataJSON, data, key)
+	var result map[string]any
+	err = s.fencedWrite(ctx, "upload_artifact", taskID, false, func(ctx context.Context) (err error) {
+		result, err = client.UploadArtifactKeyed(ctx, taskID, name, artifactType, mimeType, metadataJSON, data, key)
+		return err
+	})
 	if err != nil {
 		return errResult("failed to upload artifact: %v", err)
 	}
@@ -2166,19 +2211,7 @@ func (s *Server) handleGetMyTasks(ctx context.Context, request mcpsdk.CallToolRe
 		return errResult("not authenticated: no agent session")
 	}
 
-	params := map[string]string{}
-
-	if projID := mcpsdk.ParseString(request, "project_id", ""); projID != "" {
-		params["project_id"] = projID
-	}
-	if cat := mcpsdk.ParseString(request, "status_category", ""); cat != "" {
-		params["status_category"] = cat
-	}
-
-	limit := mcpsdk.ParseInt(request, "limit", 50)
-	if limit > 0 {
-		params["page_size"] = strconv.Itoa(limit)
-	}
+	params := myTasksFeedParams(request)
 
 	result, err := s.getRESTClient(ctx).GetAgentTasks(ctx, params)
 	if err != nil {
@@ -2186,6 +2219,30 @@ func (s *Server) handleGetMyTasks(ctx context.Context, request mcpsdk.CallToolRe
 	}
 
 	return s.renderMyTasks(ctx, request, params, result)
+}
+
+// myTasksFeedParams builds the agent-feed query shared by get_my_tasks and
+// poll_tasks: project_id and status_category pass through, and without an
+// explicit category (and without full=true or the COLD=full rollback) only the
+// open categories are requested. The feed is ordered oldest first, so an
+// unfiltered page of a lane with a long closed history holds no live card.
+// The snapshot scope of get_my_tasks is built from these params, so revisions
+// and deltas stay keyed to the request. limit (default 50) caps the page; the
+// API then reports total_count/has_more.
+func myTasksFeedParams(request mcpsdk.CallToolRequest) map[string]string {
+	params := map[string]string{}
+	if projID := mcpsdk.ParseString(request, "project_id", ""); projID != "" {
+		params["project_id"] = projID
+	}
+	if cat := mcpsdk.ParseString(request, "status_category", ""); cat != "" {
+		params["status_category"] = cat
+	} else if !mcpsdk.ParseBoolean(request, "full", false) && !myTasksColdFull() {
+		params["status_category"] = myTasksColdCategories
+	}
+	if limit := mcpsdk.ParseInt(request, "limit", 50); limit > 0 {
+		params["page_size"] = strconv.Itoa(limit)
+	}
+	return params
 }
 
 // myTasksDescChars caps a task's description in the get_my_tasks list view.
@@ -2786,7 +2843,7 @@ func (s *Server) handlePollTasks(ctx context.Context, request mcpsdk.CallToolReq
 		timeout = 120
 	}
 
-	result, err := s.getRESTClient(ctx).PollTasks(ctx, timeout)
+	result, err := s.getRESTClient(ctx).PollTasks(ctx, timeout, myTasksFeedParams(request))
 	if err != nil {
 		return errResult("poll_tasks failed: %v", err)
 	}

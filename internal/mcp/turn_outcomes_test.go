@@ -437,6 +437,12 @@ func TestWaitFor_TypedKindsSendTheirFields(t *testing.T) {
 			map[string]any{"on": "mr", "provider": "github", "project_path": "org/repo", "mr_iid": float64(7), "until": "merged",
 				"after_sha": sha, "after_status": "opened"},
 		},
+		"card with a named result": {
+			map[string]any{"on": "card", "target_task_id": "0f6d1b0e-0000-4000-8000-000000000001", "target_condition": "artifact_published",
+				"criterion": "  schema v2 export  "},
+			map[string]any{"on": "card", "target_task_id": "0f6d1b0e-0000-4000-8000-000000000001", "target_condition": "artifact_published",
+				"criterion": "schema v2 export"},
+		},
 		"manual": {
 			map[string]any{"on": "manual", "note": "vendor answers by mail"},
 			map[string]any{"on": "manual", "note": "vendor answers by mail"},
@@ -491,5 +497,22 @@ func TestAskHuman_RefusesBadDeadlineBeforeAnyRequest(t *testing.T) {
 	got, _ := json.Marshal((*calls)[0].body)
 	if string(got) != `{"question":"q?","to":"alex"}` {
 		t.Errorf("body = %s", got)
+	}
+}
+
+// An answered repeat is the server's already_answered refusal: one request,
+// the code and the server's message (which names the answer) reach the agent.
+func TestAskAgent_AlreadyAnsweredPassedThrough(t *testing.T) {
+	server, calls := turnOutcomeServer(t, http.StatusUnprocessableEntity, map[string]any{
+		"code": 422, "error_code": "already_answered",
+		"message": "typed-b already answered this question on this card: request r1, answer comment c1. Read that answer; a new question must say what changed.",
+	})
+	res := callOutcome(server.handleAskAgent, map[string]any{"task_id": uuid.NewString(), "to": "typed-b", "question": "Which schema wins?"})
+	text := resultText(t, res)
+	if !res.IsError || !strings.Contains(text, "already_answered") || !strings.Contains(text, "answer comment c1") {
+		t.Errorf("already_answered must reach the agent with the server's message: %s", text)
+	}
+	if len(*calls) != 1 {
+		t.Errorf("one request, got %d", len(*calls))
 	}
 }

@@ -305,7 +305,7 @@ func (s *Server) registerCoreTools() {
 	), s.tracked("get_context", s.handleGetContext))
 
 	s.addTool(mcpsdk.NewTool("get_my_tasks",
-		mcpsdk.WithDescription("Get YOUR assigned tasks, non-blocking. Use list_tasks to browse or search other people's tasks in a project, poll_tasks only to block until a new assignment arrives. Filterable by status_category to focus on active work. Default (cold) view is compact: only in_progress, review and the top 5 todo are listed (envelope `omitted` counts the rest; full=true or status_category returns them), descriptions are omitted (has_description marks them; get_task(id) or full=true returns the full text). Envelope fields (created_by/created_at, assignee_id) and valueless fields (0-counters, due_date=null, human_gate=false) are omitted; full=true returns the complete items and get_task returns one card's full details."),
+		mcpsdk.WithDescription("Get YOUR assigned tasks, non-blocking. Use list_tasks to browse or search other people's tasks in a project, poll_tasks only to block until a new assignment arrives. Filterable by status_category to focus on active work. Default (cold) view is compact: only in_progress, review and the top 5 todo are requested and listed (envelope `omitted` counts the todo past the cap, has_more flags open cards past limit; done, cancelled and backlog need full=true or status_category), descriptions are omitted (has_description marks them; get_task(id) or full=true returns the full text). Envelope fields (created_by/created_at, assignee_id) and valueless fields (0-counters, due_date=null, human_gate=false) are omitted; full=true returns the complete items and get_task returns one card's full details."),
 		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category: backlog, todo, in_progress, review, done, cancelled.")),
 		mcpsdk.WithString("project_id", mcpsdk.Description("Filter by project.")),
 		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 50).")),
@@ -386,7 +386,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithDescription("Change task status (e.g. todo → in_progress → done). Status is given as a slug (not a UUID). On move to 'review', task auto-reassigns to creator unless assignee_id is provided. Returns {task, new_status} with a lean task by default (id, status_id, assignee, updated_at — the post-move assignee is always included so an auto-reassign is visible); full=true returns the whole reloaded task."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("status_slug", mcpsdk.Required(), mcpsdk.Description("Target status slug (e.g. 'in_progress', 'done').")),
-		mcpsdk.WithString("comment", mcpsdk.Description("Optional comment to add when moving.")),
+		mcpsdk.WithString("comment", mcpsdk.Description("Optional comment, written before the move so it lands even when the move hands the card (and its lock) to someone else.")),
 		mcpsdk.WithString("assignee_id", mcpsdk.Description("Reassign to this agent/user on move. Overrides auto-reassign to creator on review.")),
 		mcpsdk.WithString("assignee_type", mcpsdk.Description("Assignee type if assignee_id is set: user or agent."), mcpsdk.DefaultString("agent")),
 		mcpsdk.WithBoolean("full", mcpsdk.Description("Return the whole reloaded task instead of the lean confirmation."), mcpsdk.DefaultBool(false)),
@@ -960,8 +960,11 @@ func (s *Server) registerAdvancedTools() {
 
 	// --- Push Notifications ---
 	s.addTool(mcpsdk.NewTool("poll_tasks",
-		mcpsdk.WithDescription("Long-poll for new task assignments: use it only in a loop that waits for work. Blocks until a task is assigned to this agent or the timeout expires. Returns current assigned tasks and whether any change occurred. Tasks use the lean get_my_tasks view (first-line descriptions, no envelope fields); full=true returns the complete items. Kept for backward compatibility; get_my_tasks is the non-blocking equivalent."),
-		mcpsdk.WithBoolean("full", mcpsdk.Description("Return complete task items instead of the lean view (default false)."), mcpsdk.DefaultBool(false)),
+		mcpsdk.WithDescription("Long-poll for new task assignments: use it only in a loop that waits for work. Blocks until a task is assigned to this agent or the timeout expires. Returns your open tasks (in_progress, review, todo; at most limit, with total_count/has_more) and whether any change occurred; done, cancelled and backlog need status_category or full=true. Tasks use the lean get_my_tasks view (first-line descriptions, no envelope fields); full=true returns the complete items without the open-category default. Kept for backward compatibility; get_my_tasks is the non-blocking equivalent."),
+		mcpsdk.WithString("status_category", mcpsdk.Description("Filter by status category, one or a comma list: backlog, todo, in_progress, review, done, cancelled. Default: in_progress,review,todo.")),
+		mcpsdk.WithString("project_id", mcpsdk.Description("Filter by project.")),
+		mcpsdk.WithNumber("limit", mcpsdk.Description("Max results (default 50).")),
+		mcpsdk.WithBoolean("full", mcpsdk.Description("Return complete task items of every status category instead of the lean open-card view (default false)."), mcpsdk.DefaultBool(false)),
 		mcpsdk.WithNumber("timeout", mcpsdk.Description("Maximum seconds to wait for new assignments (default 30, max 120).")),
 	), s.tracked("poll_tasks", s.handlePollTasks))
 

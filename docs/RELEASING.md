@@ -32,7 +32,7 @@ per CPU architecture. The bundle therefore carries three binaries:
 
 On Linux ARM, use the container image or `go install`.
 
-Not every client reads `platform_overrides`: the Smithery CLI runs
+Not every client reads `platform_overrides`: some run
 `mcp_config.command` as is. The default command is therefore
 `server/evc-mesh-mcp` (from `mcpb/launch.sh`), a POSIX launcher that picks
 the binary for the host's OS and architecture. Clients that do honour the
@@ -59,17 +59,8 @@ registry error), dispatch it against the tag:
 gh workflow run release.yml --repo entire-vc/evc-mesh-mcp --ref v1.0.0
 ```
 
-## Smithery
-
-After the release run finishes, publish the bundle to Smithery:
-
-```bash
-SMITHERY_API_KEY=... scripts/smithery-publish.sh 1.0.0
-```
-
-The script sends the bundle with the tool list read from the server itself;
-`smithery mcp publish` would leave the listing without tools (see the comment
-at the top of the script).
+Smithery is not a release channel since 2026-10-31, when it stopped accepting
+server updates.
 
 ## After the first release
 

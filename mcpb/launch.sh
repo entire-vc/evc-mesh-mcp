@@ -3,7 +3,7 @@
 #
 # Clients that honour mcp_config.platform_overrides (Claude Desktop) start the
 # per-OS binary directly and never run this. Clients that only read
-# mcp_config.command (the Smithery CLI, for one) start this script, so the
+# mcp_config.command start this script, so the
 # default must work on every POSIX host rather than point at the Linux binary.
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 case "$(uname -s)/$(uname -m)" in

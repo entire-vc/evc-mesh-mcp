@@ -25,10 +25,10 @@ type mcpbManifest struct {
 
 const launcherPath = "${__dirname}/server/evc-mesh-mcp"
 
-// The Smithery CLI runs mcp_config.command and ignores platform_overrides, so
-// a default that names one platform's binary fails everywhere else (it was the
-// Linux binary, and every macOS install from the Smithery listing died with
-// spawn ENOEXEC). The default must be the launcher.
+// Clients that run mcp_config.command ignore platform_overrides, so a default
+// that names one platform's binary fails everywhere else (it was the Linux
+// binary, and every macOS install through such a client died with spawn
+// ENOEXEC). The default must be the launcher.
 func TestMCPBDefaultCommandIsLauncher(t *testing.T) {
 	var m mcpbManifest
 	b, err := os.ReadFile("mcpb/manifest.json")
