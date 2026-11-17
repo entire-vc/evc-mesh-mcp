@@ -276,7 +276,11 @@ func (s *Server) compactMyTasksCold(ctx context.Context, request mcpsdk.CallTool
 
 const myTasksColdTodoCap = 5
 
-const myTasksOmittedNote = "cold view lists in_progress, review and the top todo only; full=true or get_my_tasks(status_category=...) / list_tasks returns the rest"
+// myTasksColdCategories is the server-side filter of the cold view: closed and
+// backlog cards are never fetched, so omitted counts only the todo past the cap.
+const myTasksColdCategories = "in_progress,review,todo"
+
+const myTasksOmittedNote = "cold view lists in_progress, review and the top todo only; done, cancelled and backlog are not fetched; full=true or get_my_tasks(status_category=...) / list_tasks returns the rest"
 
 // myTasksCats memoizes status categories (and lookup failures) for ONE request,
 // carried in the context: the cold view and the delta built for the same call

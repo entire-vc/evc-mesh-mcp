@@ -313,6 +313,7 @@ func (c *RESTClient) doKeyed(ctx context.Context, method, path string, body any,
 		if key != "" {
 			req.Header.Set(idempotencyKeyHeader, key)
 		}
+		applyFenceHeaders(ctx, req)
 		c.applyForwardedHeaders(req)
 		return c.httpClient.Do(req)
 	}
@@ -517,6 +518,7 @@ func (c *RESTClient) doMultipartKeyed(ctx context.Context, path string, fields m
 		if key != "" {
 			req.Header.Set(idempotencyKeyHeader, key)
 		}
+		applyFenceHeaders(ctx, req)
 		c.applyForwardedHeaders(req)
 		return c.httpClient.Do(req)
 	}
@@ -697,6 +699,9 @@ func (c *RESTClient) GetTask(ctx context.Context, taskID string) (map[string]any
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
 		return nil, err
 	}
+	// A finish under the checkout fence sends the newest revision this
+	// process has read (checkout_fence.go).
+	defaultInputRevisions.observe(result)
 	return result, nil
 }
 
@@ -965,9 +970,16 @@ func (c *RESTClient) GetAgentTasks(ctx context.Context, params map[string]string
 
 // PollTasks long-polls for new task assignments.
 // timeoutSecs controls how long the server blocks before returning (1–120).
-func (c *RESTClient) PollTasks(ctx context.Context, timeoutSecs int) (map[string]any, error) {
+// params carries the same feed filters as GetAgentTasks (status_category,
+// project_id, page_size); the API applies them in SQL to the returned list.
+func (c *RESTClient) PollTasks(ctx context.Context, timeoutSecs int, params map[string]string) (map[string]any, error) {
+	q := url.Values{}
+	for k, v := range params {
+		q.Set(k, v)
+	}
+	q.Set("timeout", strconv.Itoa(timeoutSecs))
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/api/v1/agents/me/tasks/poll?timeout=%d", timeoutSecs), nil, &result); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/agents/me/tasks/poll?"+q.Encode(), nil, &result); err != nil {
 		return nil, err
 	}
 	return result, nil

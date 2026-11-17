@@ -78,6 +78,7 @@ binary, `core` for the Docker image (`-e MESH_MCP_PROFILE=full` switches it).
 | `MESH_MCP_AUTH_FAIL_RPM` | No | `20` | SSE mode: per-IP budget for authentication attempts against a not-yet-cached agent key on `/sse`, `/core/sse`, `/mcp`, `/mcp/core`. Over budget → `429` without calling Mesh API. `0` disables. |
 | `MESH_MCP_SESSION_CACHE_TTL_MIN` | No | `15` | SSE mode: how long a successful authentication is trusted before the key is re-checked — bounds how long a revoked key keeps working without a restart. |
 | `MESH_MCP_AUTH_FAIL_CACHE_SEC` | No | `30` | SSE mode: how long a failed authentication (bad/unknown key) is remembered, so repeating the same bad key doesn't call Mesh API every request. |
+| `MESH_MCP_CLAIM_OWN_CREATED` | No | off | stdio, outside a mesh-runner card session: `create_task` / `create_subtask` of a card assigned to this agent in an `in_progress` status takes its checkout at once (result field `_mesh_claim`), so the Runner starts no second session of the agent on it until `release_task`, a turn command of this session or the lock's expiry. `MESH_MCP_CLAIM_OWN_CREATED_TTL_MINUTES` (default `60`) sets the lock. |
 | `MESH_MCP_PUBLIC_URL` | No | — | SSE mode: the URL the MCP root is reachable at from outside, e.g. `https://mesh.example.com/mcp`. Used for the absolute SSE endpoint and as the OAuth resource URL (see [OAuth](#oauth-remote-connectors)). Unset: derived from each request's host, which is only right when clients reach this server directly — behind a proxy set it, or the derived core URL (`/core`) will not match the public one (`/mcp/core`). |
 | `MESH_MCP_OAUTH_ISSUER` | No | origin of `MESH_MCP_PUBLIC_URL` | SSE mode: the OAuth authorization server named in the protected-resource metadata — your Mesh instance's public origin. Set it only if the MCP server is served from a different origin than the Mesh API. |
 | `MESH_MCP_OAUTH_CACHE_TTL_SEC` | No | `60` | SSE mode: how long a verified OAuth access token is trusted before Mesh API is asked again. Deliberately much shorter than the agent-key TTL so a revoked grant stops working within about a minute. |
@@ -493,6 +494,27 @@ The repo follows the [Open Plugins](https://agent-plugins.org) layout: `plugin.j
 
 This server exposes tools only; it does not define MCP prompts or resources.
 
+## Adding a tool
+
+A tool here is a client of the Mesh REST API, and the public tool catalogue is
+[`docs/mcp-reference.md`](https://github.com/entire-vc/evc-mesh/blob/main/docs/mcp-reference.md)
+in evc-mesh, whose CI compares it with the tools this repository's `main` registers.
+Land a new tool in this order:
+
+1. **The endpoint first.** The Mesh API the tool calls is merged to evc-mesh `main`
+   before the tool merges here. A tool merged ahead of its endpoint calls a route
+   that no Mesh build serves yet.
+2. **Then the tool**, here.
+3. **Then the catalogue entry**: an evc-mesh change that adds the tool to
+   `docs/mcp-reference.md` and its totals. It cannot come earlier — the catalogue
+   check fails on an entry this repository's `main` does not register. If nobody
+   writes it, evc-mesh's daily sync opens that change itself, with an entry generated
+   from this source: the tool description and the parameter descriptions. Write them
+   as user-facing documentation.
+
+Removing or renaming a tool follows the same path: merge it here, and the catalogue
+entry goes in the next evc-mesh change (or the daily sync).
+
 ## Related
 
 - [evc-mesh](https://github.com/entire-vc/evc-mesh) — Core platform (API + Web UI)
@@ -503,9 +525,9 @@ This server exposes tools only; it does not define MCP prompts or resources.
 
 <br>
 
+[![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.entire--vc%2Fevc--mesh--mcp-0A66C2)](https://registry.modelcontextprotocol.io/v0/servers?search=io.github.entire-vc/evc-mesh-mcp)
 [![MCP Badge](https://lobehub.com/badge/mcp/entire-vc-evc-mesh-mcp)](https://lobehub.com/mcp/entire-vc-evc-mesh-mcp)
 [![Glama](https://img.shields.io/badge/Glama-listed-1F2937)](https://glama.ai/mcp/servers/entire-vc/evc-mesh-mcp)
-[![Smithery](https://img.shields.io/badge/Smithery-listed-F26B21)](https://smithery.ai/servers/entirevc/evc-mesh-mcp)
 
 </details>
 

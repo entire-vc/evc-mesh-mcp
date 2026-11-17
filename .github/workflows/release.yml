@@ -120,10 +120,10 @@ jobs:
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
-  # MCPB bundle for Smithery (`smithery mcp publish ./server.mcpb`) and the
-  # official registry's `mcpb` package type. A binary MCPB's mcp_config can
-  # only branch on OS via platform_overrides (win32/darwin/linux) — there is
-  # no per-arch key in the spec — so ONE bundle ships linux/amd64,
+  # MCPB bundle for MCPB clients and the official registry's `mcpb` package
+  # type. A binary MCPB's mcp_config can only branch on OS via
+  # platform_overrides (win32/darwin/linux) — there is no per-arch key in
+  # the spec — so ONE bundle ships linux/amd64,
   # windows/amd64 and a universal (amd64 + arm64) macOS binary, selected by
   # mcp_config.platform_overrides in mcpb/manifest.json. Linux/ARM users use
   # the multi-arch container image or `go install` instead. See
@@ -179,8 +179,8 @@ jobs:
           cp "dist/evc-mesh-mcp_${VERSION}_windows_amd64/evc-mesh-mcp.exe" \
              bundle/server/evc-mesh-mcp-win32-amd64.exe
 
-          # Default command for clients that ignore platform_overrides
-          # (Smithery CLI): picks the binary above for the host OS/arch.
+          # Default command for clients that run mcp_config.command and
+          # ignore platform_overrides: picks the binary above for the host OS/arch.
           cp mcpb/launch.sh bundle/server/evc-mesh-mcp
 
           chmod +x bundle/server/evc-mesh-mcp bundle/server/evc-mesh-mcp-linux-amd64 bundle/server/evc-mesh-mcp-darwin-universal

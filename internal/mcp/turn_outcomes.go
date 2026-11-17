@@ -40,8 +40,9 @@ func (s *Server) registerTurnOutcomeTools() {
 		mcpsdk.WithDescription("End your turn waiting on an event: another card (on=card), a merge request (on=mr), a CI pipeline or GitHub Actions run (on=pipeline), the runner's merge gate on a reviewed head (on=merge), a runner registration (on=registered), the published moment of an external event (on=time, with event_ref, source and why) or, only on a card a lead labelled wake:manual, a passive wait with no observer and no timer that a new comment or the lead's action ends (on=manual, with note saying why). A GitHub PR merge is on=mr provider=github until=merged (project_path owner/repo, mr_iid the PR number, after_sha the head, after_status opened); on=merge is GitLab only. The server checks the target, records the wait (replacing your previous one on this card), writes the comment and releases your checkout; you are woken when the event happens. A refusal writes nothing. Waiting on another agent's answer is ask_agent; on a person, ask_human."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("The card you are working on (UUID or 6-12 hex short id).")),
 		mcpsdk.WithString("on", mcpsdk.Required(), mcpsdk.Description("What you wait on: card, mr, pipeline, time, merge, registered or manual. Only the fields of that kind are read; after_* and registration* on a kind that does not take them are refused.")),
-		mcpsdk.WithString("target_task_id", mcpsdk.Description("on=card: the card you wait on. Creates or reuses a blocks dependency on it. on=manual: optional, must be this card itself.")),
-		mcpsdk.WithString("target_condition", mcpsdk.Description("on=card: what the card must reach: task_done (default), shipped, deployed or accepted.")),
+		mcpsdk.WithString("target_task_id", mcpsdk.Description("on=card: the card you wait on. Creates or reuses a blocks dependency on it; the receipt's wait names that edge (dependency_id, dependency_generation) and dependency_owned=true only when this wait created it or took it over from your own earlier wait on this card. An edge someone else made stays theirs (dependency_owned=false), and an operator's later edit of your edge (condition change, confirmed binding) takes it from your wait; the owner-checked delete (expected_generation + expected_owner_wait_id) refuses both with 409. on=manual: optional, must be this card itself.")),
+		mcpsdk.WithString("target_condition", mcpsdk.Description("on=card: what the card must reach: task_done (default), shipped, deployed, accepted or artifact_published (a named result of that card: give criterion; its owner records the evidence). A card closed without that evidence still releases the wait, marked released_by=closure_without_evidence.")),
+		mcpsdk.WithString("criterion", mcpsdk.Description("on=card with target_condition=artifact_published: the result you wait for, as its producer will name it in the evidence (max 500 chars).")),
 		mcpsdk.WithString("vcs_link_id", mcpsdk.Description("on=mr: id of a VCS link of this card. Alternative to provider + project_path + mr_iid.")),
 		mcpsdk.WithString("provider", mcpsdk.Description("on=mr: gitlab or github. on=pipeline: gitlab (default) or github for an Actions run (project_path owner/repo, pipeline_id the run id). on=merge: gitlab only; a GitHub PR merge is on=mr provider=github until=merged.")),
 		mcpsdk.WithString("project_path", mcpsdk.Description("on=mr, pipeline or merge: project path, e.g. entire-vc/evc-mesh.")),
@@ -68,7 +69,7 @@ func (s *Server) registerTurnOutcomeTools() {
 	)...), s.tracked("continue_next", s.handleContinueNext))
 
 	s.addTool(mcpsdk.NewTool("ask_agent", with(
-		mcpsdk.WithDescription("End your turn with a question only another agent can answer: opens a decision request to that agent (or returns your identical open one), records a wait on it, writes the comment and releases your checkout; you are woken when they answer. The addressee must be an agent of the team directory, not a person (ask_human) and not yourself. Work another agent must do is hand_off, not a question."),
+		mcpsdk.WithDescription("End your turn with a question only another agent can answer: opens a decision request to that agent (or returns your identical open one), records a wait on it, writes the comment and releases your checkout; you are woken when they answer. A question this agent already answered on this card is refused with already_answered (nothing written, checkout kept): read that answer, and if you still need one, ask a new question that says what changed. The addressee must be an agent of the team directory, not a person (ask_human) and not yourself. Work another agent must do is hand_off, not a question."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("The card the question is about (UUID or 6-12 hex short id).")),
 		mcpsdk.WithString("to", mcpsdk.Required(), mcpsdk.Description("Agent name or UUID from get_team_directory; an @-handle prefix is not needed.")),
 		mcpsdk.WithString("question", mcpsdk.Required(), mcpsdk.Description("The question with the options you see, max 4000 chars.")),
@@ -185,7 +186,19 @@ func (s *Server) runTaskCommand(ctx context.Context, tool, taskID, suffix string
 	if tool == "finish_task" {
 		key = client.writeKey(tool, taskID, body)
 	}
-	result, err := client.turnCommandKeyed(ctx, "/api/v1/tasks/"+url.PathEscape(taskID)+suffix, body, key)
+	path := "/api/v1/tasks/" + url.PathEscape(taskID) + suffix
+	var result map[string]any
+	var err error
+	if tool == "finish_task" {
+		// The only turn command that publishes a result: it carries the checkout
+		// fence and the expected input_revision (checkout_fence.go).
+		err = s.fencedWrite(ctx, tool, taskID, true, func(ctx context.Context) (err error) {
+			result, err = client.turnCommandKeyed(ctx, path, body, key)
+			return err
+		})
+	} else {
+		result, err = client.turnCommandKeyed(ctx, path, body, key)
+	}
 	if err != nil {
 		if key != "" && isKeyReused(err) {
 			// The close already went through under this key; its answer was
@@ -211,7 +224,7 @@ func (s *Server) handleWaitFor(ctx context.Context, request mcpsdk.CallToolReque
 		return errResult("on must be card, mr, pipeline, time, merge, registered or manual (got %q); a question to an agent is ask_agent, to a person ask_human", on)
 	}
 	body := map[string]any{"on": on}
-	for _, k := range []string{"target_task_id", "target_condition", "vcs_link_id", "provider", "project_path", "until", "note", "event_ref", "source", "why",
+	for _, k := range []string{"target_task_id", "target_condition", "criterion", "vcs_link_id", "provider", "project_path", "until", "note", "event_ref", "source", "why",
 		"after_sha", "after_status", "registration", "registration_ref"} {
 		if v := strings.TrimSpace(mcpsdk.ParseString(request, k, "")); v != "" {
 			body[k] = v
