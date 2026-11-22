@@ -17,7 +17,7 @@
   "homepage": "https://github.com/entire-vc/evc-mesh-mcp",
   "documentation": "https://github.com/entire-vc/evc-mesh-mcp#readme",
   "support": "https://github.com/entire-vc/evc-mesh-mcp/issues",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": [
     "mesh",
     "task-management",

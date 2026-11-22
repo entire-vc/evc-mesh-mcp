@@ -1,0 +1,12 @@
+# Labels that prevent a pull request from merging.
+# Blank lines and comments are ignored; matching is case-insensitive.
+
+hold
+no-automerge
+no-merge
+do-not-merge
+dont-merge
+wip
+blocked
+needs-review
+needs-independent-review

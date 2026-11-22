@@ -56,7 +56,7 @@ ARG BUILD_SHA
 LABEL org.opencontainers.image.title="evc-mesh-mcp" \
       org.opencontainers.image.description="Tasks, comments, shared memory and handoffs for teams of people and AI agents, over MCP." \
       org.opencontainers.image.source="https://github.com/entire-vc/evc-mesh-mcp" \
-      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.vendor="Entire VC" \
       org.opencontainers.image.revision="${BUILD_SHA}" \
       io.modelcontextprotocol.server.name="io.github.entire-vc/evc-mesh-mcp"
