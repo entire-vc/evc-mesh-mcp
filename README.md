@@ -383,6 +383,12 @@ did not supply; an explicit `limit` always wins.
 | `upload_artifact` | Upload file/code/log to a task. For a file on disk pass `file_path` (stdio only; bytes are read by the server process and the response carries their sha256); `content` is for short inline text |
 | `list_artifacts` | List task artifacts |
 | `get_artifact` | Get artifact details (`download_path`; bytes via the two-step download below) |
+| `create_artifact_upload` | Declare a binary artifact (`name`, `mime_type`, `size_bytes`, `sha256`) and get a presigned `upload_url`; works over SSE too. Fenced like `upload_artifact` |
+| `confirm_upload` | After the PUT to `upload_url`: check size, sha256 and type and store the file; returns `download_path`, `markdown`, `renders_inline` |
+
+### Uploading a binary (stdio and SSE)
+
+`file_path` works only over stdio; inline base64 is for text and small payloads. For any binary over either transport use the two-step upload: `create_artifact_upload` (task) or `create_doc_attachment_upload` (document) with `name`, `mime_type`, `size_bytes` and `sha256` returns `upload_url`; PUT the raw bytes there with no Authorization and no hand-set headers (`curl -sS -T <file> '<upload_url>'`); then `confirm_upload(upload_id)`. The answer carries `markdown` with the stable `download_path`: put it into a document body as is, never the presigned URL, which expires.
 
 ### Downloading an artifact
 
@@ -437,6 +443,9 @@ Downloading an artifact is two GETs. Step 1: GET <base>/api/v1/artifacts/<id>/do
 | `update_doc` | Edit a document (optimistic concurrency via `base_version`) |
 | `comment_doc` | Comment on a document or a quoted passage |
 | `list_doc_comments` | Read a document's comment threads |
+| `create_doc_attachment_upload` | Declare a file for a document and get a presigned `upload_url` (two-step upload, stdio and SSE) |
+| `list_doc_attachments` | List a document's attachments with `download_path` and embeddable `markdown` |
+| `delete_doc_attachment` | Delete a document attachment |
 | `post_project_update` | Post the project's daily status report to its Updates section |
 | `get_project_updates` | Read a project's Updates feed, newest first |
 | `get_canonical` | Query curated facts and decisions for a topic |
