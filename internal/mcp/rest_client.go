@@ -314,6 +314,8 @@ func (c *RESTClient) doKeyed(ctx context.Context, method, path string, body any,
 			req.Header.Set(idempotencyKeyHeader, key)
 		}
 		applyFenceHeaders(ctx, req)
+		applyMemoryReadHeaders(ctx, req)
+		applyMeshToolHeader(ctx, req)
 		c.applyForwardedHeaders(req)
 		return c.httpClient.Do(req)
 	}
@@ -696,7 +698,7 @@ func (c *RESTClient) GetTask(ctx context.Context, taskID string) (map[string]any
 		path = "/api/v1/tasks/by-short-id/" + taskID
 	}
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+	if err := c.doJSON(asMemoryRead(ctx), http.MethodGet, path, nil, &result); err != nil {
 		return nil, err
 	}
 	// A finish under the checkout fence sends the newest revision this
@@ -773,6 +775,18 @@ func (c *RESTClient) AddDependency(ctx context.Context, taskID string, body map[
 func (c *RESTClient) UpdateDependency(ctx context.Context, taskID, depID string, body map[string]any) (map[string]any, error) {
 	var result map[string]any
 	if err := c.doJSON(ctx, http.MethodPatch, "/api/v1/tasks/"+taskID+"/dependencies/"+depID, body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// UpdateDependentEvidence records evidence on an edge from its blocker's side:
+// blockerID is the card the edge waits on, edgeID an incoming edge of it. The
+// route takes evidence fields only and is scoped to the blocker's workspace, so a
+// blocker owner can attest a cross-workspace card wait with their own key.
+func (c *RESTClient) UpdateDependentEvidence(ctx context.Context, blockerID, edgeID string, body map[string]any) (map[string]any, error) {
+	var result map[string]any
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/v1/tasks/"+blockerID+"/dependents/"+edgeID+"/evidence", body, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -875,7 +889,7 @@ func (c *RESTClient) ListComments(ctx context.Context, taskID string, params map
 		path += "?" + q.Encode()
 	}
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+	if err := c.doJSON(asMemoryRead(ctx), http.MethodGet, path, nil, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -1014,7 +1028,7 @@ func (c *RESTClient) GetContext(ctx context.Context, projectID string, params ma
 // GetTaskContext returns full context for a task.
 func (c *RESTClient) GetTaskContext(ctx context.Context, taskID string) (map[string]any, error) {
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/tasks/"+taskID+"/context", nil, &result); err != nil {
+	if err := c.doJSON(asMemoryRead(ctx), http.MethodGet, "/api/v1/tasks/"+taskID+"/context", nil, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -1412,7 +1426,7 @@ func (c *RESTClient) RecallMemories(ctx context.Context, p RecallMemoriesParams)
 		path += "?" + encoded
 	}
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+	if err := c.doJSON(asMemoryRead(ctx), http.MethodGet, path, nil, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -1433,7 +1447,7 @@ func (c *RESTClient) RecallFinal(ctx context.Context, p RecallMemoriesParams, gr
 	}
 	path := "/api/v1/memories/recall-final/v1?" + params.Encode()
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+	if err := c.doJSON(asMemoryRead(ctx), http.MethodGet, path, nil, &result); err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusMethodNotAllowed) {
 			return nil, fmt.Errorf("final recall v%d is not available on this API (HTTP %d); upgrade the API before this client: %w", recallFinalVersion, apiErr.StatusCode, err)
@@ -1514,7 +1528,7 @@ func (c *RESTClient) RecallWithGraph(ctx context.Context, p RecallWithGraphParam
 		path += "?" + encoded
 	}
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+	if err := c.doJSON(asMemoryRead(ctx), http.MethodGet, path, nil, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -1531,7 +1545,8 @@ func (c *RESTClient) SetProjectKnowledge(ctx context.Context, projectID string, 
 
 // GetProjectKnowledge returns knowledge for a project with optional workspace-tier pagination.
 // limit/offset apply to workspace memories; minImportance and tagsAny filter workspace-tier.
-func (c *RESTClient) GetProjectKnowledge(ctx context.Context, projectID string, limit, offset int, minImportance float64, tagsAny string) (map[string]any, error) {
+// The API leaves out superseded entries on both tiers unless includeSuperseded is set.
+func (c *RESTClient) GetProjectKnowledge(ctx context.Context, projectID string, limit, offset int, minImportance float64, tagsAny string, includeSuperseded bool) (map[string]any, error) {
 	path := fmt.Sprintf("/api/v1/projects/%s/knowledge?limit=%d&offset=%d", projectID, limit, offset)
 	if minImportance > 0 {
 		path += fmt.Sprintf("&min_importance=%g", minImportance)
@@ -1539,8 +1554,11 @@ func (c *RESTClient) GetProjectKnowledge(ctx context.Context, projectID string, 
 	if tagsAny != "" {
 		path += "&tags_any=" + tagsAny
 	}
+	if includeSuperseded {
+		path += "&include_superseded=true"
+	}
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+	if err := c.doJSON(asMemoryRead(ctx), http.MethodGet, path, nil, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -1583,7 +1601,7 @@ func (c *RESTClient) GetMemoriesByKey(ctx context.Context, p MemoryByKeyParams) 
 	var result struct {
 		Items []any `json:"items"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/memories/by-key?"+params.Encode(), nil, &result); err != nil {
+	if err := c.doJSON(asMemoryRead(ctx), http.MethodGet, "/api/v1/memories/by-key?"+params.Encode(), nil, &result); err != nil {
 		return nil, err
 	}
 	return result.Items, nil

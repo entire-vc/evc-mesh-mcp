@@ -123,6 +123,9 @@ type Server struct {
 	// readCache trims repeat get_task reads in one stdio session; nil (off)
 	// for SSE/HTTP, where one server serves many clients.
 	readCache *taskReadCache
+	// uploadTasks maps an artifact upload_id to its task, so confirm_upload
+	// sends that card's checkout fence without the agent repeating task_id.
+	uploadTasks uploadTaskMap
 }
 
 // getSession returns the AgentSession for the current request.
@@ -288,6 +291,7 @@ func (s *Server) registerCoreTools() {
 		mcpsdk.WithNumber("offset", mcpsdk.Description("Pagination offset for workspace-tier (default 0).")),
 		mcpsdk.WithNumber("min_importance", mcpsdk.Description("Minimum importance_score for workspace-tier (default 0 = all).")),
 		mcpsdk.WithString("tags_any", mcpsdk.Description("Comma-separated tag OR-filter for workspace-tier, e.g. 'kind:decision,kind:incident'.")),
+		mcpsdk.WithBoolean("include_superseded", mcpsdk.DefaultBool(false), mcpsdk.Description("Also return entries replaced by a newer one (status superseded), on both tiers. Default false: only current entries.")),
 	), s.tracked("get_project_knowledge", s.handleGetProjectKnowledge))
 
 	s.addTool(mcpsdk.NewTool("get_my_rules",
@@ -754,7 +758,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("add_dependency", s.handleAddDependency))
 
 	s.addTool(mcpsdk.NewTool("update_dependency",
-		mcpsdk.WithDescription("Set the condition, criterion and/or evidence of an existing dependency edge (task_id depends on depends_on_task_id). Evidence releases the dependent only when Mesh can verify it: send evidence_criterion equal to the edge criterion (default: the condition name). shipped/deployed/accepted are checked against the blocker's own pr link: head_sha must be the link's current HEAD (and environment, e.g. prod, for deployed); evidence_url is only stored, never fetched. access_ready/contract_ready/artifact_published need attest=true from someone with access to the blocker. A bare evidence_url is kept as an unverified link and releases nothing. Changing condition or criterion needs expected_generation: the generation you read from the edge (get_task dependencies) — missing is refused, stale is a 409. An empty evidence_url re-arms the edge."),
+		mcpsdk.WithDescription("Set the condition, criterion and/or evidence of an existing dependency edge (task_id depends on depends_on_task_id). Evidence releases the dependent only when Mesh can verify it: send evidence_criterion equal to the edge criterion (default: the condition name). shipped/deployed/accepted are checked against the blocker's own pr link: head_sha must be the link's current HEAD (and environment, e.g. prod, for deployed); evidence_url is only stored, never fetched. access_ready/contract_ready/artifact_published need attest=true from someone with access to the blocker. A bare evidence_url is kept as an unverified link and releases nothing. Changing condition or criterion needs expected_generation: the generation you read from the edge (get_task dependencies) — missing is refused, stale is a 409. An empty evidence_url re-arms the edge. Blocker owner of a card waiting in another workspace: send the same call with your own key (task_id = the waiting card's full UUID, depends_on_task_id = your card, evidence fields only); it is recorded from your card's side, and condition/criterion stay the waiting side's."),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("The blocked task (the one that has the dependency).")),
 		mcpsdk.WithString("depends_on_task_id", mcpsdk.Required(), mcpsdk.Description("The blocker the edge points at.")),
 		mcpsdk.WithString("condition", mcpsdk.Enum(dependencyConditions...), mcpsdk.Description(dependencyConditionHelp)),
@@ -855,7 +859,7 @@ func (s *Server) registerAdvancedTools() {
 	), s.tracked("list_comments", s.handleListComments))
 
 	s.addTool(mcpsdk.NewTool("upload_artifact",
-		mcpsdk.WithDescription("Upload an artifact (file, code, log, etc.) to a task. For a file on disk — any binary (screenshot, image, pdf, archive) — pass file_path: this process reads the bytes, they never pass through your context, and the response carries their sha256. Use content only for short text you generated; inline base64 of a binary larger than a few KB gets corrupted in transit. file_path works over stdio only (a remote SSE/HTTP server refuses it). "+artifactDownloadHowTo),
+		mcpsdk.WithDescription("Upload an artifact (file, code, log, etc.) to a task. For a file on disk — any binary (screenshot, image, pdf, archive) — pass file_path: this process reads the bytes, they never pass through your context, and the response carries their sha256. Use content only for short text you generated; inline base64 of a binary larger than a few KB gets corrupted in transit. file_path works over stdio only (a remote SSE/HTTP server refuses it); over SSE use create_artifact_upload for any binary. "+artifactDownloadHowTo),
 		mcpsdk.WithString("task_id", mcpsdk.Required(), mcpsdk.Description("Task ID.")),
 		mcpsdk.WithString("name", mcpsdk.Description("Artifact filename. Required with content; defaults to the file's basename with file_path.")),
 		mcpsdk.WithString("file_path", mcpsdk.Description("Absolute path of a regular file to upload (no symlinks or directories, max 25 MB). Preferred for every binary. Mutually exclusive with content; stdio transport only.")),
@@ -877,6 +881,8 @@ func (s *Server) registerAdvancedTools() {
 		mcpsdk.WithString("artifact_id", mcpsdk.Required(), mcpsdk.Description("Artifact ID.")),
 		mcpsdk.WithBoolean("include_content", mcpsdk.Description("Adds download_api_url: step 1 of the download (the API endpoint you call with X-Agent-Key), NOT the file and NOT a link to open. The bytes are never inlined."), mcpsdk.DefaultBool(false)),
 	), s.tracked("get_artifact", s.handleGetArtifact))
+
+	s.registerUploadTools()
 
 	// --- Event Bus ---
 	s.addTool(mcpsdk.NewTool("publish_summary",

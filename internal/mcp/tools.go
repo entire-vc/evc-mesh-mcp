@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -257,7 +258,20 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		sinceSet = true
 	}
 
-	task, err := s.getRESTClient(ctx).GetTask(ctx, taskID)
+	// Validated before any request: the task GET of an include_comments read
+	// is marked as not counted (X-Mesh-Tool), so the comments GET that books
+	// the call must follow it.
+	includeComments := mcpsdk.ParseBoolean(request, "include_comments", false)
+	commentsLimit := mcpsdk.ParseInt(request, "comments_limit", defaultTaskCommentsLimit)
+	if includeComments && (commentsLimit < 1 || commentsLimit > maxTaskCommentsLimit) {
+		return errResult("comments_limit must be between 1 and %d, got %d", maxTaskCommentsLimit, commentsLimit)
+	}
+
+	taskCtx := ctx
+	if includeComments {
+		taskCtx = withMeshTool(ctx, meshToolGetTaskWithComments)
+	}
+	task, err := s.getRESTClient(ctx).GetTask(taskCtx, taskID)
 	if err != nil {
 		return errResult("failed to get task: %v", err)
 	}
@@ -317,7 +331,7 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		resp["task_changed"] = false
 	}
 
-	if mcpsdk.ParseBoolean(request, "include_comments", false) {
+	if includeComments {
 		// The default tail length is small on purpose: self-reports of 20
 		// lanes (03.10) named re-reading whole threads as the top context cost
 		// — one get_task(include_comments=true) on a busy card handed back the
@@ -325,11 +339,7 @@ func (s *Server) handleGetTask(ctx context.Context, request mcpsdk.CallToolReque
 		// last few comments carry the state an agent needs before acting; the
 		// full thread stays one explicit comments_limit away, and
 		// comments_total_count/comments_has_more always say how much is hidden.
-		commentsLimit := mcpsdk.ParseInt(request, "comments_limit", defaultTaskCommentsLimit)
-		if commentsLimit < 1 || commentsLimit > maxTaskCommentsLimit {
-			return errResult("comments_limit must be between 1 and %d, got %d", maxTaskCommentsLimit, commentsLimit)
-		}
-		page, err := s.getRESTClient(ctx).GetTaskComments(ctx, resolvedID, commentsLimit)
+		page, err := s.getRESTClient(ctx).GetTaskComments(withMeshTool(ctx, meshToolGetTask), resolvedID, commentsLimit)
 		if err != nil {
 			if !markPartialFailure(resp, "comments", err) {
 				return errResult("failed to list comments: %v", err)
@@ -1094,6 +1104,9 @@ func (s *Server) handleUpdateDependency(ctx context.Context, request mcpsdk.Call
 	client := s.getRESTClient(ctx)
 	task, err := client.GetTask(ctx, taskID)
 	if err != nil {
+		if blockerSideEvidence(err, taskID, body) {
+			return s.updateDependentEvidence(ctx, client, taskID, dependsOnID, body)
+		}
 		return errResult("failed to get task: %v", err)
 	}
 	blocked, _ := task["id"].(string)
@@ -1125,6 +1138,64 @@ func (s *Server) handleUpdateDependency(ctx context.Context, request mcpsdk.Call
 		return errResult("no dependency: task %s does not depend on %s (the pair is directional: task_id is the blocked card)", blocked, blocker)
 	}
 	result, err := client.UpdateDependency(ctx, blocked, depID, body)
+	if err != nil {
+		return errResult("failed to update dependency: %v", err)
+	}
+	return jsonResult(result)
+}
+
+// blockerSideEvidence says whether an update_dependency the caller may not make
+// on the blocked card is the blocker owner's attestation, to be sent from the
+// blocker's side: the blocked card is refused with 403 (it lives in a workspace
+// this key does not reach, as a cross-workspace card wait's does), task_id is a
+// full UUID (a short id cannot be resolved there), and the body is evidence
+// only — what the edge waits for is the waiting side's to change.
+func blockerSideEvidence(err error, taskID string, body map[string]any) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusForbidden {
+		return false
+	}
+	if _, perr := uuid.Parse(taskID); perr != nil || len(taskID) != 36 {
+		return false
+	}
+	if _, ok := body["condition"]; ok {
+		return false
+	}
+	if _, ok := body["criterion"]; ok {
+		return false
+	}
+	url, _ := body["evidence_url"].(string)
+	return strings.TrimSpace(url) != ""
+}
+
+// updateDependentEvidence finds the edge blocked -> blocker among the blocker's
+// incoming edges and records the evidence through the blocker-side route.
+func (s *Server) updateDependentEvidence(ctx context.Context, client *RESTClient, blocked, dependsOnID string, body map[string]any) (*mcpsdk.CallToolResult, error) {
+	blocker := dependsOnID
+	if len(blocker) != 36 {
+		other, err := client.GetTask(ctx, blocker)
+		if err != nil {
+			return errResult("failed to get depends_on task: %v", err)
+		}
+		if id, _ := other["id"].(string); id != "" {
+			blocker = id
+		}
+	}
+	deps, err := client.GetTaskDependencies(ctx, blocker)
+	if err != nil {
+		return errResult("failed to list dependencies of the blocker: %v", err)
+	}
+	var edgeID string
+	for _, e := range deps.Incoming {
+		if id, _ := e["task_id"].(string); strings.EqualFold(id, blocked) {
+			edgeID, _ = e["id"].(string)
+			break
+		}
+	}
+	if edgeID == "" {
+		return errResult("no dependency: task %s does not depend on %s (the pair is directional: task_id is the blocked card)", blocked, blocker)
+	}
+	result, err := client.UpdateDependentEvidence(ctx, blocker, edgeID, body)
 	if err != nil {
 		return errResult("failed to update dependency: %v", err)
 	}
@@ -1970,7 +2041,7 @@ func (s *Server) handleGetContext(ctx context.Context, request mcpsdk.CallToolRe
 	}
 
 	// Also fetch project knowledge and merge it (non-fatal if it fails).
-	knowledge, knowledgeErr := s.getRESTClient(ctx).GetProjectKnowledge(ctx, projectID, 100, 0, 0, "")
+	knowledge, knowledgeErr := s.getRESTClient(ctx).GetProjectKnowledge(ctx, projectID, 100, 0, 0, "", false)
 	if knowledgeErr == nil {
 		// Prefer the "items" slice if present, otherwise embed the full response.
 		if items, ok := knowledge["items"]; ok {
@@ -3950,8 +4021,9 @@ func (s *Server) handleGetProjectKnowledge(ctx context.Context, request mcpsdk.C
 	offset := mcpsdk.ParseInt(request, "offset", 0)
 	minImportance := mcpsdk.ParseFloat64(request, "min_importance", 0)
 	tagsAny := mcpsdk.ParseString(request, "tags_any", "")
+	includeSuperseded := mcpsdk.ParseBoolean(request, "include_superseded", false)
 
-	result, err := s.getRESTClient(ctx).GetProjectKnowledge(ctx, projectID, limit, offset, minImportance, tagsAny)
+	result, err := s.getRESTClient(ctx).GetProjectKnowledge(ctx, projectID, limit, offset, minImportance, tagsAny, includeSuperseded)
 	if err != nil {
 		return errResult("get_project_knowledge failed: %v", err)
 	}
@@ -4738,7 +4810,7 @@ func (s *Server) handleGetCanonical(ctx context.Context, request mcpsdk.CallTool
 	if projectSlug != "" {
 		projID := resolveProjectID(ctx, client, wsID, slugVariants(projectSlug))
 		if projID != "" {
-			pkResult, pkErr := client.GetProjectKnowledge(ctx, projID, 100, 0, 0, "")
+			pkResult, pkErr := client.GetProjectKnowledge(ctx, projID, 100, 0, 0, "", false)
 			if pkErr == nil {
 				topicLower := strings.ToLower(topic)
 				pms, _ := pkResult["project_memories"].([]any)

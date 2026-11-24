@@ -33,7 +33,7 @@ func (c *RESTClient) ListProjectUpdates(ctx context.Context, projectID string, p
 	q := url.Values{}
 	q.Set("page_size", strconv.Itoa(pageSize))
 	var result map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/projects/"+projectID+"/updates?"+q.Encode(), nil, &result); err != nil {
+	if err := c.doJSON(asMemoryRead(ctx), http.MethodGet, "/api/v1/projects/"+projectID+"/updates?"+q.Encode(), nil, &result); err != nil {
 		return nil, err
 	}
 	return result, nil

@@ -20,8 +20,9 @@ const maxLocalArtifactBytes int64 = 25 << 20
 // and "a path" names a file on the server, not on the agent's machine.
 var errFilePathNotLocal = errors.New(
 	"file_path is only available over stdio (a mesh-mcp process running on your machine); " +
-		"this server is remote and cannot read your disk. Send the bytes as content with encoding=\"base64\" " +
-		"and sha256, or POST the file as multipart to /api/v1/tasks/{task_id}/artifacts")
+		"this server is remote and cannot read your disk. For a binary use create_artifact_upload " +
+		"(declare the file, PUT its bytes to the returned upload_url, then confirm_upload); " +
+		"content is for short text only")
 
 // readArtifactFile reads a file named by an upload_artifact file_path.
 //

@@ -1,7 +1,7 @@
 # Checkout fence on result writes
 
-`add_comment`, `upload_artifact`, `move_task` and `finish_task` of a card the
-Runner holds for this agent carry that card's checkout lock. Mesh then writes
+`add_comment`, `upload_artifact`, `create_artifact_upload`, `confirm_upload`
+(of an artifact upload), `move_task` and `finish_task` of a card the Runner holds for this agent carry that card's checkout lock. Mesh then writes
 only while the lock is live and answers `409` otherwise, writing nothing. The
 Runner side is evc-mesh-runner `docs/checkout-fence.md`; the server side is
 evc-mesh `internal/handler/result_fence.go`.
